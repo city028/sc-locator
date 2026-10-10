@@ -1,0 +1,523 @@
+{
+  "hurston": {
+    "planet": "hurston",
+    "system": "stanton",
+    "radius_m": 1000000.0,
+    "analysed": "2026-10-05 15:14",
+    "kind": "rotating",
+    "site": {
+      "lat": 47.298245371022475,
+      "lon": 17.00152340241003
+    },
+    "samples": 19,
+    "duration_s": 152.19326734542847,
+    "rho_m": 678353.8017302196,
+    "rho_local_m": 678335.4800280277,
+    "omega_deg_s": 0.04018979926207698,
+    "period_s": 8957.496842729824,
+    "sigma": 0.009144395303045207,
+    "arc_deg": 6.152453725893521,
+    "axis": [
+      7.821715515284937e-06,
+      -1.0578294442352335e-05,
+      0.9999999999134603
+    ],
+    "axis_tilt_deg": 0.0007537810817115378,
+    "centre": [
+      12850457076.412098,
+      22.563900980531386,
+      25.871169816702604
+    ],
+    "star_distance_m": 12850457076.412098,
+    "declination_deg": -0.00044826663718877994,
+    "t_ref": 1791198845.3930743,
+    "subsolar_lon_ref": -111.59131505350753
+  },
+  "crusader": {
+    "planet": "crusader",
+    "system": "stanton",
+    "radius_m": 7450010.0,
+    "analysed": "2026-10-05 15:26",
+    "kind": "rotating",
+    "site": {
+      "lat": 44.541523402120525,
+      "lon": -9.336351960545052
+    },
+    "samples": 14,
+    "duration_s": 30.60465669631958,
+    "rho_m": 5368791.62518273,
+    "rho_local_m": 5366935.563333599,
+    "omega_deg_s": 0.01967265223963348,
+    "period_s": 18299.51526692098,
+    "sigma": 0.002269164819152028,
+    "arc_deg": 0.6019098769423634,
+    "axis": [
+      0.0,
+      0.0,
+      1.0
+    ],
+    "axis_tilt_deg": 0.0,
+    "centre": [
+      -18962175595.79129,
+      -2664958188.4777784,
+      1886.7120858812705
+    ],
+    "star_distance_m": 19148527501.40232,
+    "declination_deg": -5.645376108915136e-06,
+    "t_ref": 1791199615.8844833,
+    "subsolar_lon_ref": 101.03533019412504
+  },
+  "arccorp": {
+    "planet": "arccorp",
+    "system": "stanton",
+    "radius_m": 800000.0,
+    "analysed": "2026-10-05 15:48",
+    "kind": "rotating",
+    "site": {
+      "lat": -19.25245753377206,
+      "lon": -172.1169350101172
+    },
+    "samples": 21,
+    "duration_s": 69.08029341697693,
+    "rho_m": 755334.184182943,
+    "rho_local_m": 755410.4129376934,
+    "omega_deg_s": 0.032244415759691024,
+    "period_s": 11164.723922523,
+    "sigma": 0.00960459467472778,
+    "arc_deg": 2.2239919513265702,
+    "axis": [
+      0.0,
+      0.0,
+      1.0
+    ],
+    "axis_tilt_deg": 0.0,
+    "centre": [
+      18587664767.871815,
+      -22151916849.41372,
+      218.13321394548984
+    ],
+    "star_distance_m": 28917273412.722065,
+    "declination_deg": -4.322023156305703e-07,
+    "t_ref": 1791200916.169673,
+    "subsolar_lon_ref": -111.46830493096448
+  },
+  "microtech": {
+    "planet": "microtech",
+    "system": "stanton",
+    "radius_m": 1000000.0,
+    "analysed": "2026-10-06 16:38",
+    "kind": "rotating",
+    "site": {
+      "lat": 47.216847050444706,
+      "lon": 39.930810527010074
+    },
+    "samples": 7,
+    "duration_s": 266.392107963562,
+    "rho_m": 680245.3837345616,
+    "rho_local_m": 680218.767298132,
+    "omega_deg_s": 0.02425621049600845,
+    "period_s": 14841.559857803875,
+    "sigma": 0.0006106672324996517,
+    "arc_deg": 6.465664572279147,
+    "axis": [
+      0.0,
+      0.0,
+      1.0
+    ],
+    "axis_tilt_deg": 0.0,
+    "centre": [
+      22462085234.842876,
+      37185744944.89008,
+      24.59023877652362
+    ],
+    "star_distance_m": 43443352773.511444,
+    "declination_deg": -3.243112718438247e-08,
+    "t_ref": 1791290293.7673721,
+    "subsolar_lon_ref": -132.74359356909503
+  },
+  "clio": {
+    "planet": "clio",
+    "system": "stanton",
+    "radius_m": 337170.0,
+    "analysed": "2026-10-06 17:41",
+    "kind": "rotating",
+    "site": {
+      "lat": -3.1705508963110005,
+      "lon": -165.2627177818388
+    },
+    "samples": 18,
+    "duration_s": 30.382797956466675,
+    "rho_m": 336626.3467440368,
+    "rho_local_m": 337006.16389783326,
+    "omega_deg_s": 0.030827387870144277,
+    "period_s": 11677.927481771912,
+    "sigma": 0.0008467943230460246,
+    "arc_deg": 0.9367582472537995,
+    "axis": [
+      -9.247388629886678e-20,
+      3.034447323422265e-19,
+      1.0
+    ],
+    "axis_tilt_deg": 0.0,
+    "centre": [
+      22476728331.89109,
+      37091019711.26227,
+      5915.621131966884
+    ],
+    "star_distance_m": 43369886554.231575,
+    "declination_deg": -7.815102851071712e-06,
+    "t_ref": 1791294114.295855,
+    "subsolar_lon_ref": 146.10588557267545,
+    "label": "moon"
+  },
+  "space -35275903,-36052299,6 km": {
+    "scope": "space",
+    "system": "pyro",
+    "analysed": "2026-10-08 15:57",
+    "site_sys": [
+      -35275902747.100006,
+      -36052299030.8,
+      5902.9
+    ],
+    "samples": 33,
+    "duration_s": 58.44020175933838,
+    "kind": "fixed",
+    "label": "jump point",
+    "station": {
+      "name": "Nyx Gateway (Pyro)",
+      "body": "Nyx Gateway (Pyro system)",
+      "faction": "United Empire of Earth",
+      "services": [
+        "refinery",
+        "repair",
+        "refuel",
+        "clinic",
+        "shops",
+        "trade",
+        "habs",
+        "cargo"
+      ],
+      "pads": "",
+      "armistice": true,
+      "source": "UEX 2026-10-08"
+    }
+  },
+  "space -42308390,-7276096,18513 km": {
+    "scope": "space",
+    "system": "pyro",
+    "analysed": "2026-10-08 16:12",
+    "site_sys": [
+      -42308390136.0,
+      -7276096483.099999,
+      18513072.400000002
+    ],
+    "samples": 31,
+    "duration_s": 58.71580648422241,
+    "kind": "fixed",
+    "label": "Lagrange station"
+  },
+  "space -16104160,7587170,227 km": {
+    "scope": "space",
+    "system": "pyro",
+    "analysed": "2026-10-08 16:30",
+    "site_sys": [
+      -16104160323.2,
+      7587169781.8,
+      226596.0
+    ],
+    "samples": 25,
+    "duration_s": 58.9511501789093,
+    "kind": "moving",
+    "speed_mps": 282.91127023234145,
+    "direction": [
+      0.9451759260403005,
+      -0.3265615850553465,
+      0.0
+    ],
+    "label": "orbital station",
+    "over": "bloom",
+    "site_over": [
+      378844.63189,
+      -719888.293566,
+      226596.164618
+    ],
+    "station": {
+      "name": "Orbituary",
+      "body": "Bloom",
+      "faction": "Rough & Ready",
+      "services": [
+        "refinery",
+        "repair",
+        "refuel",
+        "clinic",
+        "shops",
+        "trade",
+        "habs",
+        "cargo"
+      ],
+      "pads": "S,M,L,XL",
+      "armistice": false,
+      "source": "UEX 2026-10-08"
+    }
+  },
+  "space 29108877,61780162,12706 km": {
+    "scope": "space",
+    "system": "pyro",
+    "analysed": "2026-10-08 16:44",
+    "site_sys": [
+      29108876510.5,
+      61780161759.3,
+      12706467.2
+    ],
+    "samples": 39,
+    "duration_s": 59.93994212150574,
+    "kind": "fixed",
+    "label": "Lagrange station",
+    "station": {
+      "name": "Megumi Refueling",
+      "body": "Pyro VI Lagrange Point 5",
+      "faction": "Rough & Ready",
+      "services": [
+        "repair",
+        "refuel",
+        "clinic",
+        "shops",
+        "trade",
+        "habs",
+        "cargo"
+      ],
+      "pads": "S,M,L",
+      "armistice": false,
+      "source": "UEX 2026-10-08"
+    }
+  },
+  "space -4296209,-47014548,17665 km": {
+    "scope": "space",
+    "system": "pyro",
+    "analysed": "2026-10-08 17:04",
+    "site_sys": [
+      -4296208989.7,
+      -47014548077.1,
+      17664969.6
+    ],
+    "samples": 38,
+    "duration_s": 58.69547486305237,
+    "kind": "fixed",
+    "label": "Lagrange station",
+    "station": {
+      "name": "Gaslight",
+      "body": "Pyro V Lagrange Point 2",
+      "faction": "Rough & Ready",
+      "services": [
+        "repair",
+        "refuel",
+        "clinic",
+        "shops",
+        "trade",
+        "habs",
+        "cargo"
+      ],
+      "pads": "S,M,L",
+      "armistice": false,
+      "source": "UEX 2026-10-08"
+    }
+  },
+  "space -62062405,-28602578,-10765 km": {
+    "scope": "space",
+    "system": "pyro",
+    "analysed": "2026-10-09 07:51",
+    "site_sys": [
+      -62062405130.2,
+      -28602578335.9,
+      -10765129.1
+    ],
+    "samples": 30,
+    "duration_s": 58.79868745803833,
+    "kind": "fixed",
+    "station": {
+      "name": "Dudley & Daughters",
+      "body": "Pyro VI Lagrange Point 4",
+      "faction": "Rough & Ready",
+      "services": [
+        "repair",
+        "refuel",
+        "clinic",
+        "shops",
+        "trade",
+        "habs"
+      ],
+      "pads": "S,M,L",
+      "armistice": false,
+      "source": "UEX 2026-10-08"
+    },
+    "label": "Lagrange station"
+  },
+  "space 52140941,-44113648,2735 km": {
+    "scope": "space",
+    "system": "pyro",
+    "analysed": "2026-10-09 08:11",
+    "site_sys": [
+      52140941147.200005,
+      -44113648420.9,
+      2735321.1
+    ],
+    "samples": 28,
+    "duration_s": 59.53735399246216,
+    "kind": "fixed",
+    "label": "Lagrange station",
+    "station": {
+      "name": "Endgame",
+      "body": "Pyro VI Lagrange Point 3",
+      "faction": "Rough & Ready",
+      "services": [
+        "repair",
+        "refuel",
+        "clinic",
+        "shops",
+        "trade",
+        "habs"
+      ],
+      "pads": "S,M,L",
+      "armistice": false,
+      "source": "UEX 2026-10-08"
+    }
+  },
+  "space 14526916,-10272844,2753 km": {
+    "scope": "space",
+    "system": "pyro",
+    "analysed": "2026-10-09 08:33",
+    "site_sys": [
+      14526916280.0,
+      -10272843977.0,
+      2752913.5999999996
+    ],
+    "samples": 33,
+    "duration_s": 59.91103219985962,
+    "kind": "fixed",
+    "label": "Lagrange station",
+    "station": {
+      "name": "Patch City",
+      "body": "Bloom Lagrange Point 3",
+      "faction": "Rough & Ready",
+      "services": [
+        "repair",
+        "refuel",
+        "clinic",
+        "shops",
+        "trade",
+        "habs"
+      ],
+      "pads": "S,M,L",
+      "armistice": false,
+      "source": "UEX 2026-10-08"
+    }
+  },
+  "space -48117881,48502939,-100 km": {
+    "scope": "space",
+    "system": "pyro",
+    "analysed": "2026-10-09 09:54",
+    "site_sys": [
+      -48117880842.799995,
+      48502938535.75,
+      -99949.6
+    ],
+    "samples": 20,
+    "duration_s": 58.66879463195801,
+    "over": "pyrovi",
+    "site_over": [
+      -317135.417076,
+      301732.693573,
+      -99949.578366
+    ],
+    "kind": "moving",
+    "speed_mps": 266.5581204299972,
+    "direction": [
+      0.43997475121733637,
+      0.8980101437574315,
+      0.0
+    ],
+    "label": "orbital station",
+    "station": {
+      "name": "Ruin Station",
+      "body": "Terminus",
+      "faction": "Rough & Ready",
+      "services": [
+        "refinery",
+        "repair",
+        "refuel",
+        "clinic",
+        "shops",
+        "trade",
+        "habs",
+        "cargo"
+      ],
+      "pads": "S,M,L,XL",
+      "armistice": false,
+      "source": "UEX 2026-10-08"
+    }
+  },
+  "space 34178605,40592012,6 km": {
+    "scope": "space",
+    "system": "pyro",
+    "analysed": "2026-10-09 13:38",
+    "site_sys": [
+      34178604840.300003,
+      40592012204.5,
+      6021.84
+    ],
+    "samples": 23,
+    "duration_s": 57.826680421829224,
+    "kind": "fixed",
+    "label": "jump point",
+    "station": {
+      "name": "Stanton Gateway (Pyro)",
+      "body": "Stanton Gateway (Pyro system)",
+      "faction": "United Empire of Earth",
+      "services": [
+        "refinery",
+        "repair",
+        "refuel",
+        "clinic",
+        "shops",
+        "trade",
+        "habs",
+        "cargo"
+      ],
+      "pads": "S,M,L",
+      "armistice": true,
+      "source": "UEX 2026-10-08"
+    }
+  },
+  "space 10550859,-959304,2571 km": {
+    "scope": "space",
+    "system": "pyro",
+    "analysed": "2026-10-09 13:59",
+    "site_sys": [
+      10550859421.3,
+      -959303656.7,
+      2571313.9
+    ],
+    "samples": 11,
+    "duration_s": 49.54507040977478,
+    "kind": "fixed",
+    "label": "Lagrange station",
+    "station": {
+      "name": "Checkmate Station",
+      "body": "Monox Lagrange Point 4",
+      "faction": "Rough & Ready",
+      "services": [
+        "refinery",
+        "repair",
+        "refuel",
+        "clinic",
+        "shops",
+        "trade",
+        "habs",
+        "cargo"
+      ],
+      "pads": "S,M,L,XL",
+      "armistice": false,
+      "source": "UEX 2026-10-08"
+    }
+  }
+}

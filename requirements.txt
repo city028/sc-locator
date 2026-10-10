@@ -1,0 +1,10 @@
+# Python packages:  pip install -r requirements.txt
+mss
+pillow
+pytesseract
+
+# pytesseract is only a wrapper -- the Tesseract OCR engine is a separate
+# install and its Windows installer does NOT add itself to PATH:
+#   winget install UB-Mannheim.TesseractOCR
+# sc_locator looks on PATH and in the usual install directories; if yours is
+# somewhere else, set "tesseract_cmd" in locator_config.json.

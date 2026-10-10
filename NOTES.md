@@ -1,0 +1,1009 @@
+# SC Locator — findings
+
+Working notes from building and debugging this against the live game.
+Everything below was verified in Star Citizen, not assumed.
+
+## The debug HUD
+
+Enable in the console (`~`) with **`r_DisplayInfo 2`**. It resets every time the
+game restarts.
+
+The HUD prints several position rows in **different reference frames**:
+
+| row | frame | units |
+|---|---|---|
+| `Zone: ObjectContainer-… Pos:` | ship / building interior | m |
+| `Zone: <body> Pos:` | planet | **km** |
+| `Zone: SolarSystem… / Root Pos:` | system | km |
+| `CamPos Planet Zone:` | **planet, metres, full precision** | m |
+
+Only the `CamPos` row is usable. Reading any other silently reports a position
+in the wrong frame — the interior row would place you ~20 m from the planet
+core. The parser identifies it by carrying both "Planet" and "Zone", and
+rejects every other row.
+
+`Planet:` and `Radius:` rows exist and are authoritative. Verified identity:
+
+```
+|CamPos| - Radius == ElevationUnderCam + Altitude     (matched to 0.0 m)
+```
+
+Body names vary in form for the same body — `nyx1`, `OOC Stanton 4 Microtech` —
+so they are canonicalised before use.
+
+## The HUD block is pinned to the top-right corner
+
+How far down the `CamPos` row sits depends on how many rows precede it, and
+that **changes with location and graphics settings** (Nyx showed an extra
+GI/Reflections line that microTech did not). A region calibrated in one place
+silently stops working in another.
+
+So the capture region snaps to the top and right screen edges rather than
+trusting measured offsets. OCR also drops the last glyph or two of each row,
+which truncates the final coordinate if the right edge is not at the screen
+edge.
+
+## OCR is unreliable and fails in specific, repeatable ways
+
+All observed live, all handled:
+
+- **Bright backgrounds lose the fix, and no global cut-off can fix that.**
+  The HUD is light text and a sunlit planet surface is light too, so no single
+  brightness value separates them — the old threshold inverted the bright
+  ground into a solid black block that swallowed whole rows.
+
+  Text is now found by **local contrast**: each pixel is compared with the mean
+  of its own neighbourhood (`contrast_radius`), and counts as ink if it is
+  `contrast_cut` brighter. Background brightness then stops mattering. Measured
+  on ten frames captured over Euterpe:
+
+  | | fixes | with ground height |
+  |---|---|---|
+  | global threshold ladder | 1/10 | 0/10 |
+  | local contrast | 8/10 | 6/10 |
+
+  The ladder is kept, now over `contrast_cuts`: local contrast is not
+  unconditional, and a glaring background still needs a lower cut.
+- **Decimal points vanish**: `-261592703280` is `-261592.703280`. Coordinates
+  always carry six decimals, and nine digits exceeds the largest body radius,
+  so a long digit run with no point is unambiguous.
+- **Zeros read as 6 and 8.** The `Radius` row is the worst affected — one
+  session produced 13 different values for a true 1,000,000.
+
+  **For a body in `BODY_RADII`, the table decides and the reading is ignored.**
+  Voting on noise only picks the least bad of several wrong answers: a session
+  on Euterpe settled on 213,601 m against a true 213,000 m and carried that
+  601 m error into every height. The table is exact; the reading never is.
+
+  The table value is applied whether or not the position agrees with it, so the
+  plausibility gate judges each fix against the body's real size. Conditioning
+  it on agreement left an unreadable `Radius` row falling back to
+  `default_radius`, whose window spans 100 km–50,000 km — which is how a fix
+  4,000 km from Clio was once accepted and saved as a waypoint.
+
+  **The table can itself be wrong, and the heights can say so.** Crusader's
+  entry reads 7,450,000 m where the HUD prints 7,450,010 m, and the HUD's own
+  height values satisfy the identity exactly against 7,450,010 and miss by
+  exactly 10 m against the table. Ten metres on a 7,450 km body is nothing to
+  navigate by and everything to the identity check, so making the table
+  authoritative silently threw away every height reading on Crusader.
+
+  So where the two height values agree with the frame's radius and disagree
+  with the table's, **the reading wins** — that is evidence, where preferring
+  the table is assumption. A frame that cannot tell them apart leaves the
+  table in charge, which is what guards against the noisy readings the table
+  was introduced for.
+
+  For a body the table does not know, the old rule still applies: readings that
+  the position contradicts are dropped, then the roundest wins (game radii are
+  round numbers; OCR noise destroys roundness). Readings are collected for
+  known bodies too, since they are the only source if a table entry is ever
+  distrusted.
+- **Colons read as `i`, `l`, `1`, `;`, `.`** — `Planet:nyx1` became
+  `Planetinyxl`.
+- **Letters read as digits**: `S0` repairs to `50` and would shift every later
+  coordinate, so a number must be ≥3 chars and fill most of its token.
+- **Rows fail independently.** The `Planet:` row is not the `CamPos` row and
+  need not survive the same threshold, so a frame can carry a perfect position
+  and no body name at all. That parses as `"unknown"`, which is not a body.
+
+  Worse, the name itself OCRs badly. The repair table catches `nyxl` and
+  `micr0Tech`, but not `microTecn` or `rnicroTech` — and each unrepaired
+  variant is a *different body* to anything that filters by body.
+
+  Both emptied the waypoint panel whenever the view changed in flight, and a
+  save during one of those frames would have been filed under a body that does
+  not exist. So **a new body name must repeat for `PLANET_SWITCH_FRAMES`
+  frames before it is believed**: a garbled name rarely repeats identically, a
+  real body change always does. Keeping the old body also keeps its agreed
+  radius, and with it the height, instead of dropping to `default_radius`.
+
+  Confirmed in the wild — a live session logged `planet row unread - keeping
+  clio` while the threshold ladder was churning between 150, 120 and 190.
+
+  **Keeping the body means keeping its radius too.** A name that does not
+  resolve makes `parse_readout` fall back to `default_radius` and mark it
+  unknown — and an unknown radius widens `plausible` from 0.9x–5x the body to
+  100 km–50,000 km. Restoring the name without the radius therefore let
+  through exactly the readings that gate exists to reject: a fix 2,712 km from
+  Clio's centre was saved as though a 1,000,000 m body made it reasonable,
+  giving a waypoint with a 1.7 million metre height. Only the fallback is
+  replaced, never a radius actually read from the HUD — the Radius row is
+  independent of the Planet row and is often right when the name is not.
+
+  Both faults reached the saved file before they were noticed, which is the
+  real lesson: a bad frame does not announce itself, it just writes a waypoint
+  that looks ordinary until the numbers are read. `h` far outside a few
+  thousand metres, or a `planet` that is not a real body, are the tells.
+
+## Hotkeys do not work, and will not
+
+Star Citizen (Easy Anti-Cheat) blocks other processes from receiving keyboard
+input while it has focus. Tested exhaustively:
+
+| approach | result |
+|---|---|
+| pynput keyboard hook | blocked |
+| `GetAsyncKeyState` polling | blocked while game focused |
+| `RegisterHotKey`, normal | registers, never delivers |
+| `RegisterHotKey`, elevated | registers, never delivers |
+
+Confirmed not to be a keyboard or key-code problem: with the game focused, no
+key is seen; with any other window focused, every key reads correctly. The
+whole chain (register → real keystroke → handler) works outside the game.
+
+**Do not pursue this further.** Defeating the anti-cheat input block is both
+fragile and not worth doing. Use the pin.
+
+Reasonable objection, raised more than once: the NVIDIA overlay answers
+`ALT+Z` while the game is focused, so the block is clearly not absolute. It is
+not — NVIDIA ships a kernel-mode component and is explicitly allowlisted by the
+anti-cheat vendors. Nothing a user-mode Python process can do reaches that
+position, and all four approaches above were user-mode.
+
+The bindings are still configured and registered, as a best effort: they work
+whenever the game does *not* have focus, which covers most waypoint admin.
+`panel` defaults to `<alt>+7` rather than `<alt>+8` only to avoid colliding
+with the `save` binding already in `locator_config.json`; two actions on one
+combo silently collapse into whichever registers last, so that case is now
+logged.
+
+## Heights are only trusted when the HUD contradicts itself nowhere
+
+The `Radius:` row also carries `ElevationUnderCam` (terrain height over the
+reference sphere) and `Altitude` (height over that terrain). Height over
+*terrain* is the useful one in flight: landed on Nyx, the HUD reads 407.6 m
+over the sphere and 13.7 m over the ground.
+
+Unlike `Radius`, neither has a roundness heuristic or a lookup table to fall
+back on, so there is no way to tell a good reading from a mangled one in
+isolation. The identity is the whole defence:
+
+```
+|CamPos| - Radius == ElevationUnderCam + Altitude      (exact in game)
+```
+
+Both are parsed, the sum is checked against the position, and **both are
+dropped if it fails** — a 0 read as a 6 breaks it by hundreds of metres. A
+failed check never rejects the fix itself, only the heights, and logs once.
+
+**A failed check refuses a save, though.** Dropping only the heights assumes
+the heights are the mangled half, and nothing in the identity says which side
+is wrong. At Everus Harbor it was the other side: the heights read 147.8 km
+over the sphere on frame after frame while `CamPos` came back 822 km, then
+1,030 km, then 107 km, and the save took the position at 1,030 km — a waypoint
+117 km from the station, labelled `sphere` and otherwise indistinguishable from
+a good one. The live readout can afford a wrong frame because the next one
+replaces it; a waypoint is a durable record, so `save_waypoint` now refuses
+while the last frame's heights contradict the position, and says so. The cost
+is pressing save again a second later.
+
+The refusal follows the **latest** frame rather than `HEIGHT_HOLD_SECONDS`.
+The hold exists so the displayed line does not flicker, and a held height is
+evidence about the frame it came from, not about this one — accepting a save on
+a held height is exactly the hole this closes, because the position garbles
+frame by frame while the heights sit still.
+
+It is still evidence rather than a requirement: heights that do not parse at
+all contradict nothing, and a save with no heights goes through as before.
+Deep space and any body whose rows will not read have to stay markable.
+
+**Height over the reference sphere is not a number a player can use.** A hangar
+standing on the ground at microTech reads 1,771 m. So a save records the
+terrain's own elevation and how far above it you were, and `list` reports those
+instead — "on the ground", or "air 820 m" for one taken in flight. Waypoints
+saved before this fall back to the old figure, labelled `sphere` so it is not
+mistaken for a height above ground.
+
+They are recorded only when the identity below held. A waypoint with no height
+is better than one with an invented height.
+
+**Lead with height above the ground, not with the ground's own elevation.**
+`ElevationUnderCam` is the terrain *below* you, which is beside the point once
+you are any distance up: 900 km out from Calliope it reads 55 m while your
+altitude reads 955 km, and a line that led with the 55 m put the wrong number
+in front of the reader.
+
+**Hold a believed height for a few seconds.** The identity check fails on some
+frames and passes on others, and dropping the heights the instant one failed
+made the line alternate between two different quantities several times a
+second — "55 m" one frame, "955 km over reference sphere" the next — which
+reads as the altitude itself jumping about. Holding for `HEIGHT_HOLD_SECONDS`
+rides out the failures, and because both forms of the line now lead with the
+same quantity, the fallback differs by metres rather than by a factor of
+17,000.
+
+**A large altitude is not a mistake.** Stations in low orbit, asteroid bases
+and other structures are ordinary places to mark -- Port Thresler sits 124 km
+above microTech -- so the height is reported plainly rather than flagged. An
+earlier wording called anything over 25 m "air", which read as a warning about
+a reading that was in fact correct.
+
+Deep space proper is a different matter: see "Still open".
+
+Heights need a shorter dropped-decimal rule than coordinates. They carry the
+same six decimals but are far smaller, so an altitude under 10 m leaves only
+seven digits once the point vanishes (`13710187` is `13.710187`) and never
+trips the nine-digit coordinate rule.
+
+**Match labels on the part that survives, not the whole word.** The outer
+letters are the ones that go. One session produced `ElevaticnUnderCam`,
+`ElevaticnUndegCam`, `Glevationundercan:.` and `ElevationUnderGam:` — E read as
+G, C as G, m as n, and in seven frames of ten the *o* of "Elevation" as a c.
+Pinned to the full label, elevation went unread on every frame, so the live
+readout showed no ground height at all while `Altitude` was sitting there
+legible. The anchor is now just `levat`, which survived all of them.
+
+The same applies to `Radius`. Its digits garble into `Zi3666.G6G6G@`, so
+`find_region` corroborates that row by its label rather than by a parseable
+number — demanding a number meant it located nothing. Quoted HUD text in a chat
+window carries no Radius row at all, so the label alone still rules it out.
+
+Reach the number over `[^\d]` rather than a class of plausible separators.
+
+Watch the separator class when matching these labels. A colon also OCRs as
+`1`, so a pattern that allows whitespace *before* the separator lets the class
+eat the value's first digit: `Altitude 13.710187` silently reads as `3.710187`.
+A real colon sits flush against its label, so match it there and nowhere else.
+
+## Do not OCR when the game is not running
+
+Each miss costs one Tesseract process **per threshold in the ladder**, not one
+per tick — four, by default. One idle session logged 2,365 misses, so roughly
+9,500 Tesseract processes against an empty desktop. That churn is the likeliest
+cause of the heap corruption (`0xC0000374`) Tesseract was seen dying of.
+
+So the capture loop looks for `starcitizen.exe` first and skips the grab
+entirely when it is absent, polling at `idle_interval` instead. Verified
+against a live process list.
+
+This fails **soft** on purpose: an unreadable process list returns "cannot
+tell", which is treated as running. Only an explicit "not running" idles the
+loop, so a detection fault can never stop the program working — it can only
+make it slower.
+
+The status it produces is worth having on its own. "No game" and "game up but
+no HUD" used to look identical; only the second one is something you can act
+on.
+
+## Star systems
+
+The HUD does name the system, but not where you would expect. The planet zone
+row is written `Zone: OOC_Stanton_4c_Euterpe` ("OOC" is Object Container), and
+"Stanton" survived OCR in every frame of a ten-frame sample. The `Planet:` row
+carries the same name and returned "Stanten" every single time, o read as e --
+so the row already being parsed is the wrong one to take it from.
+
+Two rows that look promising are not:
+
+- `Zone: SolarSystem_871500387367` is an instance id, not a name, and it
+  differs between sessions. Useless for identifying a system.
+- `Current player location : FOB Abandoned Stanton4c FOB2` has the system in
+  it, but its label garbles badly ("logatiogy", "locazion").
+
+And it is not always there at all: Nyx prints `Zone: nyx1`, with no system
+anywhere on the row.
+
+So **the body-to-system table is primary and the zone row is the fallback**,
+for bodies added in later patches rather than for the ones already listed.
+Every body in `BODY_RADII` has an entry, which a test enforces. Waypoints saved
+before systems existed are given one on load, by table lookup on their body; a
+body the table does not know is left without one rather than filed under a
+system it may not be in.
+
+## A body's zone reaches a very long way
+
+`plausible` used to require a position within five radii of the body, and an
+unread radius widened that only to 50 Gm. Both were guesses about how far a
+zone extends and both were wrong by orders of magnitude: a real reading
+**55.85 Gm from Crusader** — whose own height values agreed with it to 0.000 m
+— was thrown away, leaving no fix at all across a vast stretch of space.
+
+That cuts both ways, and the other side needs its own answer: if a zone
+reaches that far, then being inside one says almost nothing about where you
+are. "stanton, crusader" is a useless thing to print at 55 Gm.
+
+So there is a **space line**, `space_line_m`, 100 km over the reference sphere
+by default -- the Karman line idea, an arbitrary height that makes the answer
+useful. Above it the readout says `In Space near <body>` instead of naming the
+body as your location. The nearest body is still named, because whose zone you
+are in is the only bearing available out there.
+
+It is measured over the reference sphere rather than over terrain, because the
+sphere height can be worked out on every frame; a line that moved with whether
+the HUD's height values parsed would flicker between "at the body" and "in
+space".
+
+**This line changes what is printed, not where a waypoint is saved.** A
+station in low orbit keeps its latitude, longitude, orbital marker and height,
+all of which are useful and correct there.
+
+A second line further out, `far_line_m`, *does* decide the frame a save goes
+to -- see "The planet frame turns; the system frame does not". Two lines, two
+jobs: this one is about what to call where you are, that one about which frame
+the place holds still in.
+
+There is no proximity ceiling now. The floor still says you cannot be inside
+the body, and one absolute ceiling catches magnitudes no coordinate in the
+game reaches. Readings far from a body are corroborated by the height identity
+instead, which is evidence rather than an assumption about geometry.
+
+This also corrects an earlier conclusion recorded here: a waypoint 2,712 km
+from Clio's centre was called an implausible position. It was not — that
+distance is ordinary. What was wrong was its radius, which had fallen back to
+`default_radius` because the body name did not resolve.
+
+### What stations actually sit at
+
+Measured here, not looked up: starcitizen.tools publishes no altitude for any
+of them.
+
+| place | body | over the reference sphere |
+|---|---|---|
+| Port Thresler | microTech | 124.24 km |
+| Everus Harbor | Hurston | 147.79 km |
+| Grim HEX | Yela | 373.38 km |
+
+A working guess that 100-200 km covers every station in orbit held for the
+first two and **failed on Grim HEX at 373.38 km** — 2.2 Yela radii out, because
+it sits in the asteroid ring rather than in low orbit, and the ring is where it
+is. There is no narrow band to key anything off. The 100 km line is a floor and
+nothing above it is bounded.
+
+**Grim HEX is fixed in Yela's rotating frame**, as Everus Harbor is over
+Hurston. Five saves taken while seated in a hangar, spanning 5 min 16 s:
+
+- the entire spread in `r` was **10 cm**; the largest separation between any
+  two of the five, **15 cm**
+- a non-synchronous orbit at that radius would have been unmissable — 7.2 km
+  between two saves twelve seconds apart, on a two-hour period
+
+The asteroids drift past the windows and the `Zone: Root` row changes
+continuously, while the Yela-frame position does not move at all. The reason
+is the one in the section below: Grim HEX turns with Yela, so it holds still
+in Yela's rotating frame and sweeps in the static system frame. An earlier
+note here explained it as Yela orbiting Crusader and carrying the station
+along -- that was a guess, and nothing here has measured any body orbiting
+anything.
+
+That 15 cm is also **the measured precision of the whole chain** — capture,
+OCR, parse — for an observer who is not moving, with every one of the five
+readings corroborated by the height identity. Anything under a metre is noise
+rather than movement. The terrain figure came back identical, 48.78125 m, on
+all four saves that were kept.
+
+## The planet frame turns; the system frame does not
+
+This decides which frame a waypoint belongs in, and it was found by accident.
+Two readings of the same jump point, 28 s apart, with the ship parked:
+
+| | |
+|---|---|
+| xy angle | swept 0.589 deg |
+| z | constant to 1.3 mm |
+| `r`, the distance to Crusader's centre | constant to 1.7 cm |
+
+A rotation about the spin axis turns the angle and leaves `r` and `z` alone,
+which is exactly what that is: **the planet-local frame rotates with its
+body**, at 0.02104 deg/s on Crusader -- a period of about 4.75 hours.
+
+Two conclusions, both load-bearing:
+
+**Planets do not orbit.** An orbit moves the body's centre, which would change
+`r` from a static point. It changed 17 mm in 28 s. The star map shows the same
+thing, and this is the measurement that agrees with it.
+
+**The system frame is static.** Parked at the jump point, nine readings of the
+`Zone: Root` row over 52 s: `moved 0.000 m`, every one, at the row's full
+resolution of 0.1 m. Rotation would not have given a steady value at all --
+25,542 km/s at that radius is 127,711 km per log interval against a 100 km
+lock limit, so the lock would have broken on every frame. `SYSTEM_LOG_SECONDS`
+exists to make that measurement repeatable.
+
+So the two frames differ by a pure rotation about the spin axis, and a
+waypoint is only valid in a frame where the thing it marks holds still:
+
+| what | holds still in | why |
+|---|---|---|
+| ground locations | planet frame | they *are* the body |
+| Everus Harbor, Grim HEX | planet frame | synchronous, so they turn with it |
+| jump points, Lagrange stations | system frame | they do not turn with anything |
+
+**The discriminator is co-rotation, not distance.** Distance is only a proxy
+for it, and `far_line_m` is where that proxy is drawn: everything measured
+that co-rotates is at or below 373 km, everything measured that does not is at
+or above 6.66 Gm. A save above the line goes to the system frame, which is the
+deep-space path that already existed for a ship parked between bodies.
+
+Nothing below the line changed, which is the point. The planet frame keeps the
+latitude, longitude, orbital marker and height that make a found location on a
+planet findable again, and that is the part that was tested in game and works.
+
+One more thing falls out of a centre that does not move. The jump point's `z`
+reads 20,198,394,751.8 in the system frame and 20,198,395,410.921 in
+Crusader's -- agreeing to 3 parts in 10^8, which places Crusader's centre at
+`z` within about a kilometre of zero and confirms the spin axis is parallel to
+the system frame's. The xy half needs two readings at different spin phases,
+and would eventually allow converting a waypoint from one frame to the other.
+
+## Orbital markers
+
+The six OMs sit at the same points over every body, so which one is nearest a
+waypoint is **geometry, not something to read or store**:
+
+| marker | where |
+|---|---|
+| OM-1 / OM-2 | north pole / south pole |
+| OM-5 / OM-3 / OM-6 / OM-4 | equator at longitude 0, +90, 180, -90 |
+
+That matches the frame `to_latlon` already reports in — latitude `asin(z/r)`,
+longitude `atan2(y, x)` — so the nearest marker falls out of coordinates every
+waypoint already has. Computing it rather than storing it means waypoints saved
+before this existed have one too, and it can never go stale against the file.
+
+It is shown **with or without a fix**, because it is a property of the target
+rather than a reading: deciding which OM to jump to is exactly what you do from
+orbit, before any position is available. The distance beside it is how far is
+left over the ground after dropping from that marker, which is the part that
+decides whether the choice was right.
+
+## The overlay
+
+Star Citizen must be in **Borderless Window**; nothing can draw over exclusive
+fullscreen.
+
+It lives in the **bottom-right** corner, for two reasons: the game shows little
+there, and the capture region is top-right — an overlay inside it reads its own
+text back as a fix.
+
+Collapsed it is just a status pin:
+
+| colour | meaning |
+|---|---|
+| grey | game not running |
+| amber | game up, no HUD — press `~`, then `r_DisplayInfo 2` |
+| green | fix live |
+| amber | fix going stale |
+| red | capture error |
+
+- **Left-click the pin saves.** It is the one thing worth doing without opening
+  anything, and it keeps working mid-flight.
+- **Right-click opens the panel**, for naming, retargeting, renaming and
+  deleting. Right-click again, or CLOSE, collapses it.
+- Collapsed there is no room for a readout, so the result of a save appears
+  beside the pin for a few seconds. Without it a click gives no sign of whether
+  it worked, and that silence has cost whole debugging rounds.
+
+Things that are easy to get wrong here, all found the hard way:
+
+- Buttons must fire on **press, not release**, and not through `command`. A Tk
+  button only fires once it sees press *and* release inside the widget, and
+  over a fullscreen game the release goes astray: the press lands and the
+  button never fires.
+- The window background is set transparent while collapsed, which on Windows
+  also makes those pixels click-through — so the pin floats with no card
+  behind it and the space around it still belongs to the game. **Nothing
+  inside the pin may be painted in that transparent colour.** The pin's inner
+  hole was, which put a click-through hole in the exact middle of the pin, and
+  clicks on its centre passed straight to the game.
+- The window is **anchored by its corner, not its top-left**. Tk grows a window
+  right and down, so a readout one line longer walks the panel off the right of
+  the screen unless the anchored corner is reapplied on every resize.
+- **The panel must not resize at all.** A Tk `Label` sizes itself to its text,
+  so the readout gaining a line when a target is set, or widening when a
+  distance grows a digit, resized the whole window under the user — jarring,
+  and it happened on ordinary frames. The readout now has a fixed box
+  (`READOUT_COLS` × `READOUT_ROWS`) that the longest output it can produce
+  still fits, and the status line has a fixed height. Tk clips silently, so a
+  test asserts the worst case fits rather than trusting it. The panel now holds
+  one geometry across a live session.
+- The readout leaves out its own status and flash lines inside the panel: the
+  panel has a line for both, and repeating them there changed its height frame
+  to frame. Console mode still shows them.
+- An empty waypoint list looks exactly like a fault, which is how filtering it
+  to the current body was reported. The panel now lists **every** waypoint,
+  grouped under `system / body`, with the body you are on first.
+- Distance and bearing are shown only for the body you are on. Coordinates are
+  planet-local, so a distance to a waypoint on another moon is not merely
+  unhelpful, it is not computable; those rows show `--`.
+- The readout leads with **where you are**, in the order it is wanted:
+
+  ```
+  Current location: stanton, euterpe
+  Status: fix live
+  FOB Abandoned Stanton4c FOB2
+  LAT   -0.835
+  LON +119.609
+  H   457 m ground / 7.8 m up
+  ```
+
+  A stale fix is reported on the status line rather than as a marker on the
+  location: the location is where you are, not how fresh the reading of it is.
+  The status line is the only place the overlay explains itself now, so every
+  health it can report has a caption and a test fails if one does not.
+
+  The third line is the game's own `Current player location` row. Its label
+  garbles every time ("logatiogy", "logation", "locazion"), so the match
+  anchors on "player" and skips the next word whole.
+
+  The value is not clean either, which only showed up once it was on screen
+  for a while: **twelve frames of one unmoving location produced six different
+  strings** — "NewBabbage" read as "KewBabbage" and "RewBabbage", "LZ" as
+  "12", one reading as "Heyfphhrge", one with a stray leading ";". The line
+  flickered between misreadings of a name that had not changed.
+
+  Two things fix it. The row says the name twice, the second time in brackets
+  (`Stanton4 NewBabbage (LZ : Stanton4 NewBabbage)`); only the first is kept,
+  which halves the text that can garble and collapsed four of those six
+  readings into one. And a new name must repeat before it replaces the one on
+  screen, the same rule the body name uses — a garbled name rarely repeats
+  identically, a real move always does. Two frames rather than three, because
+  moving between places is far more common than moving between bodies.
+- **"In Space" is only said when it is true.** Between bodies and "you forgot
+  `r_DisplayInfo 2`" both produce no fix and used to look identical. Two or
+  more debug-HUD-only rows being readable means the HUD is up, so no position
+  means no body in range; otherwise the HUD is off and it says so. The old
+  no-fix message sent you to `calibrate`, which is almost never the reason.
+- The readout is two blocks with a rule between them, and another rule before
+  the waypoint list: where you are, where you are going, what you have saved.
+  Each block has its own fixed size (`LOCATION_ROWS`, `TARGET_ROWS`), for the
+  same reason the whole readout did — a block that grows a line resizes the
+  window.
+- The target block is **never empty**. It has a fixed height and a rule above
+  it either way, so returning nothing left a gap that read as a fault rather
+  than as nothing to show. Without a position it names the target anyway: the
+  target is not a reading and outlives the fix.
+- **TARGET is a toggle**, and its label says which way it will go — it reads
+  UNTARGET when the selected waypoint is already the target. Untargeting is
+  the same thought as targeting and the panel has enough buttons; the label
+  is what stops the gesture being hidden. The button is sized for the longer
+  word so swapping it cannot resize anything.
+- Group headings are lines in the same Listbox, so selection has to skip them:
+  a heading is recorded with no name, and acting on one does nothing. The list
+  is longer than the waypoint count now, hence the scrollbar — without one
+  there is no sign that anything is below the fold.
+- **The game only shows a mouse cursor while `F` is held**, which is a game
+  default and cannot be changed. So every click on the overlay arrives with F
+  down, and the click moves focus here — which sends those held keystrokes
+  into whatever Tk widget has focus. Three consequences, all found in game:
+  - A quick save that read the name field named a waypoint
+    `fffffffffffffffff` (plus a trailing backtick, the console key). The pin
+    therefore **auto-names and never reads the field**; the panel is where a
+    name is chosen deliberately.
+  - No text widget may hold focus by default. The panel opens with focus on
+    the list, not the name field, or it fills with f's before it is wanted.
+  - Backspace is not reliably available either, since clearing the field means
+    holding F, which refills it. Hence the `X` button beside the field: it has
+    to be possible to clear it with the mouse alone.
+- Typing a name needs keyboard focus, and taking it takes focus off the game.
+  The panel is therefore for when you are parked or alt-tabbed; the pin is what
+  works in flight. Once the panel is open the game no longer has focus, so F
+  should no longer be needed to keep the cursor — release it before typing.
+- The cursor must be free to click at all (alt-tab, or release it in game).
+
+Editing waypoints from the panel rather than the CLI also fixes a real bug:
+a running overlay holds the list in memory and rewrites the whole file on every
+save, so a CLI rename during a session was silently discarded. Both now go
+through the same `add` / `rename` / `delete` helpers.
+
+## Only one overlay at a time
+
+Two copies ruin each other quietly, and neither symptom points at the cause:
+
+- The second gets **no hotkeys at all** — `registered 0 hotkeys, 4 refused` —
+  because Windows refuses a combo another process already holds.
+- Both draw in the same corner, so the readout **ghosts**: two sets of text on
+  top of each other, which reads as a rendering fault rather than two windows.
+
+A forgotten instance from an earlier test cost a round of confused screenshots
+before the process list was checked. `run` now claims a named mutex and exits
+with an explanation if it cannot; `--allow-multiple` overrides it. The claim is
+held in a module global for the life of the process, because a mutex handle
+releases when the last reference to it goes.
+
+It fails open: if the claim cannot be made or tested, the answer is yes. A
+second overlay is a nuisance; refusing to start at all is worse. Only `run`
+claims — editing waypoints from the command line while the overlay is up stays
+possible.
+
+## Backups
+
+`save_json` keeps the last `BACKUP_KEEP` versions of each file in `bak/`,
+timestamped. Thirty, not ten: ten is one session's worth of saves, and a run
+of the test suite once consumed almost the whole rotation.
+One overwritten `.bak` gave a single chance to notice a bad write — which was
+spent, twice, during development; the second time the rotation was what got the
+waypoints back.
+
+Two details matter and both were bugs first. The counter must be zero-padded,
+or `-10` sorts before `-2` and pruning drops the wrong versions. And it must be
+one past the **highest** in use, never the lowest free slot: pruning empties the
+early numbers, and reusing one makes the newest backup sort as the oldest and be
+deleted on the very next save.
+
+## The tests must never touch the real data
+
+`save_waypoint` writes to disk, so a test module that loads `sc_locator` and
+calls it overwrites `waypoints.json`. This happened **three times** during
+development. The third time only one backup in the rotation still held the
+full set, and the next save would have taken it.
+
+Two of the four test modules redirected `WAYPOINT_FILE` themselves and two did
+not, which is exactly the kind of thing that gets forgotten when a file is
+added — the module that destroyed the data had never written to disk until a
+new test in it happened to call `save_waypoint`.
+
+So every test module now imports `scl` from `tests/_harness.py`, which loads
+the program and points `WAYPOINT_FILE`, `CONFIG_FILE` and `BACKUP_DIR` at a
+temporary directory. The harness then **refuses to run at all** if any of them
+still resolves inside the project. A test that cannot run is a nuisance; a
+test that quietly eats the data is not.
+
+## Debugging
+
+`run --log FILE` records state transitions, clicks, key events and save
+outcomes. Added because silence was ambiguous: "never worked" and "nothing
+happening" produced identical output more than once, each time costing a
+round-trip. Any new failure path should log on its first occurrence, not only
+on transition from a working state.
+
+A click that lands beside a button is logged with its widget, so it is
+distinguishable from one that never reached the window at all.
+
+## Deep space
+
+Planet-local coordinates exist only inside a body's zone, so a ship parked
+between bodies could not be marked at all. The HUD prints a system-frame
+position on two rows:
+
+```
+Zone: SolarSystem_871500387367 Pos: 22487898.6236km 37081092.2270km -4126.10m
+Zone: Root Pos: 22487898.6236km 37081092.2270km -4126.10m
+```
+
+The units differ **within one row**, and not consistently: the third value was
+metres near Euterpe and kilometres further out. So the suffix has to be read
+per value rather than once for the row.
+
+Two more things this row does, both found in flight rather than in the first
+sample:
+
+- **The values run together and the minus goes with the separator.** The same
+  negative value was captured as `km-~73.0260km`, `km-+73.5125km` and
+  `km--74.9744km`. Reading the sign from one character lost it and turned -73
+  into +73 — which then made the two rows look like they disagreed, so the
+  frame was thrown away. Reading it from the whole run before the digits took
+  the parse rate from 4 frames in 14 to 8.
+- **`Pos` reads as `Pas`**, often enough that the row pattern has to allow it.
+
+### The two rows are not a cross-check
+
+They look like free corroboration and are not. They are the same glyphs in the
+same font, so they garble the same way. Across ten captured frames:
+
+| | |
+|---|---|
+| rows agreed | 2 of 10 |
+| frame00 | both read `37681092`, true value `37081092` — identical and wrong |
+| frame07 | both read a truncated `4177km` |
+
+Both agreements were on wrong values. A gate built on them would have passed
+exactly the bad frames and rejected the good ones. Agreement is therefore used
+only to **reject** a frame where the rows differ; it is never taken as evidence
+that a reading is right.
+
+### Time is the check that works
+
+The true value moved smoothly — `37081092 → ...091 → ...090 → ...089` — while
+a misread digit jumps 600,000 km. So a reading is believed only once it is
+consistent with one already believed, and from nothing it takes
+`SYSTEM_RELOCK_FRAMES` agreeing frames. Three, not two: one digit can be
+misread the same way twice running, and a pair of matching errors is
+indistinguishable from a pair of truths.
+
+`SYSTEM_LOCK_KM` has to be tight. Measured flight ran about 2.4 km per frame,
+and a first guess of 2,000 km let through a frame whose third value read
++882 km among neighbours at -77 km, putting the position 960 km out. At 100 km
+that frame is rejected and ordinary flight still passes with forty times the
+margin.
+
+Quantum travel outruns the limit and drops the lock, which is correct — the
+position is re-acquired once enough frames agree again.
+
+Marking a point additionally requires the position to have held still, because
+out there nothing else can contradict it: there is no radius, no terrain height
+and no round number to check against, unlike every planet-local reading.
+
+### What a deep-space waypoint has
+
+No latitude, longitude, orbital marker or bearing — there is no surface to
+measure over and no north to bear from. Only a straight-line distance, which
+is what flying back to a ship needs. Distances run to tens of millions of km,
+so `fmt_dist` carries the units the game itself uses out there: m, km, Mm, Gm.
+
+The megametre tier came later, from the readings in between. Without it
+everything from a Crusader mining base to a Lagrange station printed as five-
+and six-digit kilometres -- `61,910.59 km`, which reads as noise where
+`61.91 Mm` reads as a distance. The suffixes follow the HUD's own casing, as it
+prints them on its position rows (`Pos: 22487898.6236km`).
+
+## Body analysis
+
+Landed on a body you turn with it, so the planet-frame position holds still
+while the **system-frame** position sweeps a circle about the spin axis at
+exactly the body's rotation rate. The ANALYSE button samples that position and
+fits the circle. One landing gives:
+
+- the rate and period, and the spin axis (the circle's plane)
+- the body's centre in system coordinates: the circle's centre, moved along the
+  axis by the ship's height above the equator, which the planet-frame position
+  supplies
+- the sun's declination and one phase anchor (the longitude the star was over at
+  a known moment), which is all it takes to place the sun anywhere on the body
+  at any time -- so a body is analysed once
+- the radius and diameter, from the HUD's own `Radius` row
+
+The maths is in `spin_analysis.py` and touches no I/O. Results are written to
+`bodies.json`, one record per body, with a record kept if a later run says
+nothing.
+
+**What it assumes, and how each is checked.** The star is at the system
+frame's origin (confirmed by the user, 2026-10-05). The planet frame's `+z` is
+the spin axis and the body turns counter-clockwise about it: true of Crusader
+and now of Hurston, but a mirror-image body fits the same circle, so a single
+landing cannot test it. The centre the assumption implies is compared with the
+system plane instead -- bodies measured sit on it to within a kilometre -- and
+the report says so when it is far off. Planets do not orbit, so the star's
+direction is fixed and a solar day is exactly one rotation.
+
+**What the mirror ambiguity costs.** It puts the centre on one side of the
+circle's plane or the other, about twice the ship's height above the equator
+apart. The star is so far away that this barely moves the sun: on the Hurston
+run the two candidates differ by 0.0045 deg in declination and 0.06 s in the
+time of sunset. So the sunset and sunrise at the analysed site are good
+whichever is right, and the assumption matters for the centre's coordinates
+(a Lagrange point's name would need them). It also fixes which way longitude
+runs against the rotation, which matters only when the record is used at a
+different longitude from the one analysed -- at the analysed site it cancels.
+A second landing at a different latitude settles the first, and one at a
+different longitude the second, with no assumption at all.
+
+**Sunset is the sun's centre crossing the horizon.** What you see is the upper
+edge touching it, which comes earlier by the sun's angular radius. That is
+degrees at these distances, so a minute or more, and the star's size is not
+known, so it is not corrected for.
+
+**It was checked against a real run before it was built into the app.** The
+sixteen system positions logged while parked at Everus Harbor on 2026-10-05
+give Hurston a 2.51 h period (+/-2% from 94 s), a spin axis of exactly the
+system `z`, a centre at `y` 7 m, `z` -14.5 m, and a fitted circle radius within
+7 m of the 1,035,726 m the planet-frame `x`, `y` give. That agreement is the
+independent check the program makes on every run: if the circle is not the right
+size for the body's own coordinates, the motion is not a plain spin and the
+result is `moving`, not `rotating`.
+
+**Four outcomes.** `rotating`; `static` (nothing moved by a metre in two
+minutes, so no spin to find -- a body that does not turn keeps one face to the
+star); `moving` (the circle is the wrong size, so probably an orbit as well);
+and inconclusive, which writes nothing.
+
+**Why it is quick.** The system position resolves to 0.1 m and the arc grows
+with the ship's distance from the axis, so a few seconds is enough to see the
+circle. What limits the rate is the timestamp, not the position: an OCR cycle's
+latency jitters by a few tenths of a second, which is a metre-scale error along
+the arc but none across it. So the circle is fitted on position alone and the
+rate regressed on time, and it stops when the rate's standard error reaches 1%.
+
+**Misread digits.** The settling that admits a system position only refuses
+jumps over 100 km, so a digit misread in the middle of the number gets through
+and drags a least-squares circle. The first pass is therefore a consensus fit
+(circles through triples spread across the run, keeping the one most readings
+sit on), then the ordinary fit on those, then one more rejection by residual.
+
+### First runs through the button (Hurston, 2026-10-05)
+
+Hurston came out `rotating`: period 8957 s (2.49 h), rate +/-0.91%, axis exactly
+the system `z` (tilt 0.0008 deg), centre 26 m off the system plane, circle
+radius 678,354 m against 678,335 m from the planet frame. It took 19 samples
+over 152 s, not the 30 s minimum: a system position arrives only every 6-12 s,
+and lag stretches that, so 1% needs about 2 minutes. Do not press STOP -- it
+ends the run with no result.
+
+Three things went wrong on the way, all fixed:
+
+- **Stopped early, then discarded.** The run stopped on wall-clock time since
+  the button, but the result is judged on first-to-last sample. At exactly 30 s
+  the span was just under, so a run that was "precise" was thrown away as too
+  short. Stopping now waits for the samples to span `MIN_SECONDS`.
+- **The session was keyed to a misread name.** It started as
+  `gocstanton1hurstan`; the reader corrected it to `hurston` later, and samples
+  were only taken while the name matched, so none were taken at all. Samples are
+  now taken whatever the name reads, and the record is saved under the held name.
+- **Misread positions restarted the run.** The ship was parked, and the planet
+  frame `y` read 198343.348 to a fraction of a millimetre on every good frame.
+  The OCR drops digits from `x` now and then (`1804`, `48690`, `171595` for about
+  648,000), and a single reading more than 3 m away restarted the run. It now
+  takes 3 readings in a row **at the same new spot** (`STRAYS_TO_RESTART`): a
+  moved ship stays where it went, a misread lands somewhere different each time.
+
+**De-sync.** One run showed the system position frozen for 30 s (`moved 0.000 m`
+five times), then jumping 19.7 km as the game caught up. The restart that
+followed was right, since the frozen readings are stale. Nothing handles it
+beyond that; if it turns out to be common, drop the frozen readings and keep the
+good data either side rather than restarting.
+
+**Crusader (2026-10-05), from the floating platform.** `rotating`: period 18,300 s
+(5.08 h), rate +/-0.23%, axis exactly the system `z`, centre 1.9 km off the
+system plane, circle radius 5,368,792 m against 5,366,936 m from the planet
+frame (0.035%). It stopped after 30 s and 14 samples: the platform moves at
+about 1.8 km/s against Hurston's 0.5 km/s, so the arc outgrows the 0.1 m
+position resolution much sooner. That arc was only 0.6 deg, so the circle is
+fitted from a short stretch and the centre is looser than Hurston's (26 m); a
+2-minute run would tighten it. The axis is exactly `z` because every sample had
+the same `z` height, not because of a fallback. 5.08 h agrees with the Z48 saves
+(about 5.1 h) and replaces the 4.75 h from one 28 s pair, which was 7% short.
+A gas giant needs no special handling: the run uses only the ship's planet-frame
+and system positions, never the ground.
+
+**ArcCorp (2026-10-05).** `rotating`: period 11,165 s (3.10 h), rate +/-0.96%,
+axis exactly the system `z`, centre 218 m off the plane, circle radius 755,334 m
+against 755,410 m from the planet frame (0.01%). 21 samples over 69 s, no
+restarts. Stored so far: Hurston 2.49 h, Crusader 5.08 h, ArcCorp 3.10 h.
+
+**microTech (2026-10-06).** `rotating`: period 14,847 s (4.12 h), rate +/-0.18%,
+axis exactly the system `z`, centre 4 m off the plane, circle radius 680,230 m
+against 680,225 m from the planet frame (0.0006%). 10 samples over 85 s, arc
+2.06 deg, no restarts. The `Check` line did not fire, so counter-clockwise about
+`+z` holds for a fourth body. Stanton is complete: Hurston 2.49 h, Crusader
+5.08 h, ArcCorp 3.10 h, microTech 4.12 h.
+
+The system position repeated (`moved 0.000 m`) six times in the run, for 6 to
+13 s each, which cost samples (10 instead of about 14). Under `FreezeWatch`'s
+20 s threshold, so nothing was logged about them. Looks like the Root row
+refreshing in bursts, not a stuck capture, but that is not confirmed. Still
+fitted cleanly. Sunset at the site was not compared with the sky.
+
+**A frozen system position (ArcCorp, first attempt).** The position stopped
+changing 9 s after ANALYSE and read `moved 0.000 m` for over 5 minutes; the run
+hit its 5-minute limit and saved nothing. It was not called `static` because the
+two readings before the freeze still moved. A retry minutes later was clean. The
+player saw the number at the top of the screen change throughout. What the log
+shows:
+
+- No `fix lost`, `fix rejected`, planet-name garbling or contrast switching for
+  the whole freeze. Elsewhere the OCR does one of these every few seconds, so
+  perfectly clean, identical reads suggest the same pixels were read each time.
+- Two freezes in this session (Hurston 30 s, ArcCorp 5+ min) began within 9 s of
+  pressing ANALYSE, but three other presses did not freeze. Too few to call a
+  pattern; the overlay click taking focus from the game is one guess.
+- Candidate causes: the `mss` grab returning a stale frame; the Root row not
+  updating while other HUD rows do; the game throttling after a focus change.
+  Not settled.
+
+`FreezeWatch` now writes one log line when the system position repeats for 20 s:
+how many times the captured image changed meanwhile, and the Root row text the
+reader saw. Image unchanged means a stale capture or a HUD that stopped drawing;
+image changing means the row or the reader is stuck. It only logs; it does not
+stop the run or warn on screen. Read it the next time a freeze happens.
+
+**Clio (2026-10-06), a moon, and the false `moving`.** The system-frame path was
+a clean circle of 336,962 m, which is Clio's 337 km at 0.15 deg latitude, so the
+spin itself was measured. The planet-frame check gave 7,326,436 m for the same
+circle, so the two disagreed and the run was called `moving`. The planet-frame
+position was misread, and probably persistently: a parked ship's screen does not
+change, so neither does a misread digit, which is why 16 samples within 3 m of
+each other still carried it. The log showed the reader struggling throughout
+(contrast cut flipping about 15 times, garbled planet name, `heights dropped`
+with a 47,000 km height). The cause of the misread itself is not established.
+Fix: a frame is no longer sampled while the HUD's own heights contradict the
+position (`heights_conflict`, the same identity `|CamPos| - Radius == elev + alt`
+that already vetoes saves). Frames with unreadable heights still pass, since
+nothing contradicts them. Not tested against the game. The bad record was
+removed from `bodies.json`.
+
+**Clio re-run (2026-10-06, 17:41).** `rotating`: period 11,678 s (3.24 h), rate
++/-0.085%, axis exactly `z`, centre 5.9 km off the plane, circle radius 336,626 m
+against 337,006 m from the planet frame (0.11%), 18 samples over 30 s. About
+181 m/s at the equator, matching the 182 m/s drift in the earlier bad run's log,
+so that run's system-frame circle was right and only its planet-frame check was
+wrong. Labelled `moon` from the drop-down: the click works in game. It took four
+minutes with three restarts while the ship was parked, with garbled planet-frame
+positions (`pos=(288.0, 7856.0, ...)`, digits missing) and `fix rejected` lines.
+Whether the heights gate helped cannot be told: the log prints only the first
+`heights dropped` of a session.
+
+**Likely cause of the misreads: light behind the `CamPos` row.** A bright cockpit
+lamp sat behind the row at this spot. That is the bright-background failure
+above, and it fits every symptom here: the same wrong position repeating on a
+parked ship, `planet row unread`, the contrast cut flipping between values, and
+the ruined first Clio run. Not proven, since the light was only noticed
+afterwards and no second run was made with it removed. The analysis messages now
+say `hold still, look at a dark area`. Open: three agreeing off-spot readings
+count as "the ship moved", so a misread that repeats on an unchanged screen
+restarts the run with the ship parked.
+
+**Stalls in the system position.** On microTech, a second run read the system
+position only every one to two minutes (jumps of 40 km, which is correct: about
+290 m/s at 47 deg latitude). `FreezeWatch` stayed silent because it ignored
+frames where the position did not parse. It now counts those, and its line says
+how many frames were unparsed and what the Root row text looked like. Cause of
+the stall still unknown; a bright background is the suspect.
+
+### Places with no ground (2026-10-06)
+
+ANALYSE works anywhere. With no body zone, or more than `space_line_m` (100 km)
+above the body, it samples only the system position for about 60 s and stores a
+**place**, not a body: `fixed` if most readings sit within 1 m of their median
+(one wild frame does not count), otherwise `moving` with a speed and direction.
+Park or dock first: a drifting ship reads as moving.
+
+- Stored in `bodies.json` under `space <x>,<y>,<z> km` with `scope: "space"` and
+  the median position. A run within 20 km of a stored place replaces it.
+- The measurement cannot tell a jump point from a mining base from a Lagrange
+  station: all sit still. That is what the **label** is for (planet, moon,
+  orbital station, Lagrange station, jump point, mining base, PIO, other),
+  chosen from a drop-down in the analysis block and written straight into the
+  record. It survives re-analysis. It also works on planet records.
+- Whether stations move in the system frame is not known yet; the first runs
+  will say.
+- Side effect: a point more than 100 km up near a body is space now. One test
+  fixture used Everus Harbor (150 km up) as a landing site; it now raises
+  `space_line_m` for itself.
+- The game's `Current player location` text names a place but not its kind, and
+  garbles; it is not used to classify.
+- Not done: Lagrange points could be recognised from geometry (the star is at
+  the origin and four bodies' centres are stored), and moon versus planet from
+  a name table.
+
+### The panel
+
+The status line is at the top with a hairline under it; save and edit messages
+replace it briefly, and the analysis progress goes into the analysis block, which
+sits under that hairline and grows the window. The waypoint list and buttons stay
+visible. After a run the block shows KEEP / DISCARD (the result is already saved;
+KEEP only closes the block). The target block, with a compass arrow, shows only
+while a target is set. The name field appears only for RENAME. SAVE auto-names.
+Buttons are in two rows under the list, split by what they act on: waypoints
+(SAVE, TARGET, RENAME, DELETE), then below a hairline the body (ANALYSE, REPORT)
+on the left and the window (CLOSE, QUIT) on the right. The rename field opens
+above the waypoint row.
+The arrow is the same turn figure as the text, so it inherits the `HDG` problem
+below: course over ground, not facing.
+
+## Still open
+
+- `HDG` is course over ground, not facing — wrong whenever hovering, strafing
+  or reversing. Still mislabelled on the overlay.
+- `to_latlon` divides by zero on `(0,0,0)` — currently unreachable, one gate
+  change away.
+- `BODY_RADII` covers Stanton and Pyro only; Nyx is absent. Harmless, since the
+  HUD's own `Radius` wins and the table is only a fallback.
+- The panel rebuilds its waypoint list once a second to refresh distances. The
+  selection is restored by name, but a `Listbox` is the wrong widget for rows
+  that change under the user.
+- `render()` still says "readout not found - run calibrate" when the real cause
+  is usually the HUD being off. The panel's own status line says the right
+  thing; this one does not.
+- Naming a Lagrange point as `HUR-L1` needs each body's centre in system
+  coordinates. ANALYSE now measures it (see "Body analysis"), so this only
+  waits on enough bodies having been analysed.

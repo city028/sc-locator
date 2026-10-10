@@ -1,0 +1,22 @@
+# Python / build output
+__pycache__/
+*.pyc
+.venv/
+build/
+dist/
+
+# Personal data -- everyone builds their own
+waypoints.json
+locator_config.json
+stations.json
+bak/
+*.bak
+
+# Logs and calibration captures
+*.log
+calib_raw.png
+calib_processed.png
+
+# Kept local, not published
+tests/
+TODO.md
