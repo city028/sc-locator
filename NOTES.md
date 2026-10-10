@@ -261,6 +261,14 @@ window carries no Radius row at all, so the label alone still rules it out.
 
 Reach the number over `[^\d]` rather than a class of plausible separators.
 
+**Elevation can be negative; keep its minus.** Ground below the reference
+sphere -- a frozen sea on microTech, 6 m over the sphere while standing on
+the ice -- prints a negative `ElevationUnderCam`. Skipping `[^\d]` to reach
+the digits passed over the minus as if it were a separator, so -2.25 + 8.25
+read as 2.25 + 8.25 and the identity failed on every frame: no heights shown
+and every save refused. The skip is now lazy and the number may start with a
+minus. Altitude is never negative, so it is left as it was. Fixed in v1.0.1.
+
 Watch the separator class when matching these labels. A colon also OCRs as
 `1`, so a pattern that allows whitespace *before* the separator lets the class
 eat the value's first digit: `Altitude 13.710187` silently reads as `3.710187`.
@@ -669,6 +677,16 @@ on transition from a working state.
 
 A click that lands beside a button is logged with its widget, so it is
 distinguishable from one that never reached the window at all.
+
+`--log` belongs to `run`: `sc-locator.exe run --log session.log`. Placed
+before the subcommand it is taken as the command name and refused.
+
+The `.exe` reads `locator_config.json` from its own folder, not the project
+root. A build in `dist/` therefore starts with the default capture area, not
+the calibrated one: copy the calibrated `region` across (or run
+`calibrate --find --save` from the `.exe`) after building. An uncalibrated,
+wider area pulled in more HUD text and lost the `CamPos` row noticeably more
+often (2026-10-10).
 
 ## Deep space
 

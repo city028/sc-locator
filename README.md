@@ -387,6 +387,11 @@ Then look at `calib_processed.png`: the `CamPos` line should be crisp, with
 the right-hand digits not cut off. If the game is not on your primary monitor,
 set `monitor` first.
 
+**"HUD heights disagree with the position - not saved".** One of the numbers
+was misread for that frame; press save again a second later. If it happens on
+every frame where the ground is below sea level (frozen seas), update to
+v1.0.1 or later.
+
 **Nothing appears over the game.** The game must be in Borderless Window.
 
 **"sc_locator is already running".** Another copy is open, possibly hidden.
@@ -410,6 +415,7 @@ command prompt, reproduce it, and attach `session.log`.
 - Distance and bearing to a waypoint only work while you are on the same body.
 - The analysis assumes every body spins the same way as the ones measured so
   far. The report's `Check` line warns if a result disagrees.
+- On foot in very dark places the fix can drop out. Not yet tested properly.
 - It depends on the debug HUD's layout. A game patch that changes it can break
   reading until the program is updated.
 
