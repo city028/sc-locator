@@ -609,7 +609,10 @@ LOCATION_SWITCH_FRAMES = 2
 # class containing "1" swallowed the value's first digit and read
 # "Altitude 13.710187" as 3.710187; a non-digit class cannot consume a digit.
 # The bounds stop a match running past a missing value into the next number.
-_ELEV_RE = re.compile(r"[li1]ev[a@]t[^\d]{0,16}(\d[\d.]*)", re.I)
+# Elevation goes negative where the ground is below the reference sphere (a
+# frozen sea), so a minus directly before the digits is kept; the lazy skip
+# lets the minus be tried before it is passed over as a separator.
+_ELEV_RE = re.compile(r"[li1]ev[a@]t[^\d]{0,16}?(-?\d[\d.]*)", re.I)
 _ALT_RE = re.compile(r"[li1]t[li1]tude[^\d]{0,8}(\d[\d.]*)", re.I)
 
 
