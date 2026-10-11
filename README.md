@@ -97,7 +97,9 @@ ALT  -1.2 km vs you
 Next to the target block is a compass arrow pointing the way to turn.
 
 Below that is the list of every saved waypoint, grouped by `system / body`,
-with distance and bearing for the ones on the body you are on.
+as a table: `Location`, `Distance`, `HDG`, `LON`, `LAT`. Distance and bearing
+are filled in for the ones on the body you are on; LON/LAT for every waypoint
+on a body.
 
 ---
 

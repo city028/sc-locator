@@ -17,10 +17,17 @@ The HUD prints several position rows in **different reference frames**:
 | `Zone: SolarSystem… / Root Pos:` | system | km |
 | `CamPos Planet Zone:` | **planet, metres, full precision** | m |
 
-Only the `CamPos` row is usable. Reading any other silently reports a position
-in the wrong frame — the interior row would place you ~20 m from the planet
-core. The parser identifies it by carrying both "Planet" and "Zone", and
-rejects every other row.
+The `CamPos` row is the one to use. Reading the interior or system rows
+silently reports a position in the wrong frame — the interior row would place
+you ~20 m from the planet core. The parser identifies it by carrying both
+"Planet" and "Zone".
+
+**On foot the `CamPos` row can vanish** (microTech, 2026-10-11, walking out of
+a ship). The `Zone: <body> Pos:` row stays, in the same planet frame, in km to
+four places — 0.1 m, plenty for a waypoint. Its |pos| − Radius agreed with
+ElevationUnderCam + Altitude to 0.07 m. It is used only when `CamPos` is
+missing, and is told from the ship, container and system rows by its name
+matching the `Planet:` row (or the body table, if that row is unread).
 
 `Planet:` and `Radius:` rows exist and are authoritative. Verified identity:
 
@@ -479,6 +486,16 @@ decides whether the choice was right.
 
 Star Citizen must be in **Borderless Window**; nothing can draw over exclusive
 fullscreen.
+
+**Staying on top.** `-topmost` set once was not enough: switching programs could
+lose the overlay for good — another topmost window (Discord, Steam, GPU
+overlays, Task Manager) or the game's own display change landed above it, or
+Win+D minimized it, and with no taskbar button or alt-tab entry there was no
+way back. The refresh loop now re-asserts topmost four times a second and
+restores it if minimized. Restoring from minimized activates the window even
+with `SW_SHOWNOACTIVATE` and `WS_EX_NOACTIVATE`, so focus is handed straight
+back to whatever had it. Skipped while a dropdown menu is open, or the panel
+would cover its own menu.
 
 It lives in the **bottom-right** corner, for two reasons: the game shows little
 there, and the capture region is top-right — an overlay inside it reads its own

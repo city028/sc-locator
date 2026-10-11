@@ -775,6 +775,33 @@ def campos_position(line):
     return tuple(nums[:3]) if len(nums) >= 3 else None
 
 
+# On foot the HUD can drop the CamPos row altogether (seen 2026-10-11 on
+# microTech, walking), while the body's own zone row stays:
+#   Zone: OOC_Stanton_4_Microtech Pos: -681.1418km 726.1471km 98.0756km
+# Same planet-local frame as CamPos, but in km to four places: 0.1 m rather
+# than a micrometre, which is plenty for a waypoint. Its |pos| - radius agreed
+# with ElevationUnderCam + Altitude to 0.07 m on that capture.
+_ZONE_ROW_RE = re.compile(r"z[o0]ne\s*[:;]?\s*(.+?)\s+p[o0a]s\b\s*[:;]?\s*(.+)",
+                          re.I)
+
+
+def planet_zone_position(zones, planet):
+    """Planet-local metres from the body's own Zone row, else None.
+
+    `zones` is (name, values) for every Zone row. The ship, container and
+    system rows are told apart by name: only the body's row is named after the
+    body. With the Planet row unread, a name the body table knows still counts.
+    """
+    want = resolve_body(planet) or fold(planet) if planet else None
+    for name, tail in zones:
+        key = resolve_body(name) or fold(name)
+        if key == want or (want is None and resolve_body(name)):
+            values = _sys_values(tail)
+            if values:
+                return values
+    return None
+
+
 # Automatic page segmentation for the find pass. Sparse mode (psm 11) finds the
 # words but does not group them into lines, and the find pass needs whole lines
 # so it can test each one for a parseable CamPos row.
@@ -1006,9 +1033,13 @@ def parse_readout(text, default_radius):
     `default_radius`; `radius_known` is False only in that last case.
     """
     pos = planet = radius = None
+    zones = []
     for line in text.splitlines():
         if pos is None:
             pos = campos_position(line)
+        m = _ZONE_ROW_RE.search(line)
+        if m:
+            zones.append(m.groups())
         if planet is None:
             m = _PLANET_NAME_RE.search(line)
             if m and m.group(1).strip():
@@ -1017,6 +1048,8 @@ def parse_readout(text, default_radius):
             m = _RADIUS_RE.search(line)
             if m and float(m.group(1)) >= 1000.0:
                 radius = float(m.group(1))
+    if pos is None:
+        pos = planet_zone_position(zones, planet)
     if pos is None:
         return None
     # Canonical key where possible: the HUD writes the same body as "nyx1" or
@@ -2560,34 +2593,50 @@ def waypoint_groups(state):
             if w.get("frame") == "system":
                 # Measured from the system position, which exists wherever you
                 # are, so a parked ship stays reachable from a planet too.
+                # No LAT/LON: there is no body to take them on.
                 rows.append((w["name"],
                              None if sys_pos is None
                              else math.dist(sys_pos, (w["x"], w["y"], w["z"])),
-                             None))
-            elif body == here_body and pos is not None and latlon is not None:
-                tlat, tlon, _ = to_latlon(w["x"], w["y"], w["z"])
+                             None, None))
+                continue
+            # LAT/LON are the waypoint's own, so every body has them, fix or not.
+            tlat, tlon, _ = to_latlon(w["x"], w["y"], w["z"])
+            if body == here_body and pos is not None and latlon is not None:
                 rows.append((w["name"],
                              surface_distance(latlon[0], latlon[1], tlat, tlon,
                                               radius),
-                             bearing(latlon[0], latlon[1], tlat, tlon)))
+                             bearing(latlon[0], latlon[1], tlat, tlon),
+                             (tlat, tlon)))
             else:
-                rows.append((w["name"], None, None))
+                rows.append((w["name"], None, None, (tlat, tlon)))
         out.append((system, body, rows))
     out.sort(key=lambda g: (g[1] != here_body, g[0] != here_system, g[0], g[1]))
     return out
 
 
-def format_row(name, dist, brg, width=16):
+def format_row(name, dist, brg, latlon=None, width=16):
     """One waypoint as a fixed-width line for the panel's list.
 
     A deep-space waypoint has a distance but no bearing: there is no north out
-    there to take one from.
+    there to take one from. Nor does it have LON/LAT, which follow at the
+    location readout's precision when there are any. Columns as in
+    list_header.
     """
     if dist is None:
-        return f"{name[:width]:<{width}}         --"
-    if brg is None:
-        return f"{name[:width]:<{width}} {fmt_dist(dist):>9}    "
-    return f"{name[:width]:<{width}} {fmt_dist(dist):>9} {brg:03.0f}"
+        row = f"{name[:width]:<{width}}         --"
+    elif brg is None:
+        row = f"{name[:width]:<{width}} {fmt_dist(dist):>9}    "
+    else:
+        row = f"{name[:width]:<{width}} {fmt_dist(dist):>9} {brg:03.0f}"
+    if latlon is None:
+        return row
+    # Padded first: the no-fix row is shorter, and the columns must line up.
+    return f"{row:<{width + 14}}  {latlon[1]:+8.3f} {latlon[0]:+7.3f}"
+
+
+def list_header(width=16):
+    """Column titles over the list, at format_row's widths."""
+    return f"{'Location':<{width}} {'Distance':>9} HDG  {'LON':>8} {'LAT':>7}"
 
 
 def anchor_position(box, size, anchor, margin, corner=None):
@@ -2633,6 +2682,44 @@ def set_no_activate(root, on):
     style = u.GetWindowLongW(hwnd, -20)         # GWL_EXSTYLE
     u.SetWindowLongW(hwnd, -20, (style | 0x08000000) if on
                      else (style & ~0x08000000))
+
+
+def keep_on_top(root):
+    """Put the overlay back on top, and back on screen if it was minimized.
+
+    -topmost is set once, but other topmost windows (Discord, Steam and GPU
+    overlays, Task Manager) and the game's own display-mode changes on alt-tab
+    can end up above it, and Win+D minimizes it. With no taskbar button or
+    alt-tab entry there is then no way to bring it back by hand. The game
+    keeps the keyboard throughout.
+    """
+    if os.name != "nt":
+        return
+    u = ctypes.windll.user32
+    u.GetAncestor.restype = ctypes.c_void_p
+    u.GetAncestor.argtypes = [ctypes.c_void_p, ctypes.c_uint]
+    u.IsIconic.argtypes = [ctypes.c_void_p]
+    u.IsWindowVisible.argtypes = [ctypes.c_void_p]
+    u.ShowWindow.argtypes = [ctypes.c_void_p, ctypes.c_int]
+    u.SetWindowPos.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int,
+                               ctypes.c_int, ctypes.c_int, ctypes.c_int,
+                               ctypes.c_uint]
+    u.FindWindowW.restype = ctypes.c_void_p
+    # An open dropdown is a separate topmost window; raising the overlay now
+    # would put the panel over its own menu.
+    menu = u.FindWindowW("#32768", None)        # the popup-menu window class
+    if menu and u.IsWindowVisible(menu):
+        return
+    hwnd = u.GetAncestor(root.winfo_id(), 2)    # GA_ROOT: Tk's outer window
+    if u.IsIconic(hwnd) or not u.IsWindowVisible(hwnd):
+        # Restoring from minimized activates the window even with
+        # SW_SHOWNOACTIVATE and WS_EX_NOACTIVATE (tested 2026-10-11), so
+        # focus is handed straight back.
+        had_focus = foreground_handle()
+        u.ShowWindow(hwnd, 4)                   # SW_SHOWNOACTIVATE
+        give_focus_to(had_focus)
+    # HWND_TOPMOST; SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE
+    u.SetWindowPos(hwnd, ctypes.c_void_p(-1), 0, 0, 0, 0, 0x0013)
 
 
 def foreground_handle():
@@ -2808,8 +2895,14 @@ def run_overlay(state, cfg):
 
     # Grouped by body, so the list is longer than the waypoint count and a
     # scrollbar is the only sign that there is more below the fold.
+    # Column titles outside the list, so they stay put when it scrolls and
+    # cannot be selected. The two spaces match the indent on every row, and
+    # padx=11 is the list's 10 plus its 1 px border, so the text lines up.
+    tk.Label(panel, text="  " + list_header(), font=("Consolas", 10), fg=DIM,
+             bg=BG, anchor="w", padx=0, borderwidth=0).pack(
+                 fill="x", padx=11, pady=(8, 0))
     list_frame = tk.Frame(panel, bg=BG)
-    list_frame.pack(fill="both", expand=True, padx=10, pady=(8, 6))
+    list_frame.pack(fill="both", expand=True, padx=10, pady=(0, 6))
     listbox = tk.Listbox(list_frame, height=9, font=("Consolas", 10), bg=FIELD,
                          fg="#DCE6F0", selectbackground="#1d4f3a",
                          selectforeground="#FFFFFF", highlightthickness=0,
@@ -3274,6 +3367,7 @@ def run_overlay(state, cfg):
             note.config(text=analysing or (state.note if fresh else ""),
                         fg=colour if (fresh or analysing) else DIM)
         reposition_if_resized()
+        keep_on_top(root)
         root.after(250, refresh)
 
     collapsed.pack()
