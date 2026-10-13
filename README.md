@@ -27,6 +27,7 @@ game.
   - [Deep-space waypoints](#deep-space-waypoints)
   - [Body analysis: spin, sun, sunset](#body-analysis-spin-sun-sunset)
   - [Places in space and station info](#places-in-space-and-station-info)
+  - [Main window: star map, waypoints, reports](#main-window-star-map-waypoints-reports)
   - [Automatic backups](#automatic-backups)
 - [The panel, button by button](#the-panel-button-by-button)
 - [Command line](#command-line)
@@ -265,6 +266,40 @@ Use the **station** drop-down to link a station's details from the
 landing pad sizes and services (refinery, repair, refuel, clinic, shops, trade,
 habs, cargo). The station list is downloaded once a week and cached in
 `stations.json`; this is the only thing the program fetches from the internet.
+
+### Main window: star map, waypoints, reports
+
+Next to the overlay a normal window opens, with a taskbar entry. Closing it
+quits the program.
+
+- **HUD overlay** switch: hide or show the in-game pin and panel.
+- **Star map**: pick Stanton, Pyro or Nyx. The star is at the centre; planets
+  and moons are placed where ANALYSE measured them, deep-space waypoints where
+  they were saved. Drag to rotate, mouse wheel to zoom; **default view**
+  (top right) puts the view back as it started. Click a planet or moon
+  to open it: its waypoints are shown on the globe, stations at their real
+  height above it. Bodies with waypoints that have not been analysed yet are
+  listed on the left and open the same way.
+- **Around a planet**: the opened planet also shows its analysed moons and the
+  places in space near it (stations, bases), in their true direction, with the
+  real distance in the label. Distances beyond the globe are pulled in so
+  everything fits; the globe itself is to scale and turned to how it stands
+  right now, so surface waypoints sit right against the moons. Moons not yet
+  analysed are listed on the left. A deep-space waypoint is shown around the
+  nearest body within 1,000 Mm; to choose by hand, use **Shown around** in the
+  Waypoints tab (e.g. a Lagrange station that sits far from its planet).
+  Clicking a pin opens it in the Waypoints tab.
+- **View from an orbital marker**: with a planet or moon open, the **OM-1** to
+  **OM-6** buttons at the top right look down on it from above that marker, at
+  the zoom you have set (OM-1 north pole, OM-2 south pole, OM-3/OM-4 equator at
+  longitude +90/-90, OM-5/OM-6 at 0/180). The view stays over the marker as
+  the planet turns, until you drag it.
+- **Waypoints**: every waypoint in a table; rename, delete, and add a note.
+- **Reports**: every analysis result, with your own notes saved alongside it
+  in `bodies.json`. A new ANALYSE run of the same place keeps the notes.
+
+Sizes on the system map are not to scale (a planet would be smaller than a
+pixel); positions are.
 
 ### Automatic backups
 

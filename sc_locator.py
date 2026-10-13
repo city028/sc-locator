@@ -1910,6 +1910,47 @@ def delete_waypoint(wps, name):
     raise ValueError(f"no waypoint named '{name}'")
 
 
+def set_waypoint_note(wps, name, note):
+    """Set a waypoint's note in place. An empty note removes it."""
+    target = next((w for w in wps if w["name"] == name), None)
+    if target is None:
+        raise ValueError(f"no waypoint named '{name}'")
+    note = note.strip()
+    if note:
+        target["note"] = note
+    else:
+        target.pop("note", None)
+
+
+def set_waypoint_parent(wps, name, parent):
+    """Which body a deep-space waypoint is shown around on the star map.
+
+    A body key attaches it there, "none" keeps it off every body, and None
+    hands it back to distance (see starmap.attached_body).
+    """
+    target = next((w for w in wps if w["name"] == name), None)
+    if target is None:
+        raise ValueError(f"no waypoint named '{name}'")
+    if target.get("frame") != "system":
+        raise ValueError(f"'{name}' is on a body already")
+    if parent is None:
+        target.pop("parent", None)
+    else:
+        target["parent"] = parent
+
+
+def set_report_notes(bodies, key, notes):
+    """Set the notes on an analysis report in place. Empty removes them."""
+    rec = bodies.get(key)
+    if rec is None:
+        raise ValueError(f"no report for '{key}'")
+    notes = notes.strip()
+    if notes:
+        rec["notes"] = notes
+    else:
+        rec.pop("notes", None)
+
+
 def save_waypoint(state, name=None):
     with state.lock:
         if state.pos is None:
@@ -2087,7 +2128,7 @@ def finish_analysis(state, why="stopped"):
             state.log(f"analysis ended ({why}): no result")
             return None
         old = state.bodies.get(key)
-        for kept in ("label", "station"):    # a new run keeps what was named
+        for kept in ("label", "station", "notes"):  # a new run keeps these
             if old and old.get(kept):
                 record[kept] = old[kept]
         state.replaced = (key, old)
@@ -3367,14 +3408,30 @@ def run_overlay(state, cfg):
             note.config(text=analysing or (state.note if fresh else ""),
                         fg=colour if (fresh or analysing) else DIM)
         reposition_if_resized()
-        keep_on_top(root)
+        if hud["on"]:               # hidden on purpose: keep_on_top shows it
+            keep_on_top(root)
         root.after(250, refresh)
+
+    hud = {"on": True}
+
+    def set_hud(on):
+        """Show or hide the overlay; the main window's HUD switch."""
+        hud["on"] = on
+        if on:
+            root.deiconify()
+        else:
+            root.withdraw()
+        state.log(f"HUD {'on' if on else 'off'}")
 
     collapsed.pack()
     set_transparent(True)
     set_no_activate(root, True)
     reposition()
     refresh()
+    import main_window
+    # The module itself is handed over, not imported there: a second import of
+    # this file would carry its own file paths and its own copy of the data.
+    main_window.open_main(root, state, sys.modules[__name__], set_hud)
     root.mainloop()
 
 
