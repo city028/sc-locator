@@ -141,6 +141,7 @@ class StarMap:
         # and a canvas tag cannot.
         self.pins = {}
         self.marked = None      # waypoint ringed by SHOW ON MAP
+        self.backdrops, self.ramp = {}, None
         self.frame = tk.Frame(parent, bg=BG)
         self.system, self.body = starmap.SYSTEMS[0], None
         self.yaw, self.pitch, self.zoom = 0.0, math.radians(60), 1.0
@@ -421,14 +422,38 @@ class StarMap:
                              font=("Consolas", 16, "bold")),
                c.create_text(12, 36, text=hint, anchor="nw", fill=DIM,
                              font=("Consolas", 9)))
-        # A see-through box under the text, so it stays readable over a globe
-        # that fills the view. The canvas has no transparency of its own.
-        x0, y0, x1, y1 = c.bbox(*ids)
+        _, _, x1, y1 = c.bbox(*ids)
+        self.backdrop("header", (0, 0, x1 + 8, y1 + 6), ids[0])
+
+    def backdrop(self, key, box, below):
+        """A see-through box (x0, y0, x1, y1) under canvas item `below` and
+        what follows it, so text stays readable over a globe that fills the
+        view. The canvas has no transparency of its own."""
+        x0, y0, x1, y1 = (int(v) for v in box)
         rgb = tuple(int(BG[i:i + 2], 16) for i in (1, 3, 5))
-        self.header_bg = ImageTk.PhotoImage(      # Tk drops an image nothing holds
-            Image.new("RGBA", (x1 + 8, y1 + 6), rgb + (190,)))
-        c.tag_lower(c.create_image(0, 0, image=self.header_bg, anchor="nw"),
-                    ids[0])
+        self.backdrops[key] = ImageTk.PhotoImage(  # Tk drops an image nothing holds
+            Image.new("RGBA", (x1 - x0, y1 - y0), rgb + (190,)))
+        self.canvas.tag_lower(self.canvas.create_image(
+            x0, y0, image=self.backdrops[key], anchor="nw"), below)
+
+    def legend(self, lo, hi, w, h):
+        """What the surveyed tiles' colours mean, in the bottom right corner."""
+        c = self.canvas
+        if self.ramp is None:               # the same for every lo..hi
+            self.ramp = tk.PhotoImage(width=160, height=14)
+            for i in range(160):
+                self.ramp.put(heightmap.height_colour(i, 0, 159),
+                              to=(i, 0, i + 1, 14))
+        x, y = w - 172, h - 34
+        ids = (c.create_text(x, y - 4, anchor="sw", fill=FG,
+                             font=("Consolas", 9), text="ground height"),
+               c.create_image(x, y, image=self.ramp, anchor="nw"),
+               c.create_text(x, y + 16, anchor="nw", fill=DIM,
+                             font=("Consolas", 9), text=self.scl.fmt_dist(lo)),
+               c.create_text(x + 160, y + 16, anchor="ne", fill=DIM,
+                             font=("Consolas", 9), text=self.scl.fmt_dist(hi)))
+        x0, y0, _, _ = c.bbox(*ids)
+        self.backdrop("legend", (x0 - 8, y0 - 6, w, h), ids[0])
 
     def draw_system(self, objs, w, h):
         c, yaw, pitch = self.canvas, self.yaw, self.pitch
@@ -583,6 +608,8 @@ class StarMap:
         lines.append("drag to rotate  -  wheel to zoom")
         lines.append("click a pin to edit it, a moon to open it")
         self.header(f"{self.body.upper()}  ({where})", "\n".join(lines))
+        if surveyed:
+            self.legend(*self.mesh_tiles[1:], w, h)
 
 
 # ----------------------------------------------------------------------------
@@ -612,6 +639,12 @@ class HeightMapTab:
         self.pick.pack(anchor="w", pady=(0, 8))
         self.pick.bind("<<ComboboxSelected>>",
                        lambda e: self.open(self.body_var.get()))
+        tk.Label(side, text="Go to", font=MONO, fg=DIM, bg=BG).pack(anchor="w")
+        self.goto_var = tk.StringVar()
+        self.goto = ttk.Combobox(side, textvariable=self.goto_var, width=14,
+                                 state="readonly")
+        self.goto.pack(anchor="w", pady=(0, 8))
+        self.goto.bind("<<ComboboxSelected>>", lambda e: self.go_to())
         self.follow = tk.BooleanVar(value=True)
         ttk.Checkbutton(side, text="follow me", variable=self.follow,
                         command=self.draw).pack(anchor="w", pady=(0, 8))
@@ -638,10 +671,31 @@ class HeightMapTab:
         self.canvas.bind("<MouseWheel>", self.on_wheel)
 
     def open(self, body):
-        """Show `body`, around the middle of what was surveyed on it."""
+        """Show `body`, around the busiest area surveyed on it."""
         self.body = body
+        self.goto_var.set("")
+        self.goto_choices()
         with self.state.lock:
             self.centre = heightmap.centre_of(self.state.heightmap.get(body))
+        self.draw()
+
+    def goto_choices(self):
+        """The open body's waypoints, for Go to."""
+        names = [n for n, _ in starmap.body_points(snapshot(self.state)[0],
+                                                   self.body)]
+        if list(self.goto.cget("values")) != names:
+            self.goto.config(values=names)
+
+    def go_to(self):
+        """Centre on the waypoint picked in Go to. Following you would pull
+        the map straight back, so that stops."""
+        name = self.goto_var.get()
+        wps, _ = snapshot(self.state)
+        p = dict(starmap.body_points(wps, self.body)).get(name)
+        if p is None:
+            return
+        self.follow.set(False)
+        self.centre = heightmap.local_frame(p)[0]
         self.draw()
 
     def on_press(self, e):
@@ -656,6 +710,7 @@ class HeightMapTab:
         dx, dy = e.x - self.press[0], e.y - self.press[1]
         self.press = (e.x, e.y)
         self.follow.set(False)              # moved by hand: stop following
+        self.goto_var.set("")
         with self.state.lock:
             radius = self.radius()
         self.centre = heightmap.from_map(-dx * self.mpp, dy * self.mpp,
@@ -688,6 +743,7 @@ class HeightMapTab:
         if here in self.scl.BODY_RADII and here not in bodies:
             bodies.append(here)
         self.pick.config(values=bodies)
+        self.goto_choices()
         if self.body is None and bodies:
             self.body_var.set(here if here in bodies else bodies[0])
             self.open(self.body_var.get())
@@ -802,6 +858,20 @@ class WaypointEditor:
         self.frame = tk.Frame(parent, bg=BG)
         self.seen, self.loaded = None, False
 
+        bar = tk.Frame(self.frame, bg=BG)
+        bar.pack(side="top", fill="x", pady=(0, 6))
+        self.sys_var, self.body_var = tk.StringVar(value="all"),             tk.StringVar(value="all")
+        picks = []
+        for text, var in (("System", self.sys_var), ("Body", self.body_var)):
+            tk.Label(bar, text=text, font=MONO, fg=DIM, bg=BG).pack(
+                side="left", padx=(0 if not picks else 18, 6))
+            picks.append(ttk.Combobox(bar, textvariable=var, width=16,
+                                      state="readonly", values=("all",)))
+            picks[-1].pack(side="left")
+        self.sys_pick, self.body_pick = picks
+        self.sys_pick.bind("<<ComboboxSelected>>", lambda e: self.pick_system())
+        self.body_pick.bind("<<ComboboxSelected>>", lambda e: self.refresh())
+
         self.tree = ttk.Treeview(self.frame, show="headings", selectmode="browse",
                                  columns=[n for n, _ in self.COLUMNS])
         for name, width in self.COLUMNS:
@@ -851,8 +921,13 @@ class WaypointEditor:
         return sel[0] if sel else None
 
     def select(self, name):
-        """Select a waypoint and scroll to it."""
+        """Select a waypoint and scroll to it, clearing a filter that hides
+        it."""
         self.refresh()
+        if not self.tree.exists(name):
+            self.sys_var.set("all")
+            self.body_var.set("all")
+            self.refresh()
         if self.tree.exists(name):
             self.tree.selection_set(name)
             self.tree.see(name)
@@ -876,15 +951,23 @@ class WaypointEditor:
         wps, bodies = snapshot(self.state)
         placed = {sys: starmap.placed_bodies(bodies, sys)
                   for sys in starmap.SYSTEMS}
+        shown, systems, bodies = self.scl.filter_waypoints(
+            wps, self.sys_var.get(), self.body_var.get())
+        for var, names in ((self.sys_var, systems), (self.body_var, bodies)):
+            if var.get() not in names:
+                var.set("all")
         seen = (tuple((w["name"], w["planet"], w.get("note"), w.get("parent"))
                       for w in wps),
-                tuple((sys, tuple(p)) for sys, p in placed.items()))
+                tuple((sys, tuple(p)) for sys, p in placed.items()),
+                self.sys_var.get(), self.body_var.get())
         if seen == self.seen:
             return
         self.seen = seen
+        self.sys_pick.config(values=["all"] + systems)
+        self.body_pick.config(values=["all"] + bodies)
         chosen = self.selected()
         self.tree.delete(*self.tree.get_children())
-        for w in sorted(wps, key=lambda q: (q.get("system", ""), q["planet"],
+        for w in sorted(shown, key=lambda q: (q.get("system", ""), q["planet"],
                                             q["name"].lower())):
             self.tree.insert("", "end", iid=w["name"],
                              values=self.row_values(w, placed))
@@ -892,6 +975,11 @@ class WaypointEditor:
             self.tree.selection_set(chosen)
         else:
             self.on_select()
+
+    def pick_system(self):
+        """A new system: its bodies are the choices, starting from all."""
+        self.body_var.set("all")
+        self.refresh()
 
     def on_select(self, _event=None):
         name = self.selected()
@@ -1012,6 +1100,16 @@ class ReportViewer:
         self.frame = tk.Frame(parent, bg=BG)
         self.seen, self.shown = None, None
 
+        bar = tk.Frame(self.frame, bg=BG)
+        bar.pack(side="top", fill="x", pady=(0, 6))
+        tk.Label(bar, text="System", font=MONO, fg=DIM, bg=BG).pack(
+            side="left", padx=(0, 6))
+        self.sys_var = tk.StringVar(value="all")
+        self.sys_pick = ttk.Combobox(bar, textvariable=self.sys_var, width=16,
+                                     state="readonly", values=("all",))
+        self.sys_pick.pack(side="left")
+        self.sys_pick.bind("<<ComboboxSelected>>", lambda e: self.refresh())
+
         self.tree = ttk.Treeview(self.frame, show="headings", selectmode="browse",
                                  columns=("place", "system", "kind", "analysed"))
         for name, width in (("place", 300), ("system", 80), ("kind", 85),
@@ -1039,13 +1137,20 @@ class ReportViewer:
 
     def refresh(self):
         _, bodies = snapshot(self.state)
-        seen = tuple((k, v.get("analysed"), v.get("label")) for k, v in
-                     bodies.items())
+        systems = sorted({v.get("system", "?") for v in bodies.values()})
+        if self.sys_var.get() not in systems:
+            self.sys_var.set("all")
+        pick = self.sys_var.get()
+        seen = (tuple((k, v.get("analysed"), v.get("label")) for k, v in
+                      bodies.items()), pick)
         if seen != self.seen:
             self.seen = seen
+            self.sys_pick.config(values=["all"] + systems)
             chosen = self.selected()
             self.tree.delete(*self.tree.get_children())
-            for key, rec in sorted(bodies.items(), key=lambda kv: (
+            shown = {k: v for k, v in bodies.items()
+                     if pick == "all" or v.get("system", "?") == pick}
+            for key, rec in sorted(shown.items(), key=lambda kv: (
                     kv[1].get("system", ""), kv[1].get("scope") == "space",
                     kv[0])):
                 self.tree.insert("", "end", iid=key, values=(

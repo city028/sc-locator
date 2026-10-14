@@ -68,6 +68,8 @@ HEIGHTMAP_SAVE_SECONDS = 120.0
 # atmosphere stays well under it; a misread coordinate moves the fix hundreds
 # of km in a second.
 SURVEY_MAX_SPEED = 3000.0                # m/s
+# A survey starting this close to a survey waypoint does not add another.
+SURVEY_MARK_SPACING_M = 5000.0
 
 TESS_CONFIG = "--psm 6 -c preserve_interword_spaces=1"
 
@@ -1328,6 +1330,7 @@ class State:
         self.bodies = {}         # planet -> what its analysis found
         self.stations = {}       # {"fetched": time, "data": UEX records}
         self.survey = False      # recording ground heights into the height map
+        self.survey_marked = set()  # bodies this survey has put a waypoint on
         self.heightmap = {}      # body -> surveyed cells, see heightmap.py
         self.heightmap_dirty = False
         self.heightmap_saved = 0.0
@@ -1708,6 +1711,9 @@ class State:
                     heightmap.add_sample(self.heightmap, planet, radius, pos,
                                          fresh_elev)
                     self.heightmap_dirty = True
+                    if planet not in self.survey_marked:
+                        self.survey_marked.add(planet)
+                        mark_survey_start(self)
                 # Every frame, kept or not, with the raw readings: where the
                 # HUD's ground turns to noise on a climb is read off this.
                 self.log(f"survey h {r - radius:,.1f} elev {elev} alt {alt} "
@@ -1998,6 +2004,23 @@ def set_waypoint_parent(wps, name, parent):
         target["parent"] = parent
 
 
+def filter_waypoints(wps, system, body):
+    """What the waypoint list shows: (shown, systems, bodies).
+
+    `system` and `body` are a name or "all"; a name nothing carries any more
+    counts as "all". `systems` are those of every waypoint, `bodies` only those
+    in the chosen system, both sorted, for the filter's choices.
+    """
+    def sys_of(w):
+        return w.get("system", "unknown")
+
+    systems = sorted({sys_of(w) for w in wps})
+    in_sys = [w for w in wps if system not in systems or sys_of(w) == system]
+    bodies = sorted({w["planet"] for w in in_sys})
+    shown = [w for w in in_sys if body not in bodies or w["planet"] == body]
+    return shown, systems, bodies
+
+
 def set_report_notes(bodies, key, notes):
     """Set the notes on an analysis report in place. Empty removes them."""
     rec = bodies.get(key)
@@ -2285,10 +2308,42 @@ def toggle_survey(state):
     with state.lock:
         state.survey = not state.survey
         on = state.survey
+        if on:
+            state.survey_marked = set()
         state.flash("survey on" if on else "survey off")
     state.log(f"survey {'on' if on else 'off'}")
     if not on:
         save_heightmap(state, force=True)
+
+
+def survey_name(wps):
+    """First free 'survey-NNN'."""
+    existing = {w["name"] for w in wps}
+    n = 1
+    while f"survey-{n:03d}" in existing:
+        n += 1
+    return f"survey-{n:03d}"
+
+
+def mark_survey_start(state):
+    """A waypoint where a survey first recorded the ground on this body, so
+    the height map can always be found again from the waypoint list. None
+    when one is already within SURVEY_MARK_SPACING_M: a survey paused and
+    resumed would otherwise leave a cluster of them. Call with the lock held,
+    on a frame the survey kept."""
+    for w in state.waypoints:
+        if (w.get("survey") and w["planet"] == state.planet
+                and math.dist((w["x"], w["y"], w["z"]), state.pos)
+                <= SURVEY_MARK_SPACING_M):
+            return
+    name = add_waypoint(state.waypoints, state.planet, state.pos,
+                        state.radius, survey_name(state.waypoints),
+                        state.elev, state.agl, state.system)
+    # Marked, so it is still known as one after a rename or a new note.
+    state.waypoints[-1].update(survey=True, note="start of a survey")
+    save_json(WAYPOINT_FILE, state.waypoints)
+    state.flash(f"survey started: saved {name}")
+    state.log(f"saved {name} at {state.pos} on {state.planet}")
 
 
 def save_heightmap(state, force=False, now=None):

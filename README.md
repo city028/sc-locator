@@ -312,6 +312,12 @@ surveying. While it runs, the panel shows a survey block: the cells
 surveyed on this body, the height below which it records, and a reminder of
 how far apart samples land at 20, 30, 100 and 200 m/s.
 
+The first spot a survey records on a body gets a waypoint, `survey-001`,
+`survey-002` and so on, with the note "start of a survey", so every surveyed
+area can be found again from **Go to** in the Height map tab. Rename or delete
+it like any other waypoint. A survey that starts within 5 km of a survey
+waypoint, renamed or not, adds no new one.
+
 - Works in flight too: the HUD reports the ground under you, not your own
   height. Nothing is recorded more than 5 km over the reference sphere
   (`survey_max_height_m`): higher up the ground height mostly cannot be read

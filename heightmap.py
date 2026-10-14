@@ -205,23 +205,28 @@ def local_cells(rec, radius, frame, half_w, half_h):
     return out
 
 
-def centre_of(rec):
-    """Unit vector at the middle of the measured cells, or None."""
+def centre_of(rec, area_m=50_000.0):
+    """Unit vector at the middle of the busiest survey area, or None.
+
+    Cells are grouped into tiles about `area_m` across and the tile with the
+    most cells wins. The middle of all of them would be no good: two areas
+    surveyed far apart put it on empty ground between them.
+    """
     if not rec or not rec["cells"]:
         return None
     n = rec["n"]
-    s = [0.0, 0.0, 0.0]
+    m = min(n, cells_per_face(rec["radius"], area_m))
+    groups = {}
     for k in rec["cells"]:
-        p = cell_centre(*unkey(k), n)
-        for i in range(3):
-            s[i] += p[i]
-    if _dot(s, s) < 1e-18:
-        return None
-    return _unit(s)
+        face, i, j = unkey(k)
+        groups.setdefault((face, i * m // n, j * m // n), []).append(
+            cell_centre(face, i, j, n))
+    pts = max(groups.values(), key=len)
+    return _unit(tuple(sum(p[i] for p in pts) for i in range(3)))
 
 
-# Low to high: deep blue, green, yellow, brown, white.
-RAMP = ("#1F4E8C", "#3F9F5A", "#D9C65A", "#8C5A2E", "#F2F2F2")
+# Low to high: purple, green, yellow, brown, white. Not blue: the globe is.
+RAMP = ("#8A3FB5", "#3F9F5A", "#D9C65A", "#8C5A2E", "#F2F2F2")
 GREY = "#5A626B"
 
 
