@@ -27,6 +27,9 @@ GRID_LINE = "#2E343B"       # LAT/LON on the height map: darker than its grey
 MONO = ("Consolas", 10)
 
 SUN_PX, PLANET_PX, MOON_PX = 14, 9, 5
+# Seconds without a body fix before follow me counts you as in deep space:
+# long enough that a few unread frames do not flip the star map's view.
+SPACE_AFTER = 10.0
 
 
 def snapshot(state):
@@ -66,6 +69,11 @@ def open_main(root, state, scl, set_hud):
     hud_var = tk.BooleanVar(value=True)
     ttk.Checkbutton(bar, text="HUD overlay", variable=hud_var,
                     command=lambda: set_hud(hud_var.get())).pack(side="left")
+    # One switch for both maps: each keeps you in view while it is on.
+    follow = tk.BooleanVar(value=True)
+    ttk.Checkbutton(bar, text="follow me", variable=follow,
+                    command=lambda: [tab.recentre() for tab in tabs[:2]]).pack(
+        side="left", padx=(12, 0))
     status = tk.Label(bar, text="", font=MONO, fg=DIM, bg=BG, anchor="e")
     status.pack(side="right", fill="x", expand=True)
 
@@ -83,9 +91,9 @@ def open_main(root, state, scl, set_hud):
         nb.select(editor.frame)
         editor.select(name)
 
-    star = StarMap(nb, state, scl, pick_waypoint)
-    tabs = [star,
-            HeightMapTab(nb, state, scl), editor, ReportViewer(nb, state, scl)]
+    star = StarMap(nb, state, scl, pick_waypoint, follow)
+    tabs = [star, HeightMapTab(nb, state, scl, follow), editor,
+            ReportViewer(nb, state, scl)]
     for tab, title in zip(tabs, ("Star map", "Height map", "Waypoints",
                                  "Reports")):
         nb.add(tab.frame, text=title)
@@ -136,8 +144,9 @@ def set_text(widget, text):
 class StarMap:
     """One system at a time; click a body to zoom in on it and its waypoints."""
 
-    def __init__(self, parent, state, scl, on_pick):
+    def __init__(self, parent, state, scl, on_pick, follow):
         self.state, self.scl, self.on_pick = state, scl, on_pick
+        self.follow = follow
         # canvas item -> waypoint name. Not a tag: names have spaces in them,
         # and a canvas tag cannot.
         self.pins = {}
@@ -149,6 +158,10 @@ class StarMap:
         self.press, self.dragged, self.seen = None, False, None
         self.ticks = 0
         self.om = None          # (lat, lon) of the marker the view sits above
+        self.turn = (0.0, 0.0)  # (yaw, pitch) dragged away from you, following
+        # (fix time, system point) last shown for you, the fix time last
+        # judged, and how many fixes in a row were refused as misreads.
+        self.track, self.track_t, self.refused = None, None, 0
         self.mesh_key, self.mesh_tiles = None, ([], 0.0, 0.0)
 
         side = tk.Frame(self.frame, bg=BG)
@@ -216,9 +229,11 @@ class StarMap:
 
     # --- navigation ---------------------------------------------------------
 
-    def show(self, system, body, marked=None):
+    def show(self, system, body, marked=None, keep_follow=False):
+        if not keep_follow:             # moved by hand: stop following
+            self.follow.set(False)
         self.system, self.body, self.zoom, self.yaw = system, body, 1.0, 0.0
-        self.om, self.marked = None, marked
+        self.om, self.marked, self.turn = None, marked, (0.0, 0.0)
         self.system_var.set(system)
         if body is None:
             self.om_bar.place_forget()
@@ -232,8 +247,69 @@ class StarMap:
     def view_om(self, lat, lon):
         """Look down on the body from above one of its orbital markers, at
         the zoom already set. The view stays there as the body turns."""
-        self.om = (lat, lon)
+        self.follow.set(False)
+        self.om, self.turn = (lat, lon), (0.0, 0.0)
         self.draw()
+
+    def recentre(self):
+        """follow me ticked or unticked: drop any drag away from you."""
+        self.turn = (0.0, 0.0)
+        self.refresh()
+        self.draw()
+
+    def where_am_i(self):
+        """(system, body, planet-frame pos, system-frame pos) from the
+        overlay's fix; body and pos are None off a body. The last body fix is
+        kept after you leave its range, so one SPACE_AFTER old counts as
+        deep space.
+
+        The system position comes from the body fix where the body's centre
+        and spin are known: the game's own freezes for a whole quantum jump,
+        while the body fix keeps up."""
+        with self.state.lock:
+            st = self.state
+            on_body = (st.pos is not None
+                       and st.planet not in (None, "unknown")
+                       and time.time() - st.fix_time <= SPACE_AFTER)
+            # Turned as the body was when the fix was read, not as it is now.
+            sys_pos = (starmap.system_point(st.bodies.get(st.planet), st.pos,
+                                            st.fix_time) if on_body else None)
+            me = (st.system, st.planet if on_body else None,
+                  st.pos if on_body else None, st.sys_pos, st.fix_time)
+        if sys_pos is not None:
+            sys_pos = self.believe(me[4], sys_pos)
+        return me[:3] + (sys_pos or me[3],)
+
+    def believe(self, t, p):
+        """The system point to show for the fix read at t: p, unless getting
+        there from the last one would outrun light. Two refusals in a row at
+        most, in case it was the last one that was misread."""
+        if t != self.track_t:
+            self.track_t = t
+            if (self.track is not None and self.refused < 2
+                    and starmap.faster_than_light(self.track, (t, p))):
+                self.refused += 1
+            else:
+                self.track, self.refused = (t, p), 0
+        return self.track[1]
+
+    def follow_me(self, me):
+        """Keep you in view without leaving the kind of view you are on: the
+        system view shows your system, the body view your body, turned so you
+        face the viewer. In deep space the body view holds where it is. A drag
+        shifts the view from you (self.turn) and leaves it following."""
+        system, body, pos, _ = me
+        if system not in starmap.SYSTEMS:
+            return
+        if self.body is None:
+            if system != self.system:
+                self.show(system, None, keep_follow=True)
+            return
+        if body is None:
+            return
+        if body != self.body:
+            self.show(system, body, keep_follow=True)
+        self.om = starmap.facing(pos)
 
     def show_waypoint(self, name):
         """Open the view a waypoint is on, turned so it faces you."""
@@ -263,9 +339,16 @@ class StarMap:
         dx, dy = e.x - self.press[0], e.y - self.press[1]
         if abs(dx) + abs(dy) > 3:
             self.dragged = True
-            self.om = None              # turned by hand: no longer held
-        self.yaw += dx * 0.01
-        self.pitch = max(-math.pi / 2, min(math.pi / 2, self.pitch + dy * 0.01))
+        if self.follow.get() and self.om is not None:
+            # Following: turned away from you, and still turning with you.
+            self.turn = (self.turn[0] + dx * 0.01,
+                         max(-math.pi, min(math.pi, self.turn[1] + dy * 0.01)))
+        else:
+            if self.dragged:
+                self.om = None          # turned by hand: no longer held
+            self.yaw += dx * 0.01
+            self.pitch = max(-math.pi / 2,
+                             min(math.pi / 2, self.pitch + dy * 0.01))
         self.press = (e.x, e.y)
         self.draw()
 
@@ -289,11 +372,14 @@ class StarMap:
         """Redraw only when the data changed: a save from the overlay, a
         rename, a new analysis."""
         wps, bodies = snapshot(self.state)
+        me = self.where_am_i()
+        if self.follow.get():
+            self.follow_me(me)
         with self.state.lock:
             cells = heightmap.cell_count(self.state.heightmap, self.body)
         seen = (tuple((w["name"], w["planet"]) for w in wps),
                 tuple((k, tuple(v.get("centre") or ())) for k, v in bodies.items()),
-                cells)
+                cells, me)
         self.ticks += 1
         # A turning globe is redrawn now and then, to keep up with its spin.
         if seen != self.seen or (self.body and self.ticks % 5 == 0
@@ -311,6 +397,7 @@ class StarMap:
         if w < 50 or h < 50:
             return
         wps, bodies = snapshot(self.state)
+        self.me = self.where_am_i()
         objs = starmap.system_objects(bodies, wps, self.system)
         if self.body is None:
             self.fill_box(" Bodies not analysed yet ", objs["unplaced"],
@@ -417,6 +504,15 @@ class StarMap:
         for item in ids:
             self.pins[item] = name
 
+    def you(self, x, y, label=False):
+        """Where you are: the height map's cross, named when `label` is set."""
+        c = self.canvas
+        c.create_line(x - 8, y, x + 8, y, fill=ACCENT, width=2, tags="you")
+        c.create_line(x, y - 8, x, y + 8, fill=ACCENT, width=2, tags="you")
+        if label:
+            c.create_text(x + 11, y, text="YOU", anchor="w", fill=ACCENT,
+                          font=("Consolas", 9, "bold"), tags="you")
+
     def header(self, title, hint):
         c = self.canvas
         ids = (c.create_text(12, 10, text=title, anchor="nw", fill=ACCENT,
@@ -479,6 +575,10 @@ class StarMap:
                    "body", b) for b in objs["bodies"]]
         items += [(starmap.project(p, yaw, pitch, scale, cx, cy), "point", n)
                   for n, p in objs["points"]]
+        system, _, _, sys_pos = self.me
+        if system == self.system and sys_pos is not None:
+            items.append((starmap.project(sys_pos, yaw, pitch, scale, cx, cy),
+                          "you", None))
         items.sort(key=lambda it: -it[0][2])         # farthest first
         for (sx, sy, _), kind, what in items:
             if kind == "sun":
@@ -494,11 +594,16 @@ class StarMap:
                               text=what["key"].upper(),
                               anchor="s" if moon else "n", fill=PLANET[2],
                               tags=tags, font=("Consolas", 9, "bold"))
+            elif kind == "you":
+                self.you(sx, sy, label=True)
             else:
                 self.pin(sx, sy, what)
         for it in items:
             if it[1] == "body":
                 self.hand_cursor("body:" + it[2]["key"])
+        # At this scale you sit on the pixels of the body you are near, so
+        # the cross goes on top of everything or that body's dot hides it.
+        c.tag_raise("you")
         self.header(self.system.upper(),
                     "drag to rotate  -  wheel to zoom  -  click a planet or "
                     "moon to open it, a pin to edit it")
@@ -509,6 +614,9 @@ class StarMap:
         spin = starmap.spin_angle(bodies.get(self.body), time.time())
         if self.om is not None:
             self.yaw, self.pitch = starmap.view_from(*self.om, spin)
+            self.yaw += self.turn[0]
+            self.pitch = max(-math.pi / 2,
+                             min(math.pi / 2, self.pitch + self.turn[1]))
         c, yaw, pitch = self.canvas, self.yaw, self.pitch
         c.config(cursor="")
         cx, cy = w / 2, h / 2
@@ -541,6 +649,10 @@ class StarMap:
 
         items = [(starmap.project(p, own, pitch, scale, cx, cy), "pin", n, n)
                  for n, p in pts]
+        _, body, pos, _ = self.me
+        if body == self.body:
+            items.append((starmap.project(pos, own, pitch, scale, cx, cy),
+                          "you", None, None))
         for kind, key, d, q in outer:
             far = self.scl.fmt_dist(math.sqrt(sum(v * v for v in d)))
             name = key.upper() if kind == "moon" else key
@@ -569,6 +681,9 @@ class StarMap:
             (sx, sy, _), kind, key, label = item
             if kind == "pin":
                 self.pin(sx, sy, key, label)
+                return
+            if kind == "you":
+                self.you(sx, sy)
                 return
             tags = ("body:" + key,)
             self.sphere(sx, sy, MOON_PX + 2, MOON, tags)
@@ -624,10 +739,11 @@ class HeightMapTab:
 
     ZOOMS = (12.5, 25.0, 50.0, 100.0, 200.0, 400.0, 800.0)   # metres a pixel
 
-    def __init__(self, parent, state, scl):
-        self.state, self.scl = state, scl
+    def __init__(self, parent, state, scl, follow):
+        self.state, self.scl, self.follow = state, scl, follow
         self.frame = tk.Frame(parent, bg=BG)
         self.body, self.centre = None, None
+        self.offset = (0.0, 0.0)    # (east m, north m) dragged from you
         self.mpp = 100.0
         self.press, self.seen, self.image = None, None, None
 
@@ -646,9 +762,6 @@ class HeightMapTab:
                                  state="readonly")
         self.goto.pack(anchor="w", pady=(0, 8))
         self.goto.bind("<<ComboboxSelected>>", lambda e: self.go_to())
-        self.follow = tk.BooleanVar(value=True)
-        ttk.Checkbutton(side, text="follow me", variable=self.follow,
-                        command=self.draw).pack(anchor="w", pady=(0, 8))
         self.info = tk.Label(side, font=MONO, fg=FG, bg=BG, justify="left",
                              anchor="w")
         self.info.pack(anchor="w", fill="x")
@@ -674,7 +787,7 @@ class HeightMapTab:
 
     def open(self, body):
         """Show `body`, around the busiest area surveyed on it."""
-        self.body = body
+        self.body, self.offset = body, (0.0, 0.0)
         self.goto_var.set("")
         self.goto_choices()
         with self.state.lock:
@@ -711,13 +824,23 @@ class HeightMapTab:
             return
         dx, dy = e.x - self.press[0], e.y - self.press[1]
         self.press = (e.x, e.y)
-        self.follow.set(False)              # moved by hand: stop following
         self.goto_var.set("")
         with self.state.lock:
             radius = self.radius()
-        self.centre = heightmap.from_map(-dx * self.mpp, dy * self.mpp,
-                                         heightmap.local_frame(self.centre),
-                                         radius)
+            following = self.look()[2] is not None
+        if following:       # still following: the map moves with you, offset
+            self.offset = (self.offset[0] - dx * self.mpp,
+                           self.offset[1] + dy * self.mpp)
+        else:
+            self.centre = heightmap.from_map(-dx * self.mpp, dy * self.mpp,
+                                             heightmap.local_frame(self.centre),
+                                             radius)
+        self.draw()
+
+    def recentre(self):
+        """follow me ticked or unticked: drop any drag away from you."""
+        self.offset = (0.0, 0.0)
+        self.refresh()
         self.draw()
 
     def on_wheel(self, e):
@@ -762,9 +885,11 @@ class HeightMapTab:
             st = self.state
             self.seen = self.look()
             here, pos = st.planet, st.pos
-            if self.seen[2] is not None:
-                self.centre = heightmap.local_frame(pos)[0]
             radius = self.radius()
+            if self.seen[2] is not None:
+                self.centre = heightmap.from_map(*self.offset,
+                                                 heightmap.local_frame(pos),
+                                                 radius)
             frame = (heightmap.local_frame(self.centre)
                      if self.centre is not None else None)
             near = (heightmap.local_cells(st.heightmap.get(self.body), radius,

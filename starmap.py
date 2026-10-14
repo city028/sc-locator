@@ -198,10 +198,16 @@ def waypoint_view(w, bodies):
     if system not in SYSTEMS:
         return None
     if w.get("frame", "planet") == "planet":
-        x, y, z = w["x"], w["y"], w["z"]
-        lat = math.degrees(math.asin(z / math.sqrt(x * x + y * y + z * z)))
-        return system, w["planet"], (lat, math.degrees(math.atan2(y, x)))
+        return system, w["planet"], facing((w["x"], w["y"], w["z"]))
     return system, attached_body(w, placed_bodies(bodies, system)), None
+
+
+def facing(p):
+    """(lat, lon) in degrees of planet-frame point p: the spot to look
+    straight down on to have p face the viewer."""
+    x, y, z = p
+    lat = math.degrees(math.asin(z / math.sqrt(x * x + y * y + z * z)))
+    return lat, math.degrees(math.atan2(y, x))
 
 
 def spin_angle(rec, t):
@@ -218,6 +224,33 @@ def spin_angle(rec, t):
     cx, cy = rec["centre"][0], rec["centre"][1]
     sub = rec["subsolar_lon_ref"] - rec["omega_deg_s"] * (t - rec["t_ref"])
     return math.atan2(-cy, -cx) - math.radians(sub)
+
+
+# Nothing moves faster than light, so a step on the star map that would is a
+# misread planet-frame fix: Crusader once read 77.6 Gm out among 19.1 Gm.
+LIGHT_M_S = 299_792_458.0
+
+
+def faster_than_light(prev, cur):
+    """prev, cur: (time, system point). Would getting from one to the other
+    outrun light? Readings less than a second apart are allowed a second."""
+    (t0, p0), (t1, p1) = prev, cur
+    return math.dist(p0, p1) > LIGHT_M_S * max(t1 - t0, 1.0)
+
+
+def system_point(rec, p, t):
+    """Planet-frame point p on the body analysed as `rec`, in the system
+    frame at time t, or None when its centre and spin are not both known.
+
+    What puts you on the system map during quantum travel: the game stops
+    updating its own system position for the whole jump, while the
+    planet-frame fix carries on.
+    """
+    if (rec or {}).get("kind") != "rotating" or not rec.get("centre"):
+        return None
+    x, y, z = rotate(p, spin_angle(rec, t), 0.0)
+    cx, cy, cz = rec["centre"]
+    return cx + x, cy + y, cz + z
 
 
 def compress(offset, inner):

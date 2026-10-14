@@ -143,6 +143,23 @@ All observed live, all handled:
   that looks ordinary until the numbers are read. `h` far outside a few
   thousand metres, or a `planet` that is not a real body, are the tells.
 
+- **The body name is the worst-read row of all.** Of the names logged up to
+  2026-10-14, 770 distinct ones in 2,631 readings matched no body: `pyra5`,
+  `pyroa5`, `pyro55` for Pyro V, `gocstanton1hurstan` for Hurston,
+  `gocstantonlaarie1` for Arial (`OOC_Stanton_1a_Arial`). An unmatched name
+  used to become the body, even as the first reading of a run. Now a name the
+  table cannot place goes to `fuzzy_body`: the body whose name it holds at a
+  similarity of 0.8 or more, 0.05 clear of the next, in the system the name
+  itself is written in (`py...` for Pyro, a damaged `stanton` for Stanton).
+  Pyro's planets are printed by number, so their letters cannot tell Pyro I
+  from Pyro V (`pyroa5`: 0.89 against 0.91) and the first digit 1-6 decides.
+  "(Load Complete)" runs into the name and once matched the moon Adir, so the
+  name is cut where it starts. That recovers about 2,260 of the 2,631. A name
+  still unmatched is never believed: it counts as an unread row. Changing body
+  still takes `PLANET_SWITCH_FRAMES` identical readings, so a rare wrong match
+  changes nothing. A body missing from `SYSTEM_BODIES` now reads as unknown
+  until it is added.
+
 ## Hotkeys do not work, and will not
 
 Star Citizen (Easy Anti-Cheat) blocks other processes from receiving keyboard
@@ -769,8 +786,17 @@ and a first guess of 2,000 km let through a frame whose third value read
 that frame is rejected and ordinary flight still passes with forty times the
 margin.
 
-Quantum travel outruns the limit and drops the lock, which is correct — the
-position is re-acquired once enough frames agree again.
+Quantum travel outruns the limit and drops the lock, which costs nothing:
+**the game stops updating the Root row for the whole jump.** Euterpe to
+Hurston (2026-10-14) read `22488274.2679km 37081070.9047km 614.3521km` for
+226 s while the screen kept changing and the zone went Euterpe, microTech,
+Crusader, Hurston. The planet-frame row kept updating throughout. On arrival
+the Root row was mostly unreadable (11 of 11 frames failed in one stretch) and
+misreads interleaved with good frames held off the three-frame relock for
+minutes. A tracker that followed a jump's straight line through the Root row
+was built and removed again: there is nothing on that row to follow.
+
+What the star map does instead is under "Where you are on the star map".
 
 Marking a point additionally requires the position to have held still, because
 out there nothing else can contradict it: there is no radius, no terrain height
@@ -789,6 +815,36 @@ and six-digit kilometres -- `61,910.59 km`, which reads as noise where
 `61.91 Mm` reads as a distance. The suffixes follow the HUD's own casing, as it
 prints them on its position rows (`Pos: 22487898.6236km`).
 
+## Where you are on the star map
+
+A green `+` marks you on both maps, and one **follow me** switch beside
+**HUD overlay** keeps both on you. It never changes the kind of view: the
+system view stays the system view, a body view stays a body view (turned so
+you face the viewer, and moving to the next body when you reach it). A drag
+or zoom leaves it on -- the drag becomes an offset from you that travels with
+you -- and ticking it again re-centres. Going elsewhere on purpose (another
+system or body, SHOW ON MAP, the orbital-marker views, Go to) turns it off, or
+it would pull the view back within a second.
+
+**At system scale you sit on your body's pixels** (about 240,000 km a pixel
+for Stanton), so the body's dot covered the cross; it is drawn last, labelled
+YOU. Ordinary flight moves it a pixel in about three days; only a jump moves
+it visibly.
+
+**Where the system position comes from.** The Root row freezes for a whole
+jump (see "Deep space"), so with a planet-frame fix under 10 s old on an
+analysed body the cross is placed from that: the body's centre plus the fix
+turned by the body's spin at the fix's own time (`starmap.system_point`). It
+is the spin analysis's own model; parked 19 Gm out it matched the Root row to
+1.5 km in distance and 1.9 km in height, and in angle once the spin was
+re-anchored (see "The spin drifts"). It works only in the zones of analysed
+bodies; elsewhere the Root row is used. A step faster than light is a misread
+fix -- Crusader once read 77.6 Gm out among readings of 19.1 Gm -- and is
+skipped, up to twice in a row.
+
+Each `system pos` log line ends with the last planet fix and its time, which
+is what the two were checked against each other with.
+
 ## Body analysis
 
 Landed on a body you turn with it, so the planet-frame position holds still
@@ -802,7 +858,7 @@ fits the circle. One landing gives:
   supplies
 - the sun's declination and one phase anchor (the longitude the star was over at
   a known moment), which is all it takes to place the sun anywhere on the body
-  at any time -- so a body is analysed once
+  at any time -- but the anchor drifts, see "The spin drifts" below
 - the radius and diameter, from the HUD's own `Radius` row
 
 The maths is in `spin_analysis.py` and touches no I/O. Results are written to
@@ -1032,6 +1088,38 @@ above the waypoint row.
 The arrow is the same turn figure as the text, so it inherits the `HDG` problem
 below: course over ground, not facing.
 
+### The spin drifts, and is kept current (2026-10-14)
+
+An analysis measures the rate over half a minute (Crusader's: 30.6 s), and a
+small error in it adds up. Nine days on, parked at CRU-L4, the system-frame
+position and the planet-frame fix agreed on the distance from Crusader's centre
+to 1.5 km in 19.1 Gm and on the height to 1.9 km -- but the record put the
+planet frame 51.5 deg off, the same on every line. That is a 0.33% rate error
+over 9.2 days, and it put the star map's cross 16.6 Gm from the ship and the
+sun times some 44 minutes out. The planet view's globe was turned wrong too.
+
+So every frame that holds both positions re-checks the anchor
+(`spin.measured_subsolar`, `State._recheck_spin`):
+
+- a frame counts only when the two agree on distance from the centre and
+  height along the axis (within 10 km, or 1e-6 of the distance) -- the two
+  things the spin cannot change. A Root row frozen by a jump, or a misread,
+  is off by far more. Not while the heights contradict the fix, nor from a
+  fix that jumped: a dropped minus sign mirrors it at the same distance and
+  height
+- three frames in a row must put the star within 0.1 deg of each other
+- the record is re-anchored and saved to `bodies.json` when it was 0.1 deg
+  or more out, and its rate corrected from the old anchor when that is an hour
+  or more back and the change is under 1%
+
+First run, approaching Seraphim the same evening: `record -51.599 deg out`,
+19 minutes after 51.51 was measured at CRU-L4 -- the extra 0.09 deg is the old
+rate error over those 19 minutes, so the two measurements agree. The rate went
+0.019672652 -> 0.019607844 deg/s: a day of **18,360.0 s, exactly 5.1 h**,
+against the analysis's 5.083 h. A round number, so very likely the game's own.
+It saved once and not again. microTech, 17 minutes later: `+11.075 deg out`
+after eight days, a day of 4.1200 h against 4.1227 h -- round again.
+
 ## Height map (survey mode, 2026-10-14)
 
 `ElevationUnderCam` is the ground's height over the reference sphere under
@@ -1218,3 +1306,10 @@ away added survey-002.
 - Naming a Lagrange point as `HUR-L1` needs each body's centre in system
   coordinates. ANALYSE now measures it (see "Body analysis"), so this only
   waits on enough bodies having been analysed.
+- Hurston, ArcCorp and Clio still carry their 8-9 day old spin
+  anchors; each is re-checked the first time the ship is near it with both
+  position rows readable. Whether a planet's rotation phase differs between
+  servers has not been ruled out -- the re-check covers it either way.
+- How the HUD names Pyro's moons has not been seen. `fuzzy_body` matches a
+  moon by its own name; a moon printed only as `pyro5a` would be taken for
+  its planet.

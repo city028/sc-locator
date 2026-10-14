@@ -47,8 +47,8 @@
     "duration_s": 30.60465669631958,
     "rho_m": 5368791.62518273,
     "rho_local_m": 5366935.563333599,
-    "omega_deg_s": 0.01967265223963348,
-    "period_s": 18299.51526692098,
+    "omega_deg_s": 0.019607844353019693,
+    "period_s": 18359.998861606553,
     "sigma": 0.002269164819152028,
     "arc_deg": 0.6019098769423634,
     "axis": [
@@ -64,8 +64,8 @@
     ],
     "star_distance_m": 19148527501.40232,
     "declination_deg": -5.645376108915136e-06,
-    "t_ref": 1791199615.8844833,
-    "subsolar_lon_ref": 101.03533019412504
+    "t_ref": 1791995796.8146825,
+    "subsolar_lon_ref": -30.356425993170063
   },
   "arccorp": {
     "planet": "arccorp",
@@ -99,7 +99,8 @@
     "star_distance_m": 28917273412.722065,
     "declination_deg": -4.322023156305703e-07,
     "t_ref": 1791200916.169673,
-    "subsolar_lon_ref": -111.46830493096448
+    "subsolar_lon_ref": -111.46830493096448,
+    "notes": "Test"
   },
   "microtech": {
     "planet": "microtech",
@@ -115,8 +116,8 @@
     "duration_s": 266.392107963562,
     "rho_m": 680245.3837345616,
     "rho_local_m": 680218.767298132,
-    "omega_deg_s": 0.02425621049600845,
-    "period_s": 14841.559857803875,
+    "omega_deg_s": 0.0242718867278627,
+    "period_s": 14831.974293400981,
     "sigma": 0.0006106672324996517,
     "arc_deg": 6.465664572279147,
     "axis": [
@@ -132,8 +133,8 @@
     ],
     "star_distance_m": 43443352773.511444,
     "declination_deg": -3.243112718438247e-08,
-    "t_ref": 1791290293.7673721,
-    "subsolar_lon_ref": -132.74359356909503
+    "t_ref": 1791996803.302639,
+    "subsolar_lon_ref": -1.0630057216332318
   },
   "clio": {
     "planet": "clio",
@@ -517,6 +518,49 @@
       ],
       "pads": "S,M,L,XL",
       "armistice": false,
+      "source": "UEX 2026-10-08"
+    }
+  },
+  "space -18957000,-2661847,5566 km": {
+    "scope": "space",
+    "system": "stanton",
+    "analysed": "2026-10-14 20:42",
+    "site_sys": [
+      -18957000444.3,
+      -2661847192.3,
+      5565505.699999999
+    ],
+    "samples": 30,
+    "duration_s": 59.229182720184326,
+    "over": "crusader",
+    "site_over": [
+      5878633.883523,
+      -1384780.071956,
+      5565505.729246
+    ],
+    "kind": "moving",
+    "speed_mps": 2065.7159761983503,
+    "direction": [
+      -0.5154522918142306,
+      0.8569182778208534,
+      0.0
+    ],
+    "label": "orbital station",
+    "station": {
+      "name": "Seraphim Station",
+      "body": "Crusader",
+      "faction": "United Empire of Earth",
+      "services": [
+        "repair",
+        "refuel",
+        "clinic",
+        "shops",
+        "trade",
+        "habs",
+        "cargo"
+      ],
+      "pads": "S,M,L",
+      "armistice": true,
       "source": "UEX 2026-10-08"
     }
   }

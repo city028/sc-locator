@@ -378,6 +378,69 @@ def subsolar_longitude(ship_lon, ship_sys, centre, axis, star=(0.0, 0.0, 0.0)):
     return (ship_lon + math.degrees(shift) + 180.0) % 360.0 - 180.0
 
 
+# --- re-checking the spin from live readings --------------------------------
+#
+# An analysis measures the rate over half a minute, and the small error in it
+# adds up: nine days after Crusader's, its planet frame was 51.5 deg short
+# of where the record said (2026-10-14), which put the star map's cross
+# 16.6 Gm out and the sun times some 44 minutes. Every frame that carries both
+# positions shows where the star really is, so the anchor can be kept current.
+
+# How closely the two positions must agree before one frame is used: on the
+# distance from the centre and the height along the axis, which the spin does
+# not change. Parked 19 Gm from Crusader they agreed to 1.5 km and 1.9 km; a
+# Root row frozen by a jump, or a misread digit, is off by far more.
+SPIN_MATCH_M = 10_000.0
+SPIN_MATCH_FRACTION = 1e-6      # of the distance from the centre, if larger
+
+# The rate is corrected from the old anchor only when that is this far back --
+# closer, the timing of a frame is a noticeable part of the drift -- and only
+# by up to this much of itself, beyond which whole turns may have been lost.
+SPIN_RATE_MIN_GAP_S = 3600.0
+SPIN_RATE_MAX_CHANGE = 0.01
+
+
+def wrap180(deg):
+    return (deg + 180.0) % 360.0 - 180.0
+
+
+def subsolar_at(rec, t):
+    """Longitude (deg) the star is over at t, by the record's anchor."""
+    return rec["subsolar_lon_ref"] - rec["omega_deg_s"] * (t - rec["t_ref"])
+
+
+def measured_subsolar(rec, sys_pos, pos):
+    """Longitude (deg) the star is over, from one frame's system-frame and
+    planet-frame positions on the body analysed as `rec`. None when the body
+    has no centre and spin, or when the two positions disagree on what the
+    spin cannot change."""
+    if (rec or {}).get("kind") != "rotating" or not rec.get("centre"):
+        return None
+    centre, axis = rec["centre"], rec.get("axis") or (0.0, 0.0, 1.0)
+    v = _sub(sys_pos, centre)
+    r = _norm(pos)
+    tol = max(SPIN_MATCH_M, SPIN_MATCH_FRACTION * r)
+    if abs(_norm(v) - r) > tol or abs(_dot(v, axis) - pos[2]) > tol:
+        return None
+    lon = math.degrees(math.atan2(pos[1], pos[0]))
+    return subsolar_longitude(lon, sys_pos, centre, axis)
+
+
+def reanchor(rec, sub, t):
+    """(record anchored on subsolar longitude `sub` measured at t, degrees
+    the old anchor was out). The rate is corrected from the old anchor too,
+    when that is SPIN_RATE_MIN_GAP_S back and the change is believable."""
+    err = wrap180(subsolar_at(rec, t) - sub)
+    new = dict(rec, subsolar_lon_ref=wrap180(sub), t_ref=t)
+    gap = t - rec["t_ref"]
+    if gap >= SPIN_RATE_MIN_GAP_S:
+        omega = rec["omega_deg_s"] + err / gap
+        if abs(omega / rec["omega_deg_s"] - 1.0) <= SPIN_RATE_MAX_CHANGE:
+            new["omega_deg_s"] = omega
+            new["period_s"] = 360.0 / abs(omega)
+    return new, err
+
+
 # --- the sun at a place, from the stored anchor -----------------------------
 
 def sun_at(lat, lon, t, rec):

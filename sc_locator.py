@@ -29,6 +29,7 @@ with the left mouse button to move it.
 """
 import argparse
 import ctypes
+import functools
 import hashlib
 import json
 import math
@@ -38,6 +39,7 @@ import shutil
 import sys
 import threading
 import time
+from difflib import SequenceMatcher
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -542,7 +544,75 @@ def resolve_body(name):
     for key in _BODY_KEYS:
         if match_key(key) in joined:
             return key
+    return fuzzy_body(name)
+
+
+# A name OCR has damaged too far for the table goes to the body whose name it
+# holds closely enough, and clearly more closely than any other in its system.
+# Of the 770 names in session.log that matched no body (2,631 readings),
+# almost all were Pyro V or Hurston: "pyra5", "pyro55", "gocstanton1hurstan".
+FUZZY_BODY_MIN = 0.8
+FUZZY_BODY_MARGIN = 0.05        # Calliope holds Clio's letters: 0.93 to 0.86
+FUZZY_PYRO_MOON_MIN = 0.85
+
+# Pyro's planets are printed by number ("Planet:pyro5"), so their names differ
+# in one digit and only the digit tells them apart.
+PYRO_BY_NUMBER = dict(zip("123456", ("pyroi", "monox", "bloom", "pyroiv",
+                                     "pyrov", "pyrovi")))
+
+# "(Load Complete)" follows the name on the HUD and OCRs into it, where its
+# letters matched the moon Adir ("pyra5soadriomptete"). Cut off from here.
+_NAME_TAIL_RE = re.compile(r"[l1]?[o0]ad|[o0]mp|p[l1]ete|w[o0]rk")
+
+
+def _name_system(c):
+    """The system a canonical body name is written in, or None: Pyro's start
+    "pyro", Stanton's carry "OOC_Stanton_" however damaged."""
+    if c.startswith("py") or "pyr" in c[:4]:
+        return "pyro"
+    k = match_key(c)
+    if any(SequenceMatcher(None, "5tant0n", k[i:i + 7]).ratio() >= 0.7
+           for i in range(max(1, len(k) - 6))):
+        return "stanton"
     return None
+
+
+@functools.lru_cache(maxsize=1024)
+def fuzzy_body(name):
+    """The body a damaged name stands for, or None if it is not clearly one.
+
+    Every reading is judged on its own; it takes PLANET_SWITCH_FRAMES of them
+    in a row to change body, so an odd wrong match changes nothing.
+    """
+    c = canon(name)
+    tail = _NAME_TAIL_RE.search(c, 2)
+    if tail:
+        c = c[:tail.start()]
+    system = _name_system(c)
+    if system is None:
+        return None
+    k = match_key(c)
+    scores = {}
+    for form, key in _FOLDED_KEYS.items():
+        if len(form) < 4 or BODY_SYSTEM.get(key) != system:
+            continue
+        for w in (len(form) - 1, len(form), len(form) + 1):
+            for i in range(max(1, len(k) - w + 1)):
+                r = SequenceMatcher(None, form, k[i:i + w]).ratio()
+                scores[key] = max(scores.get(key, 0.0), r)
+    ranked = sorted(scores.items(), key=lambda kv: -kv[1])
+    if system == "pyro":
+        moon = next((kv for kv in ranked
+                     if kv[0] not in PYRO_BY_NUMBER.values()), None)
+        if moon and moon[1] >= FUZZY_PYRO_MOON_MIN:
+            return moon[0]
+        digit = next((ch for ch in c[2:] if ch in PYRO_BY_NUMBER), None)
+        return PYRO_BY_NUMBER.get(digit)
+    if not ranked or ranked[0][1] < FUZZY_BODY_MIN:
+        return None
+    if len(ranked) > 1 and ranked[0][1] - ranked[1][1] < FUZZY_BODY_MARGIN:
+        return None
+    return ranked[0][0]
 
 
 # ----------------------------------------------------------------------------
@@ -1120,13 +1190,23 @@ SYSTEM_ROW_TOLERANCE_M = 1000.0
 # frame whose third value read +882 km among neighbours at -77 km slipped
 # through a 2,000 km limit and put the position 960 km out.
 #
-# Quantum travel outruns this and drops the lock, which is correct -- the
-# position is re-acquired once enough frames agree again.
+# Quantum travel outruns this and drops the lock, which costs nothing: the
+# game stops updating the Root row for the whole jump anyway (Euterpe to
+# Hurston, 2026-10-14: the same value for 226 s). The star map takes your
+# place during a jump from the planet-frame fix instead.
 SYSTEM_LOCK_KM = 100.0
 
 # How still you must be for the position to be worth marking. Marking a parked
 # ship is the point, so this only has to be tight enough to exclude a misread.
 SYSTEM_STABLE_KM = 10.0
+
+# Frames in a row whose two positions must put a body's star within
+# SPIN_AGREE_DEG of each other before its spin anchor is re-checked, and how
+# far out the anchor must be to be corrected and saved. Measured parked, the
+# angle wandered by 0.02 deg.
+SPIN_VOTES = 3
+SPIN_AGREE_DEG = 0.1
+SPIN_CORRECT_DEG = 0.1
 
 # Agreeing frames needed before a position is believed from nothing. Three
 # rather than two, because one digit can be misread the same way twice running
@@ -1319,6 +1399,7 @@ class State:
         self.sys_log_time = 0.0  # when the system position was last logged
         self.sys_log_pos = None  # and what it was, to measure drift against
         self.sys_hits = 0        # how many frames have agreed with it
+        self.spin_votes = []     # (body, time, star's longitude) not yet agreed
         self.system = None       # which star system the body is in
         self.location = None     # the game's own name for the place, if read
         self.location_seen = None   # a different name, not yet believed
@@ -1326,6 +1407,7 @@ class State:
         self.hud_up = False      # debug HUD on screen, fix or no fix
         self.planet_candidate = None      # a different body name, not yet believed
         self.planet_candidate_hits = 0
+        self.planet_unmatched = None     # last name that matched no body
         self.analysis = None     # a spin.SpinSession while one is running
         self.bodies = {}         # planet -> what its analysis found
         self.stations = {}       # {"fetched": time, "data": UEX records}
@@ -1355,7 +1437,7 @@ class State:
         return (abs(total - (r - radius)) <= HEIGHT_TOLERANCE
                 and abs(total - (r - table)) > HEIGHT_TOLERANCE)
 
-    def _settle_system_pos(self, pos):
+    def _settle_system_pos(self, pos, now):
         """The system-frame position to believe. Call with the lock held.
 
         A reading is taken only when it is consistent with one already
@@ -1374,7 +1456,14 @@ class State:
         if pos is None:
             return self.sys_pos
         limit = SYSTEM_LOCK_KM * 1000.0
-        if self.sys_pos is not None and math.dist(pos, self.sys_pos) <= limit:
+        near = (self.sys_pos is not None
+                and math.dist(pos, self.sys_pos) <= limit)
+        if self.sys_pos is not None and not near:
+            # Only jumps and misreads get here; logged, with sub-second
+            # times, as this is what showed the row freezing in a jump.
+            self.log(f"system reading {math.dist(pos, self.sys_pos) / 1000:,.0f}"
+                     f" km out, held: t={now:.2f} {pos}")
+        if near:
             self.sys_candidate = None               # flight, not a misread
             self.sys_hits = 0
             self.sys_prev = self.sys_pos
@@ -1403,6 +1492,34 @@ class State:
             return (self.sys_pos is not None and self.sys_prev is not None
                     and math.dist(self.sys_pos, self.sys_prev)
                     <= SYSTEM_STABLE_KM * 1000.0)
+
+    def _recheck_spin(self, planet, pos, sys_pos, now):
+        """Re-anchor the body's spin on where its star is now, once
+        SPIN_VOTES frames in a row agree on it, and save it when the record
+        was SPIN_CORRECT_DEG out (see spin.reanchor). Call with the lock held.
+        """
+        rec = self.bodies.get(planet)
+        sub = spin.measured_subsolar(rec, sys_pos, pos)
+        if sub is None:
+            self.spin_votes = []
+            return
+        votes = [v for v in self.spin_votes if v[0] == planet]
+        omega = rec["omega_deg_s"]
+        if any(abs(spin.wrap180(s - omega * (now - t) - sub)) > SPIN_AGREE_DEG
+               for _, t, s in votes):
+            votes = []                              # start again from this one
+        self.spin_votes = votes + [(planet, now, sub)]
+        if len(self.spin_votes) < SPIN_VOTES:
+            return
+        self.spin_votes = []
+        new, err = spin.reanchor(rec, sub, now)
+        if abs(err) < SPIN_CORRECT_DEG:
+            return
+        self.bodies[planet] = new
+        save_json(BODIES_FILE, self.bodies)
+        self.log(f"spin of {planet} re-anchored: record {err:+.3f} deg out, "
+                 f"rate {omega:.9f} -> {new['omega_deg_s']:.9f} deg/s")
+        self.flash(f"{planet}: spin corrected by {err:+.1f} deg")
 
     def _settle_location(self, name):
         """The place name to believe this frame. Call with the lock held.
@@ -1439,12 +1556,17 @@ class State:
         """
         if self.sys_pos is None or now - self.sys_log_time < SYSTEM_LOG_SECONDS:
             return
+        # The last body fix beside it, with its own time: the star map turns
+        # that into a system position (starmap.system_point), and a parked
+        # ship is where the two can be checked against each other.
+        fix = (f"; planet {self.planet} {self.pos} at t={self.fix_time:.2f}"
+               if self.pos is not None else "")
         if self.sys_log_pos is None:
-            self.log(f"system pos {self.sys_pos}")
+            self.log(f"system pos {self.sys_pos}{fix}")
         else:
             self.log(f"system pos {self.sys_pos} moved "
                      f"{math.dist(self.sys_pos, self.sys_log_pos):,.3f} m in "
-                     f"{now - self.sys_log_time:.1f}s")
+                     f"{now - self.sys_log_time:.1f}s{fix}")
         self.sys_log_pos, self.sys_log_time = self.sys_pos, now
 
     def _settle_planet(self, planet):
@@ -1464,6 +1586,15 @@ class State:
         does. Keeping the old body also keeps its agreed radius, and with it
         the height, instead of dropping to default_radius.
         """
+        if planet not in BODY_SYSTEM and planet != "unknown":
+            # No body by that name, even allowing for OCR damage (see
+            # fuzzy_body): a misread, which repeats as long as the screen
+            # does not change, so it is never believed. A body missing from
+            # the table has to be added to it.
+            if planet != self.planet_unmatched:
+                self.planet_unmatched = planet
+                self.log(f"planet read as {planet}: no such body")
+            planet = "unknown"
         if self.planet in (None, "unknown"):
             return planet                      # nothing worth protecting yet
         if planet == self.planet:
@@ -1533,7 +1664,7 @@ class State:
             # Tracked whatever else the frame held: it is the only position
             # there is with no body in range, and it is what a waypoint out
             # there is measured against.
-            self.sys_pos = self._settle_system_pos(sys_pos)
+            self.sys_pos = self._settle_system_pos(sys_pos, now)
             self._log_system_drift(now)
             # A place with no ground is sampled whether or not a body is in
             # range, and only on a reading this frame produced.
@@ -1733,6 +1864,12 @@ class State:
                     and not self.heights_conflict):
                 if not self.analysis.add(now, sys_pos, pos):
                     self.log("analysis: ship moved - starting again")
+            # The same pairing keeps an analysed body's spin anchor current,
+            # on the same conditions, and not from a fix that jumped: a
+            # dropped minus sign mirrors it at the same distance and height.
+            if (sys_pos is not None and self.sys_pos == sys_pos
+                    and not self.heights_conflict and not jumped):
+                self._recheck_spin(planet, pos, sys_pos, now)
             # In space but inside a body's zone: whether the place holds still
             # over the body decides how it is found again (see nearest_space).
             if (isinstance(self.analysis, spin.SpaceSession)
@@ -2680,10 +2817,13 @@ def ocr_worker(state, cfg, stop):
                 continue
             try:
                 raw = grab_region(sct, cfg)
-                res = None
+                res = sys_pos = None
                 for i, thr in enumerate(ladder):
                     text = pytesseract.image_to_string(
                         preprocess(raw, cfg, thr), config=TESS_CONFIG)
+                    # From the first cut that reads it. With no body in range
+                    # every cut is tried, and the last is the poorest.
+                    sys_pos = sys_pos or parse_system_pos(text)
                     res = parse_readout(text, cfg["default_radius"])
                     if res is not None:
                         if i:
@@ -2696,13 +2836,13 @@ def ocr_worker(state, cfg, stop):
                             if "root" in canon(ln)), "")
                 for line in watch.feed(time.time(),
                                        hashlib.md5(raw.tobytes()).digest(),
-                                       parse_system_pos(text), row):
+                                       sys_pos, row):
                     state.log(line)
                 state.update(res,
                              parse_heights(text) if res else None,
                              parse_system(text) if res else None,
                              parse_location(text),
-                             parse_system_pos(text))
+                             sys_pos)
             except Exception as exc:
                 state.set_error(str(exc))
             stop.wait(max(0.05, cfg["interval"] - (time.time() - t0)))
