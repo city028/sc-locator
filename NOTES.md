@@ -534,6 +534,13 @@ Things that are easy to get wrong here, all found the hard way:
 - The window is **anchored by its corner, not its top-left**. Tk grows a window
   right and down, so a readout one line longer walks the panel off the right of
   the screen unless the anchored corner is reapplied on every resize.
+  Reapplying it is not enough on its own (2026-10-14): a block opening after
+  the panel (survey, target, report, rename) still grew the panel down past
+  its corner. `wm geometry +x+y` only takes effect when Tk next idles, and
+  `keep_on_top` ran first in the same tick; its `SetWindowPos` reports the
+  window's old position back to Tk, which then kept the old top. Opening the
+  panel escaped it only because the position was applied twice there.
+  `reposition` now calls `update_idletasks()` straight after the move.
 - **The panel must not resize at all.** A Tk `Label` sizes itself to its text,
   so the readout gaining a line when a target is set, or widening when a
   distance grows a digit, resized the whole window under the user — jarring,
@@ -1167,13 +1174,32 @@ So -40 is not a fallback value: it is the ice sea's level on microTech, and
 a run of exactly -40.0 there is water. Other bodies' seas may sit at other
 levels.
 
-**Drawing (tkinter).** The globe is 24 x 24 tiles a face (3,456, about half
-drawn), each the mean of the measured cells inside it -- each cell counted
-once, so standing still does not outweigh ground flown over. Tile corners are
-matched by position, so a raised tile lifts its neighbours' corners across a
-cube edge too and the mesh does not tear. ~45 ms a redraw. The Height map tab
-paints measured cells into a `PhotoImage` on a gnomonic map around you;
-~190 ms for 10,000 cells in view.
+**Drawing (tkinter).** The globe was first all 24 x 24 tiles a face, grey
+where unmeasured: 1,728 canvas polygons a frame for 3 measured tiles, 154 ms
+a redraw while dragging, and the grid of squares did not read as a ball. Now
+the body is one shaded ball (140 steps, about one colour shade apart, so no
+rings when zoomed in) with only the measured tiles on it, 192 a face (8 km
+on microTech), each the mean of the measured cells inside it -- each cell
+counted once, so standing still does not outweigh ground flown over. Tile
+corners are matched by position, so neighbouring tiles rise together across
+a cube edge too and the mesh does not tear. 10-35 ms a redraw. The cost now
+grows with the area surveyed, one polygon a tile in view. The height ramp's
+low end is purple, not blue: blue vanished against the globe.
+
+The Height map tab paints measured cells into a `PhotoImage` on a gnomonic
+map around you; ~190 ms for 10,000 cells in view. Meridians are straight on
+that map and parallels nearly so; the LAT/LON grid samples both, at a round
+step chosen so lines are ~120 px apart (`map_grid`). It opens on the busiest
+survey area (`centre_of`: the 50 km tile with most cells). The middle of all
+the cells was the first choice and landed on empty ground between New
+Babbage and Harper's Point, ~1,500 km apart -- further than the map shows
+even zoomed out (~650 km).
+
+**Survey waypoints.** A survey saves `survey-NNN` (marked `"survey": true`,
+so a rename keeps it one) where it first records the ground on a body,
+unless a survey waypoint is already within 5 km. Checked in game
+(2026-10-14): a restart 2.6-3.1 km from survey-001 added none, one 19 km
+away added survey-002.
 
 ## Still open
 
