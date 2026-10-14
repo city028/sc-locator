@@ -1331,6 +1331,7 @@ class State:
         self.heightmap = {}      # body -> surveyed cells, see heightmap.py
         self.heightmap_dirty = False
         self.heightmap_saved = 0.0
+        self.checked_pos = None  # (planet, pos, time) the heights last backed
         self.log = lambda msg: None
 
     def flash(self, text):  # call with lock held
@@ -1673,8 +1674,15 @@ class State:
                     self.heading = bearing(self.ref[0], self.ref[1], lat, lon)
                     self.heading_time = now
                     self.ref = (lat, lon)
-            jumped = (planet == self.planet and self.pos is not None
-                      and too_fast(self.pos, self.fix_time, pos, now))
+            # Judged against the last position the heights vouched for, not
+            # the last one read: a frame with its heights unread carries a
+            # position nothing has checked, and measuring from a misread one
+            # dropped good frames after it (Harper's Point, 2026-10-14).
+            ref = self.checked_pos
+            jumped = (ref is not None and ref[0] == planet
+                      and too_fast(ref[1], ref[2], pos, now))
+            if fresh_elev is not None:
+                self.checked_pos = (planet, pos, now)
             self.planet, self.radius, self.pos = planet, radius, pos
             self.latlon = (lat, lon)
             self.fix_time = now
@@ -2229,12 +2237,28 @@ def body_report(state, now=None):
 def too_fast(prev, prev_time, pos, now, limit=SURVEY_MAX_SPEED):
     """Did the fix move faster than `limit` m/s since the previous one?
 
-    The frame after a misread is judged against the misread and dropped too;
-    the one after that is clean again. Two samples lost, against one cell on
-    the wrong side of the body.
+    A misread the heights cannot see (a dropped minus sign keeps the distance
+    from the centre) becomes the reference, so the frame after it is dropped
+    too and the one after that is clean again. Two samples lost, against one
+    cell on the wrong side of the body.
     """
     d = math.sqrt(sum((a - b) ** 2 for a, b in zip(pos, prev)))
     return d > limit * max(now - prev_time, 1.0)
+
+
+# The pilot's reminder while surveying: speed against sample spacing. Measured
+# at Harper's Point (microTech, 2026-10-14): 33 m/s gave a sample every 92 m,
+# 107 m/s every 450 m, 180 m/s every 365 m -- a frame every 1.5-2.1 s, and a
+# quarter to a half of them dropped. A line crossing 70-100 m cells at an
+# angle needs closer than that, so 33 m/s still left gaps. Flown low at just
+# under 20 m/s (17.7 m/s): a sample every ~34 m, and 18 of 22 steps between
+# new cells went to the neighbouring cell.
+SURVEY_SPEEDS = [
+    "   20 m/s   ~35 m apart   almost no gaps",
+    "   30 m/s   ~90 m apart   small gaps",
+    "  100 m/s  ~300 m apart   overview",
+    "  200 m/s  ~400 m apart   rough shapes",
+]
 
 
 def survey_refusal(elev, alt, fresh_elev, jumped, planet, height, cfg):
@@ -2431,10 +2455,19 @@ def render_location(state, with_status=True):
         else:
             lines.append(f"H   {fmt_dist(r - state.radius)} "
                          f"over reference sphere")
-        if state.survey:
-            cells = heightmap.cell_count(state.heightmap, state.planet)
-            lines.append(f"SURVEY {cells:,} cell{'' if cells == 1 else 's'}")
         return "\n".join(lines)
+
+
+def render_survey(state):
+    """The survey block: cells so far, the ceiling, and the speed reminder.
+    Empty while not surveying. Its own block, as the location block is full."""
+    with state.lock:
+        if not state.survey:
+            return ""
+        cells = heightmap.cell_count(state.heightmap, state.planet)
+        top = fmt_dist(state.cfg["survey_max_height_m"])
+    return "\n".join([f"SURVEY {cells:,} cell{'' if cells == 1 else 's'}"
+                      f" - records below {top}"] + SURVEY_SPEEDS)
 
 
 def render_target(state):
@@ -2552,7 +2585,8 @@ def render(state, notes=True):
     The panel draws the two blocks separately with a rule between them, and
     turns `notes` off because it has its own line for those.
     """
-    parts = [render_location(state), render_target(state)]
+    parts = [render_location(state), render_survey(state),
+             render_target(state)]
     with state.lock:
         if notes and state.status != "ok":
             parts.append(f"!! {state.status}")
@@ -2655,6 +2689,7 @@ ARROW_COLS = 9          # the compass arrow beside the target block
 TARGET_COLS = READOUT_COLS - ARROW_COLS
 ARROW_PX = 72
 LOCATION_ROWS = 6
+SURVEY_ROWS = 5
 TARGET_ROWS = 5
 REPORT_ROWS = 14        # the body analysis, in its block under the status
 NO_LABEL = "(not labelled)"
@@ -3001,6 +3036,14 @@ def run_overlay(state, cfg):
                        width=READOUT_COLS, height=LOCATION_ROWS - 1,
                        font=("Consolas", 11), fg=ACCENT, bg=BG)
     fix_lbl.pack(fill="x", padx=10, pady=(0, 0))
+
+    # Shown only while surveying; refresh packs and forgets it.
+    survey_block = tk.Frame(panel, bg=BG)
+    rule(survey_block)
+    survey_lbl = tk.Label(survey_block, text="", justify="left", anchor="nw",
+                          width=READOUT_COLS, height=SURVEY_ROWS,
+                          font=("Consolas", 11), fg=ACCENT, bg=BG)
+    survey_lbl.pack(fill="x", padx=10)
 
     # Shown only while there is a target; refresh packs and forgets it.
     target_block = tk.Frame(panel, bg=BG)
@@ -3492,6 +3535,12 @@ def run_overlay(state, cfg):
         if showing["panel"]:
             fix_lbl.config(text=render_location(state, with_status=False),
                            fg=colour)
+            if state.survey != bool(survey_block.winfo_manager()):
+                if state.survey:
+                    survey_block.pack(fill="x", after=fix_lbl)
+                else:
+                    survey_block.pack_forget()
+            survey_lbl.config(text=render_survey(state), fg=colour)
             if (state.target is not None) != bool(target_block.winfo_manager()):
                 if state.target is not None:
                     target_block.pack(fill="x", after=fix_lbl)

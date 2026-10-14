@@ -308,18 +308,21 @@ Press **SURVEY** in the panel and fly or walk: every frame where the HUD's
 ground height reads cleanly records the height of the ground under you into a
 grid of cells about 100 m across (70-100 m, depending on where on the body).
 Press **END SURVEY** to stop; the map is saved then, and every 2 minutes while
-surveying. The panel shows `SURVEY 1,234 cells` for the body you are on.
+surveying. While it runs, the panel shows a survey block: the cells
+surveyed on this body, the height below which it records, and a reminder of
+how far apart samples land at 20, 30, 100 and 200 m/s.
 
 - Works in flight too: the HUD reports the ground under you, not your own
   height. Nothing is recorded more than 5 km over the reference sphere
   (`survey_max_height_m`): higher up the ground height mostly cannot be read
   (on microTech, not at all between 7 and 15 km), so survey low. Stations
-  and orbits never touch the map. A sample whose position jumped faster than 3 km/s since the last
-  one (a misread digit or sign) is dropped too.
+  and orbits never touch the map. A sample whose position jumped faster than
+  3 km/s since the last checked one (a misread digit or sign) is dropped too.
 - A cell measured more than once keeps the average.
-- For a map with no gaps, keep your samples under about 70 m apart. In
-  practice a sample lands about every 2 seconds (at 100 m/s they came out
-  ~230 m apart), so that means about 30 m/s, with flight lines 70 m apart.
+- For a map with no gaps, keep your samples under about 70 m apart. A frame
+  comes every 1.5-2 seconds and some are dropped, so measured at Harper's
+  Point 30 m/s still gave ~90 m and left small gaps. Just under 20 m/s gave
+  ~35 m and an almost unbroken line; fly that, with flight lines 70 m apart.
 - **Star map**, a planet open: the globe is drawn as a mesh. Tiles you have
   surveyed are coloured by height and raised (**relief x** at the top right
   sets by how much; real relief is invisible at globe size); the rest is grey.

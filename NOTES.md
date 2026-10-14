@@ -1131,6 +1131,38 @@ Three frames in the climb failed the identity (two positions misread to
 4,319 km and 51,691 km, one altitude to 59 km) and were dropped. The good
 frame after the 4,319 km one was dropped as a jump, as designed.
 
+**Speed test (Harper's Point, microTech, 2026-10-14, 10:24-10:30).** Three
+legs at different speeds, ~2 km over the sphere. Spacing worked out from the
+log times and the cells added, in order:
+
+| leg | speed | a frame every | kept | a sample every | a new cell every |
+|---|---|---|---|---|---|
+| slow | 33 m/s | 2.1 s | 76% | 92 m | 135 m |
+| medium | 107 m/s | 2.1 s | 50% | 450 m | 470 m |
+| fast | 180 m/s | 1.5 s | 74% | 365 m | 370 m |
+
+33 m/s still left gaps: a line crossing 70-100 m cells at an angle needs
+samples closer than 92 m. The medium leg's 50% kept is more likely the light
+than the speed.
+
+**Low and slow (microTech, 2026-10-14, 10:41-10:43).** Flown at just under
+20 m/s by the ship's indicator, ~650-820 m over ground. 1,738 m first to last
+new cell in 98 s = 17.7 m/s, agreeing with the ship. 61 frames, one every
+1.65 s; 52 kept (85%), so a sample every ~34 m. Cells there are ~75 m, and
+18 of 22 steps between new cells went to the neighbouring cell: an almost
+unbroken line. Five frames failed the identity (Altitude misread, e.g.
+6,337 for 634) and two were dropped as jumps, each right after a misread.
+
+Working the speed out from the cells needs care: matching log lines to new
+cells in order runs out of cells early when most cells take two samples, and
+that first gave 25 m/s here. Measure first to last over the whole survey.
+
+Of 206 frames, 14 were dropped as jumps, and several of those followed
+frames whose heights were unread. Such a frame still sets the position, with
+nothing to check it, and the jump test measured from it -- so one misread
+there cost the good frame after it. The test now measures from the last
+position the heights backed (`checked_pos`).
+
 So -40 is not a fallback value: it is the ice sea's level on microTech, and
 a run of exactly -40.0 there is water. Other bodies' seas may sit at other
 levels.
