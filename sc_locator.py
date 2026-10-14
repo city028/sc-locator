@@ -43,6 +43,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 if str(HERE) not in sys.path:            # the maths lives beside this file
     sys.path.insert(0, str(HERE))
+import heightmap                         # noqa: E402
 import spin_analysis as spin             # noqa: E402
 import stations                          # noqa: E402
 
@@ -57,8 +58,16 @@ CONFIG_FILE = HERE / "locator_config.json"
 WAYPOINT_FILE = HERE / "waypoints.json"
 BODIES_FILE = HERE / "bodies.json"       # what landing on a body taught us
 STATIONS_FILE = HERE / "stations.json"   # UEX's station list, re-fetched weekly
+HEIGHTMAP_FILE = HERE / "heightmap.json" # ground heights from survey mode
 BACKUP_DIR = HERE / "bak"
 BACKUP_KEEP = 30                         # versions of each file kept in bak/
+# How often a running survey is written out. Each write also keeps a backup,
+# so thirty of them cover the last hour.
+HEIGHTMAP_SAVE_SECONDS = 120.0
+# Fastest a survey sample may have moved since the last fix. Flight in
+# atmosphere stays well under it; a misread coordinate moves the fix hundreds
+# of km in a second.
+SURVEY_MAX_SPEED = 3000.0                # m/s
 
 TESS_CONFIG = "--psm 6 -c preserve_interword_spaces=1"
 
@@ -105,7 +114,15 @@ DEFAULT_CONFIG = {
     # named, because whose zone you are in is the only bearing there is, but
     # the distance is stated instead of claimed to be small.
     "far_line_m": 5.0e6,
-    "stale_after": 3.0,                  # seconds before a fix is flagged stale
+    # Survey samples are only taken below this height over the reference
+    # sphere. On a logged climb (microTech 2026-10-14) ElevationUnderCam read
+    # right whenever it read at all, up to 25 km, but between 7 and 15 km it
+    # never read, and it was seen changing at random there by eye. A wrong
+    # value would still satisfy the height identity, so only height can keep
+    # it out; below 5 km four frames in five read. Measured from the
+    # position, not the HUD's heights, which are the suspect part.
+    "survey_max_height_m": 5000.0,
+    "stale_after": 3.0,                 # seconds before a fix is flagged stale
     "default_radius": 1000000.0,         # used when the zone is not in BODY_RADII
     "min_move": 20.0,                    # metres moved before heading is updated
     "mirror": False,                     # flip left/right turn hint if it feels reversed
@@ -167,7 +184,7 @@ def prune_backups(name, keep=BACKUP_KEEP):
             pass
 
 
-def save_json(path, data):
+def save_json(path, data, indent=2):
     """Write JSON, keeping the previous BACKUP_KEEP versions in bak/.
 
     Waypoints are collected by flying to each spot, so they cost real time to
@@ -178,7 +195,7 @@ def save_json(path, data):
         BACKUP_DIR.mkdir(exist_ok=True)
         shutil.copy2(path, backup_name(path))
         prune_backups(path.name)
-    path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    path.write_text(json.dumps(data, indent=indent), encoding="utf-8")
 
 
 def backfill_systems(wps):
@@ -208,6 +225,12 @@ def load_waypoints():
 def load_bodies():
     """What past analyses found, keyed by body. Empty if there are none yet."""
     data = load_json(BODIES_FILE, {})
+    return data if isinstance(data, dict) else {}
+
+
+def load_heightmap():
+    """Surveyed ground heights, keyed by body. Empty if there are none yet."""
+    data = load_json(HEIGHTMAP_FILE, {})
     return data if isinstance(data, dict) else {}
 
 
@@ -1304,6 +1327,10 @@ class State:
         self.analysis = None     # a spin.SpinSession while one is running
         self.bodies = {}         # planet -> what its analysis found
         self.stations = {}       # {"fetched": time, "data": UEX records}
+        self.survey = False      # recording ground heights into the height map
+        self.heightmap = {}      # body -> surveyed cells, see heightmap.py
+        self.heightmap_dirty = False
+        self.heightmap_saved = 0.0
         self.log = lambda msg: None
 
     def flash(self, text):  # call with lock held
@@ -1613,9 +1640,11 @@ class State:
             # quantities several times a second, which reads as the altitude
             # itself jumping around.
             elev, alt = heights or (None, None)
+            fresh_elev = None
             if elev is not None and alt is not None:
                 if abs((elev + alt) - (r - radius)) <= HEIGHT_TOLERANCE:
                     self.elev, self.agl = elev, alt
+                    fresh_elev = elev
                     self.heights_time = now
                     self.heights_conflict = False
                 else:
@@ -1644,6 +1673,8 @@ class State:
                     self.heading = bearing(self.ref[0], self.ref[1], lat, lon)
                     self.heading_time = now
                     self.ref = (lat, lon)
+            jumped = (planet == self.planet and self.pos is not None
+                      and too_fast(self.pos, self.fix_time, pos, now))
             self.planet, self.radius, self.pos = planet, radius, pos
             self.latlon = (lat, lon)
             self.fix_time = now
@@ -1653,6 +1684,26 @@ class State:
                 self.misses = 0
             self.status = "ok"
             self.hits += 1
+            # Only a height this frame read and the identity backed: the one
+            # on screen is held for HEIGHT_HOLD_SECONDS, and recording that
+            # would copy it onto ground the ship has since flown over. Nothing
+            # above survey_max_height_m either, where the HUD's ground is a
+            # unreadable or suspect -- and so stations never shape the ground.
+            # Nor a position that jumped: a dropped minus sign mirrors the fix
+            # to the far side of the body at the same distance from its
+            # centre, which the height identity cannot see (microTech,
+            # 2026-10-14: longitude 39.7 read as 140.3, 1,093 km away).
+            if self.survey:
+                why = survey_refusal(elev, alt, fresh_elev, jumped, planet,
+                                     r - radius, self.cfg)
+                if why is None:
+                    heightmap.add_sample(self.heightmap, planet, radius, pos,
+                                         fresh_elev)
+                    self.heightmap_dirty = True
+                # Every frame, kept or not, with the raw readings: where the
+                # HUD's ground turns to noise on a climb is read off this.
+                self.log(f"survey h {r - radius:,.1f} elev {elev} alt {alt} "
+                         f"{why or 'kept'}")
             # A sample is the system position and the planet-frame position
             # from the same frame. Only a reading this frame produced and the
             # settling accepted counts: otherwise a held value would be
@@ -2175,6 +2226,63 @@ def body_report(state, now=None):
     return lines
 
 
+def too_fast(prev, prev_time, pos, now, limit=SURVEY_MAX_SPEED):
+    """Did the fix move faster than `limit` m/s since the previous one?
+
+    The frame after a misread is judged against the misread and dropped too;
+    the one after that is clean again. Two samples lost, against one cell on
+    the wrong side of the body.
+    """
+    d = math.sqrt(sum((a - b) ** 2 for a, b in zip(pos, prev)))
+    return d > limit * max(now - prev_time, 1.0)
+
+
+def survey_refusal(elev, alt, fresh_elev, jumped, planet, height, cfg):
+    """Why this frame gives no survey sample, or None to keep it.
+
+    `elev`, `alt` are this frame's raw readings, `fresh_elev` the elevation if
+    it passed the identity, `height` the fix's height over the sphere.
+    """
+    if elev is None or alt is None:
+        return "dropped: heights unread"
+    if fresh_elev is None:
+        return "dropped: heights fail the identity"
+    if height > cfg["survey_max_height_m"]:
+        return "dropped: above survey_max_height_m"
+    if jumped:
+        return "dropped: position jumped"
+    if planet not in BODY_RADII:
+        return "dropped: unknown body"
+    return None
+
+
+def toggle_survey(state):
+    """Start or stop recording ground heights. Stopping saves them."""
+    with state.lock:
+        state.survey = not state.survey
+        on = state.survey
+        state.flash("survey on" if on else "survey off")
+    state.log(f"survey {'on' if on else 'off'}")
+    if not on:
+        save_heightmap(state, force=True)
+
+
+def save_heightmap(state, force=False, now=None):
+    """Write the height map if it changed and HEIGHTMAP_SAVE_SECONDS have
+    passed since the last write, or at once with `force`. True if written."""
+    now = time.time() if now is None else now
+    with state.lock:
+        if not state.heightmap_dirty or (
+                not force and now - state.heightmap_saved
+                < HEIGHTMAP_SAVE_SECONDS):
+            return False
+        # Compact: indented, every cell would take four lines.
+        save_json(HEIGHTMAP_FILE, state.heightmap, indent=None)
+        state.heightmap_dirty = False
+        state.heightmap_saved = now
+    return True
+
+
 def load_stations(state):
     """The saved station list, fetched again if missing or a week old.
 
@@ -2323,6 +2431,9 @@ def render_location(state, with_status=True):
         else:
             lines.append(f"H   {fmt_dist(r - state.radius)} "
                          f"over reference sphere")
+        if state.survey:
+            cells = heightmap.cell_count(state.heightmap, state.planet)
+            lines.append(f"SURVEY {cells:,} cell{'' if cells == 1 else 's'}")
         return "\n".join(lines)
 
 
@@ -3258,6 +3369,10 @@ def run_overlay(state, cfg):
     analyse_btn.pack(side="left")
     report_btn = button(btn_row2, "REPORT", fire("report", do_report), width=7)
     report_btn.pack(side="left", padx=(6, 0))
+    # Wide enough for "END SURVEY", so swapping the label cannot resize it.
+    survey_btn = button(btn_row2, "SURVEY", fire("survey", toggle_survey),
+                        width=10)
+    survey_btn.pack(side="left", padx=(6, 0))
     button(btn_row2, "QUIT", lambda: root.destroy(), width=5,
            bg="#6A7785").pack(side="right")
     button(btn_row2, "CLOSE", lambda: collapse()).pack(side="right",
@@ -3393,6 +3508,7 @@ def run_overlay(state, cfg):
                 show_report()               # a run just began: open its block
             view["was_analysing"] = bool(analysing)
             analyse_btn.config(text="STOP" if analysing else "ANALYSE")
+            survey_btn.config(text="END SURVEY" if state.survey else "SURVEY")
             # Toast: what a save or an edit just reported replaces the health
             # line until it fades.
             toast = f">> {state.note}" if fresh else ""
@@ -3407,6 +3523,7 @@ def run_overlay(state, cfg):
             analysing = analysis_progress(state)
             note.config(text=analysing or (state.note if fresh else ""),
                         fg=colour if (fresh or analysing) else DIM)
+        save_heightmap(state)
         reposition_if_resized()
         if hud["on"]:               # hidden on purpose: keep_on_top shows it
             keep_on_top(root)
@@ -3460,6 +3577,7 @@ def cmd_run(args):
     cfg = load_config()
     state = State(cfg, load_waypoints())
     state.bodies = load_bodies()
+    state.heightmap = load_heightmap()
     state.log = make_logger(args.log)
     stop = threading.Event()
     threading.Thread(target=ocr_worker, args=(state, cfg, stop), daemon=True).start()
@@ -3474,6 +3592,7 @@ def cmd_run(args):
             run_overlay(state, cfg)
     finally:
         stop.set()
+        save_heightmap(state, force=True)
 
 
 def cmd_calibrate(args):

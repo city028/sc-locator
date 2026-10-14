@@ -1025,6 +1025,124 @@ above the waypoint row.
 The arrow is the same turn figure as the text, so it inherits the `HDG` problem
 below: course over ground, not facing.
 
+## Height map (survey mode, 2026-10-14)
+
+`ElevationUnderCam` is the ground's height over the reference sphere under
+the camera, in flight as well as on foot, so the ground can be mapped without
+landing. The ground under a sample is at radius + elevation from the centre.
+
+**Grid.** A cube-sphere, equal-angle: the six faces of a cube pushed out
+onto the body, each cut into n x n cells with n = round(pi/2 * r / 100 m).
+A lat/lon grid was the alternative and squeezes its cells to nothing at the
+poles. Equal-angle cells are 100 m at the middle of a face and 70.7 m along
+its edges, on every body (measured: Hurston, Euterpe, Crusader). A body's n
+is stored with its cells and fixed by the first sample, so a later radius
+correction cannot shift cells already measured.
+
+**What is recorded.** One sample per frame, only when the height came from
+that frame and passed the identity check. The overlay holds the last good
+height for `HEIGHT_HOLD_SECONDS`; recording the held value would copy it onto
+ground flown over since. Nothing above the space line and nothing on a body
+outside `BODY_RADII`. Cells keep a running mean and a sample count.
+
+**Size.** Whole bodies at 100 m are out of reach -- Hurston is 1.26 billion
+cells -- but only measured cells are stored. Saved compact (no indent: an
+indented cell takes four lines), every 2 minutes during a survey and when it
+stops.
+
+**Gaps.** Cells are at most 100 m across, so samples 100 m apart skip some.
+A gap-free strip needs samples under ~70 m apart. The map shows the gaps grey
+rather than filling them: grey means unmeasured, and nothing else.
+
+**First survey (microTech, around New Babbage, 2026-10-14).** 192 cells over
+~50 km at ~200 m/s, so samples ~200 m apart: a dotted line on the map.
+Heights -40 m to 1,488 m. No building-like spikes: every bump was 2-3 cells
+wide and rose and fell over several samples, as terrain does.
+
+**The ice sea between the city and the spaceport reads exactly -40.0 m**, for
+~30 samples over ~12 km (confirmed by eye in game). Ground never holds a
+height to the decimetre like that, so a run of identical heights marks a
+water or ice surface. That is the lead for mapping shore lines.
+
+**Second pass, over the city (2026-10-14).** 133 more cells: down from the
+spaceport side (490 m), across the sea at -40.0 m again, then a loop on the
+city side (22-155 m). There, neighbouring cells ~200 m apart never differ by
+more than ~25 m, where New Babbage's towers would put jumps of 100 m or more
+into a track that crossed them. So the HUD's ground looks like terrain, not
+buildings. Confirmed: the loop was flown ~100 m over the rooftops.
+
+**And directly, parked on a New Babbage roof (screenshot, 2026-10-14).** The
+ship's radar altimeter (R-ALT, cockpit HUD) read 49 m to the roof, while the
+debug HUD read `ElevationUnderCam: 21.437500 Altitude 1163.359750` -- the
+roof stands ~1,114 m over what the HUD calls ground. Structures do not exist
+for ElevationUnderCam, the whole city included: the height map shows the
+terrain under a city, not the city. The debug HUD carries no radar altitude;
+R-ALT is only on the ship's own HUD.
+
+The same block has `XYPos: 701111.269927 563288.135477 Page: 4 (+Z)`: the
+game's terrain seems to be paged by cube face too, with XYPos a position on
+the face. Not used.
+
+**A dropped minus sign gets past every check.** One sample landed at
+longitude 140.3 instead of 39.7: x had lost its sign, which mirrors the fix
+across the body at the same distance from the centre, so the radius gate and
+the height identity both pass. Survey samples are now dropped when the fix
+moved faster than `SURVEY_MAX_SPEED` (3 km/s) since the previous one.
+
+**A sample about every 2 s, not every 1 s.** The city pass was flown at
+~100 m/s and its samples came out 180-270 m apart (median 230 m), so a
+recorded sample lands every ~2.3 s although `interval` is 1 s. Frames that
+need the contrast ladder, or fail it, cost the difference. A gap-free strip
+therefore needs ~30 m/s, not the 70 m/s first assumed.
+
+**ElevationUnderCam high up (microTech, 2026-10-14, by eye).** It stays on
+the HUD out of the atmosphere. A first report had it reading -40 there; that
+was flying up and down over the ice sea, which is at -40 -- so it was the
+ground, not a fallback. Corrected after the logged climb below. Near ~10 km
+it seemed to change at random. A wrong value there would still satisfy the
+height identity, since Altitude is derived from it, so survey samples are cut
+off by height: `survey_max_height_m`, 5 km over the reference sphere,
+measured from the position.
+
+**The logged climb (microTech, 2026-10-14, 10:00-10:09).** Straight up from
+ground at 108 m to 25 km, at ~50-80 m/s, with SURVEY on and every frame
+logged (`survey h ... elev ... alt ...`). Every ElevationUnderCam that was
+read, at any height, was the ground under the ship: 105-111 m, drifting a
+little as the ship did, and passing the identity. No -40 and no random
+values were read anywhere up to 25 km. What changes with height is whether
+it reads at all, while Altitude on the same row keeps reading:
+
+| height | frames | elevation read |
+|---|---|---|
+| 0-5 km | 59 | 83% |
+| 5-7 km | 26 | 65% |
+| 7-15 km | 98 | **0%** |
+| 15-20 km | 53 | 36% |
+| 20-25 km | 64 | 9% |
+
+Between 7 and 15 km not one frame read -- the band where the "random number
+changes" were seen by eye. Whether the HUD prints something unparseable there
+or the OCR loses the value against the sky is not known: the raw row is not
+logged. Either way nothing bad gets in -- what is read is right, and what is
+not is dropped -- so the 5 km ceiling stays for a practical reason: below it
+four frames in five give a sample.
+
+Three frames in the climb failed the identity (two positions misread to
+4,319 km and 51,691 km, one altitude to 59 km) and were dropped. The good
+frame after the 4,319 km one was dropped as a jump, as designed.
+
+So -40 is not a fallback value: it is the ice sea's level on microTech, and
+a run of exactly -40.0 there is water. Other bodies' seas may sit at other
+levels.
+
+**Drawing (tkinter).** The globe is 24 x 24 tiles a face (3,456, about half
+drawn), each the mean of the measured cells inside it -- each cell counted
+once, so standing still does not outweigh ground flown over. Tile corners are
+matched by position, so a raised tile lifts its neighbours' corners across a
+cube edge too and the mesh does not tear. ~45 ms a redraw. The Height map tab
+paints measured cells into a `PhotoImage` on a gnomonic map around you;
+~190 ms for 10,000 cells in view.
+
 ## Still open
 
 - `HDG` is course over ground, not facing — wrong whenever hovering, strafing

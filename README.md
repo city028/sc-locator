@@ -28,6 +28,7 @@ game.
   - [Body analysis: spin, sun, sunset](#body-analysis-spin-sun-sunset)
   - [Places in space and station info](#places-in-space-and-station-info)
   - [Main window: star map, waypoints, reports](#main-window-star-map-waypoints-reports)
+  - [Survey mode: your own height map](#survey-mode-your-own-height-map)
   - [Automatic backups](#automatic-backups)
 - [The panel, button by button](#the-panel-button-by-button)
 - [Command line](#command-line)
@@ -301,10 +302,37 @@ quits the program.
 Sizes on the system map are not to scale (a planet would be smaller than a
 pixel); positions are.
 
+### Survey mode: your own height map
+
+Press **SURVEY** in the panel and fly or walk: every frame where the HUD's
+ground height reads cleanly records the height of the ground under you into a
+grid of cells about 100 m across (70-100 m, depending on where on the body).
+Press **END SURVEY** to stop; the map is saved then, and every 2 minutes while
+surveying. The panel shows `SURVEY 1,234 cells` for the body you are on.
+
+- Works in flight too: the HUD reports the ground under you, not your own
+  height. Nothing is recorded more than 5 km over the reference sphere
+  (`survey_max_height_m`): higher up the ground height mostly cannot be read
+  (on microTech, not at all between 7 and 15 km), so survey low. Stations
+  and orbits never touch the map. A sample whose position jumped faster than 3 km/s since the last
+  one (a misread digit or sign) is dropped too.
+- A cell measured more than once keeps the average.
+- For a map with no gaps, keep your samples under about 70 m apart. In
+  practice a sample lands about every 2 seconds (at 100 m/s they came out
+  ~230 m apart), so that means about 30 m/s, with flight lines 70 m apart.
+- **Star map**, a planet open: the globe is drawn as a mesh. Tiles you have
+  surveyed are coloured by height and raised (**relief x** at the top right
+  sets by how much; real relief is invisible at globe size); the rest is grey.
+  Each tile covers tens of km, so the globe shows where you have been.
+- **Height map** tab: the ground around you at full detail, one cell to a
+  pixel at 100 m a pixel. Grey is ground nobody measured. It follows you while
+  **follow me** is ticked; drag to move, wheel to zoom (12.5 m to 800 m a
+  pixel). Your waypoints on that body are shown on it.
+
 ### Automatic backups
 
-Every time `waypoints.json`, `bodies.json` or `locator_config.json` is
-rewritten, the previous version is copied to the `bak/` folder. The last 30
+Every time `waypoints.json`, `bodies.json`, `heightmap.json` or
+`locator_config.json` is rewritten, the previous version is copied to the `bak/` folder. The last 30
 versions of each file are kept. If something goes wrong, copy one back.
 
 ---
@@ -319,6 +347,7 @@ versions of each file are kept. If something goes wrong, copy one back.
 | **DELETE** | delete the selected waypoint |
 | **ANALYSE** / **STOP** | start a body or place analysis |
 | **REPORT** / **HIDE** | show or hide the analysis for where you are |
+| **SURVEY** / **END SURVEY** | record the ground's height under you into the height map, or stop and save |
 | **CLOSE** | collapse the panel back to the pin |
 | **QUIT** | exit the program |
 
@@ -371,6 +400,7 @@ program is closed. The ones you are most likely to change:
 | `idle_interval` | `5.0` | seconds between checks for the game while it is not running |
 | `stale_after` | `3.0` | seconds without a good reading before the fix shows as stale |
 | `space_line_m` | `100000` | height (m) above which it says "In Space near …" |
+| `survey_max_height_m` | `5000` | height (m) over the reference sphere above which survey records nothing |
 | `min_move` | `20.0` | metres you must move before your heading updates |
 | `game_process` | `["starcitizen.exe"]` | process names that count as the game running |
 | `tesseract_cmd` | `null` | path to your own `tesseract.exe`, to use instead of the packed one |
@@ -392,6 +422,7 @@ All next to the `.exe`:
 | `bodies.json` | analysis results per body and place |
 | `locator_config.json` | settings |
 | `stations.json` | cached station list from UEX |
+| `heightmap.json` | ground heights from survey mode, per body |
 | `bak/` | automatic backups of the files above |
 
 To move to a new PC, copy the whole folder. To share waypoints with a friend,
@@ -453,6 +484,9 @@ command prompt, reproduce it, and attach `session.log`.
 - The analysis assumes every body spins the same way as the ones measured so
   far. The report's `Check` line warns if a result disagrees.
 - On foot in very dark places the fix can drop out. Not yet tested properly.
+- Survey mode records whatever the HUD calls the ground. Whether that includes
+  buildings and outpost roofs is not yet tested; if it does, they show as
+  spikes.
 - It depends on the debug HUD's layout. A game patch that changes it can break
   reading until the program is updated.
 

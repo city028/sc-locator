@@ -9,6 +9,7 @@ dist/
 waypoints.json
 locator_config.json
 stations.json
+heightmap.json
 bak/
 *.bak
 

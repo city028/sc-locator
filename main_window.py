@@ -13,6 +13,7 @@ import time
 import tkinter as tk
 from tkinter import messagebox, ttk
 
+import heightmap
 import starmap
 
 BG, PANEL, FG, DIM, ACCENT = "#05080c", "#0d141c", "#D8E2EE", "#8FA0B4", "#7CFFB2"
@@ -74,9 +75,10 @@ def open_main(root, state, scl, set_hud):
         nb.select(editor.frame)
         editor.select(name)
 
-    tabs = [StarMap(nb, state, scl, pick_waypoint), editor,
-            ReportViewer(nb, state, scl)]
-    for tab, title in zip(tabs, ("Star map", "Waypoints", "Reports")):
+    tabs = [StarMap(nb, state, scl, pick_waypoint),
+            HeightMapTab(nb, state, scl), editor, ReportViewer(nb, state, scl)]
+    for tab, title in zip(tabs, ("Star map", "Height map", "Waypoints",
+                                 "Reports")):
         nb.add(tab.frame, text=title)
 
     def tick():
@@ -136,6 +138,7 @@ class StarMap:
         self.press, self.dragged, self.seen = None, False, None
         self.ticks = 0
         self.om = None          # (lat, lon) of the marker the view sits above
+        self.mesh_key, self.mesh_tiles = None, ([], 0.0, 0.0)
 
         side = tk.Frame(self.frame, bg=BG)
         side.pack(side="left", fill="y", padx=(0, 8))
@@ -180,6 +183,16 @@ class StarMap:
             ttk.Button(self.om_bar, text=name, width=5,
                        command=lambda la=lat, lo=lon: self.view_om(la, lo)).pack(
                 side="left", padx=1)
+        # Surveyed ground is raised by this much, or it would not show at all:
+        # a few km of relief on a 1000 km body is under a pixel.
+        tk.Label(self.om_bar, text="relief x", font=("Consolas", 9), fg=DIM,
+                 bg=BG).pack(side="left", padx=(8, 2))
+        self.relief = tk.StringVar(value="20")
+        relief = ttk.Combobox(self.om_bar, textvariable=self.relief, width=4,
+                              state="readonly",
+                              values=("1", "5", "10", "20", "50", "100"))
+        relief.pack(side="left")
+        relief.bind("<<ComboboxSelected>>", lambda e: self.draw())
         # The system view's counterpart, in the same place.
         self.reset_btn = ttk.Button(self.canvas, text="default view",
                                     command=lambda: self.show(self.system,
@@ -251,8 +264,11 @@ class StarMap:
         """Redraw only when the data changed: a save from the overlay, a
         rename, a new analysis."""
         wps, bodies = snapshot(self.state)
+        with self.state.lock:
+            cells = heightmap.cell_count(self.state.heightmap, self.body)
         seen = (tuple((w["name"], w["planet"]) for w in wps),
-                tuple((k, tuple(v.get("centre") or ())) for k, v in bodies.items()))
+                tuple((k, tuple(v.get("centre") or ())) for k, v in bodies.items()),
+                cells)
         self.ticks += 1
         # A turning globe is redrawn now and then, to keep up with its spin.
         if seen != self.seen or (self.body and self.ticks % 5 == 0
@@ -312,6 +328,46 @@ class StarMap:
             self.canvas.create_oval(x - off - rr, y - off - rr, x - off + rr,
                                     y - off + rr, fill=col, outline="",
                                     tags=tags)
+
+    def mesh(self, radius):
+        """(tiles, lo, hi) for the open body, rebuilt only when its survey or
+        the relief changed."""
+        relief = float(self.relief.get())
+        with self.state.lock:
+            rec = self.state.heightmap.get(self.body)
+            k = (self.body, radius, relief,
+                 len(rec["cells"]) if rec else 0)
+            if k == self.mesh_key:
+                return self.mesh_tiles
+            heights = heightmap.coarse(rec, heightmap.GLOBE_CELLS)
+        lo, hi = heightmap.height_range(heights.values())
+        self.mesh_key = k
+        self.mesh_tiles = (heightmap.globe_tiles(heights, radius,
+                                                 exaggeration=relief), lo, hi)
+        return self.mesh_tiles
+
+    def draw_mesh(self, radius, yaw, pitch, scale, cx, cy):
+        """The body as its height-map mesh: surveyed tiles coloured by height
+        and raised, the rest grey on the reference sphere. Returns how many
+        cells have been surveyed."""
+        tiles, lo, hi = self.mesh(radius)
+        near = []
+        for corners, centre, h in tiles:
+            n = starmap.rotate(centre, yaw, pitch)
+            if n[1] > 0:                        # the far side
+                continue
+            flat = []
+            for p in corners:
+                sx, sy, _ = starmap.project(p, yaw, pitch, scale, cx, cy)
+                flat += [sx, sy]
+            near.append((n, flat, h))
+        near.sort(key=lambda t: -t[0][1])       # farthest first
+        for n, flat, h in near:
+            light = heightmap.tile_light(n)
+            self.canvas.create_polygon(
+                *flat, fill=heightmap.height_colour(h, lo, hi, light),
+                outline=heightmap.height_colour(h, lo, hi, light * 0.8))
+        return self.mesh_key[3]
 
     def pin(self, x, y, name, label=None):
         """A location marker standing on (x, y), with its name (or `label`)
@@ -463,8 +519,7 @@ class StarMap:
                 draw_pole(spot, sign)
         for item in behind:
             draw_item(item)
-        is_moon = any(self.body in m for m in starmap.MOONS.values())
-        self.sphere(cx, cy, r_px, MOON if is_moon else PLANET)
+        surveyed = self.draw_mesh(radius, own, pitch, scale, cx, cy)
         for line in starmap.graticule(radius):
             for run in starmap.front_segments(line, own, pitch, scale, cx, cy):
                 c.create_line(*run, fill=GRID)
@@ -480,6 +535,8 @@ class StarMap:
         where = rec.get("system") or self.system
         facts = [f"radius {radius / 1000:,.0f} km",
                  f"{len(pts)} waypoint{'' if len(pts) == 1 else 's'}"]
+        if surveyed:
+            facts.append(f"{surveyed:,} cells surveyed")
         if spin:
             facts.append("turned as it is now")
         # Short lines: the marker buttons sit at the top right of the canvas.
@@ -489,6 +546,207 @@ class StarMap:
         lines.append("drag to rotate  -  wheel to zoom")
         lines.append("click a pin to edit it, a moon to open it")
         self.header(f"{self.body.upper()}  ({where})", "\n".join(lines))
+
+
+# ----------------------------------------------------------------------------
+# Height map
+# ----------------------------------------------------------------------------
+
+
+class HeightMapTab:
+    """The surveyed ground around you, flat and at full detail: one 100 m
+    cell to a pixel at the start, grey where nothing has been measured."""
+
+    ZOOMS = (12.5, 25.0, 50.0, 100.0, 200.0, 400.0, 800.0)   # metres a pixel
+
+    def __init__(self, parent, state, scl):
+        self.state, self.scl = state, scl
+        self.frame = tk.Frame(parent, bg=BG)
+        self.body, self.centre = None, None
+        self.mpp = 100.0
+        self.press, self.seen, self.image = None, None, None
+
+        side = tk.Frame(self.frame, bg=BG)
+        side.pack(side="left", fill="y", padx=(0, 8))
+        tk.Label(side, text="Body", font=MONO, fg=DIM, bg=BG).pack(anchor="w")
+        self.body_var = tk.StringVar()
+        self.pick = ttk.Combobox(side, textvariable=self.body_var, width=14,
+                                 state="readonly")
+        self.pick.pack(anchor="w", pady=(0, 8))
+        self.pick.bind("<<ComboboxSelected>>",
+                       lambda e: self.open(self.body_var.get()))
+        self.follow = tk.BooleanVar(value=True)
+        ttk.Checkbutton(side, text="follow me", variable=self.follow,
+                        command=self.draw).pack(anchor="w", pady=(0, 8))
+        self.info = tk.Label(side, font=MONO, fg=FG, bg=BG, justify="left",
+                             anchor="w")
+        self.info.pack(anchor="w", fill="x")
+        self.legend = tk.Canvas(side, width=170, height=34, bg=BG,
+                                highlightthickness=0)
+        self.legend.pack(anchor="w", pady=(8, 8))
+        tk.Label(side, font=("Consolas", 9), fg=DIM, bg=BG, justify="left",
+                 anchor="w",
+                 text="SURVEY in the overlay\nrecords the ground "
+                      "under you.\n\ngrey: not measured\ndrag to move\n"
+                      "wheel to zoom").pack(anchor="w", fill="x")
+
+        self.canvas = tk.Canvas(self.frame, bg=heightmap.GREY,
+                                highlightthickness=0)
+        self.canvas.pack(side="left", fill="both", expand=True)
+        self.canvas.bind("<Configure>", lambda e: self.draw())
+        self.canvas.bind("<Map>", lambda e: self.draw())
+        self.canvas.bind("<ButtonPress-1>", self.on_press)
+        self.canvas.bind("<B1-Motion>", self.on_drag)
+        self.canvas.bind("<ButtonRelease-1>", self.on_release)
+        self.canvas.bind("<MouseWheel>", self.on_wheel)
+
+    def open(self, body):
+        """Show `body`, around the middle of what was surveyed on it."""
+        self.body = body
+        with self.state.lock:
+            self.centre = heightmap.centre_of(self.state.heightmap.get(body))
+        self.draw()
+
+    def on_press(self, e):
+        self.press = (e.x, e.y)
+
+    def on_release(self, _e):
+        self.press = None
+
+    def on_drag(self, e):
+        if self.press is None or self.centre is None:
+            return
+        dx, dy = e.x - self.press[0], e.y - self.press[1]
+        self.press = (e.x, e.y)
+        self.follow.set(False)              # moved by hand: stop following
+        with self.state.lock:
+            radius = self.radius()
+        self.centre = heightmap.from_map(-dx * self.mpp, dy * self.mpp,
+                                         heightmap.local_frame(self.centre),
+                                         radius)
+        self.draw()
+
+    def on_wheel(self, e):
+        i = self.ZOOMS.index(self.mpp) + (-1 if e.delta > 0 else 1)
+        self.mpp = self.ZOOMS[max(0, min(len(self.ZOOMS) - 1, i))]
+        self.draw()
+
+    def radius(self):
+        """The body's radius. Call with the lock held."""
+        rec = self.state.heightmap.get(self.body)
+        return rec["radius"] if rec else self.scl.BODY_RADII.get(self.body, 1.0)
+
+    def look(self):
+        """What the map depends on, to redraw only when it changes. Lock held."""
+        st = self.state
+        on_it = self.follow.get() and st.planet == self.body
+        return (self.body, heightmap.cell_count(st.heightmap, self.body),
+                tuple(st.pos) if on_it and st.pos else None)
+
+    def refresh(self):
+        with self.state.lock:
+            bodies = sorted(self.state.heightmap)
+            here = self.state.planet
+            seen = self.look()
+        if here in self.scl.BODY_RADII and here not in bodies:
+            bodies.append(here)
+        self.pick.config(values=bodies)
+        if self.body is None and bodies:
+            self.body_var.set(here if here in bodies else bodies[0])
+            self.open(self.body_var.get())
+        elif seen != self.seen:
+            self.draw()
+
+    def draw(self):
+        c = self.canvas
+        w, h = c.winfo_width(), c.winfo_height()
+        if w < 50 or h < 50 or not c.winfo_ismapped() or self.body is None:
+            return
+        half_w, half_h = w / 2 * self.mpp, h / 2 * self.mpp
+        with self.state.lock:
+            st = self.state
+            self.seen = self.look()
+            here, pos = st.planet, st.pos
+            if self.seen[2] is not None:
+                self.centre = heightmap.local_frame(pos)[0]
+            radius = self.radius()
+            frame = (heightmap.local_frame(self.centre)
+                     if self.centre is not None else None)
+            near = (heightmap.local_cells(st.heightmap.get(self.body), radius,
+                                          frame, half_w, half_h)
+                    if frame else [])
+            wps = [dict(x) for x in st.waypoints]
+        c.delete("all")
+        lo, hi = heightmap.height_range(z for _, _, z in near)
+        img = tk.PhotoImage(width=w, height=h)
+        img.put(heightmap.GREY, to=(0, 0, w, h))
+        # Cells are 70-100 m: drawn 100 m wide they overlap rather than gap.
+        size = max(1, math.ceil(heightmap.CELL_M / self.mpp))
+        for x, y, z in near:
+            x0 = int(w / 2 + x / self.mpp - size / 2)
+            y0 = int(h / 2 - y / self.mpp - size / 2)
+            x1, y1 = min(w, x0 + size), min(h, y0 + size)
+            x0, y0 = max(0, x0), max(0, y0)
+            if x1 > x0 and y1 > y0:
+                img.put(heightmap.height_colour(z, lo, hi), to=(x0, y0, x1, y1))
+        self.image = img                # Tk drops an image nothing holds
+        c.create_image(0, 0, image=img, anchor="nw")
+
+        def spot(p):
+            xy = heightmap.to_map(p, frame, radius)
+            if xy and abs(xy[0]) <= half_w and abs(xy[1]) <= half_h:
+                return w / 2 + xy[0] / self.mpp, h / 2 - xy[1] / self.mpp
+            return None
+
+        if frame:
+            for name, p in starmap.body_points(wps, self.body):
+                xy = spot(p)
+                if xy:
+                    sx, sy = xy
+                    c.create_oval(sx - 4, sy - 4, sx + 4, sy + 4, fill=PIN,
+                                  outline=BG)
+                    c.create_text(sx + 7, sy, text=name, anchor="w", fill=FG,
+                                  font=("Consolas", 9))
+            xy = spot(pos) if here == self.body and pos else None
+            if xy:
+                sx, sy = xy
+                c.create_line(sx - 8, sy, sx + 8, sy, fill=ACCENT, width=2)
+                c.create_line(sx, sy - 8, sx, sy + 8, fill=ACCENT, width=2)
+        else:
+            c.create_text(w / 2, h / 2, fill=FG, font=MONO,
+                          text=f"Nothing surveyed on {self.body} yet")
+        self.scale_bar(w, h)
+        self.draw_legend(lo, hi, bool(near))
+        self.info.config(text=f"{self.seen[1]:,} cells surveyed\n"
+                              f"{len(near):,} in view\n"
+                              f"{2 * half_w / 1000:,.1f} x "
+                              f"{2 * half_h / 1000:,.1f} km\n"
+                              f"{self.mpp:g} m a pixel")
+
+    def scale_bar(self, w, h):
+        """A round length up to a fifth of the map wide, bottom left."""
+        want = w / 5 * self.mpp
+        step = 10 ** math.floor(math.log10(want))
+        length = max(k * step for k in (1, 2, 5) if k * step <= want)
+        c = self.canvas
+        c.create_line(12, h - 14, 12 + length / self.mpp, h - 14, fill=FG,
+                      width=3)
+        c.create_text(12, h - 20, anchor="sw", fill=FG, font=("Consolas", 9),
+                      text=self.scl.fmt_dist(length))
+
+    def draw_legend(self, lo, hi, any_cells):
+        """The height scale, low to high, for the cells in view."""
+        lg = self.legend
+        lg.delete("all")
+        if not any_cells:
+            return
+        for i in range(160):
+            lg.create_line(i, 0, i, 14, fill=heightmap.height_colour(
+                lo + (hi - lo) * i / 159, lo, hi))
+        lg.create_text(0, 18, anchor="nw", fill=DIM, font=("Consolas", 9),
+                       text=self.scl.fmt_dist(lo))
+        lg.create_text(160, 18, anchor="ne", fill=DIM, font=("Consolas", 9),
+                       text=self.scl.fmt_dist(hi))
 
 
 # ----------------------------------------------------------------------------
