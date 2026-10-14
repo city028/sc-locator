@@ -186,6 +186,24 @@ def attached_body(w, placed):
     return best[1] if best and best[0] <= POI_RANGE_M else None
 
 
+def waypoint_view(w, bodies):
+    """Where the star map shows waypoint w, as (system, body, (lat, lon)), or
+    None when its system is not known.
+
+    body is None for the system view. (lat, lon) is the spot to look straight
+    down on, so the waypoint faces the viewer; None when the view need not
+    turn, as for a point in space.
+    """
+    system = w.get("system")
+    if system not in SYSTEMS:
+        return None
+    if w.get("frame", "planet") == "planet":
+        x, y, z = w["x"], w["y"], w["z"]
+        lat = math.degrees(math.asin(z / math.sqrt(x * x + y * y + z * z)))
+        return system, w["planet"], (lat, math.degrees(math.atan2(y, x)))
+    return system, attached_body(w, placed_bodies(bodies, system)), None
+
+
 def spin_angle(rec, t):
     """Radians to turn a body's own frame about +z into the system's
     orientation at time t. 0 when its spin has not been measured.

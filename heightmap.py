@@ -21,7 +21,8 @@ planet frame, which turns with the body, so a cell stays on the same ground.
 import math
 
 CELL_M = 100.0
-GLOBE_CELLS = 24        # cells per face edge on the globe view
+GLOBE_CELLS = 192       # cells per face edge on the globe view: 8 km
+                        # on a 1000 km body
 
 # Each face: (normal, a axis, b axis). A point on a face is
 # normal + a * a_axis + b * b_axis before it is pushed out onto the sphere.
@@ -124,13 +125,13 @@ def coarse(rec, m):
 
 
 def globe_tiles(heights, radius, m=GLOBE_CELLS, exaggeration=1.0):
-    """The globe as m x m tiles per face, ready to project and draw.
+    """The measured tiles of the globe, m x m per face, ready to project and
+    draw. The rest of the body is drawn as a plain ball under them.
 
-    `heights` is coarse(rec, m). Returns [(corners, centre, height or None)],
-    corners four planet-frame points. A tile nobody measured has height None
-    and stays on the reference sphere, except for corners it shares with a
-    measured tile, which rise with it so the mesh does not tear. Corners are
-    shared across face edges too: they are matched by position, not by index.
+    `heights` is coarse(rec, m). Returns [(corners, centre, height)], corners
+    four planet-frame points. Neighbouring tiles rise together at the corners
+    they share, so the mesh does not tear. Corners are shared across face
+    edges too: they are matched by position, not by index.
     """
     corner_sum = {}
 
@@ -138,27 +139,22 @@ def globe_tiles(heights, radius, m=GLOBE_CELLS, exaggeration=1.0):
         return tuple(round(c * 1e6) for c in p)
 
     grid = []
-    for face in range(6):
-        for i in range(m):
-            for j in range(m):
-                corners = [grid_point(face, i + du, j + dv, m)
-                           for du, dv in ((0, 0), (1, 0), (1, 1), (0, 1))]
-                h = heights.get((face, i, j))
-                grid.append((corners, cell_centre(face, i, j, m), h))
-                if h is not None:
-                    for p in corners:
-                        s = corner_sum.setdefault(corner_key(p), [0.0, 0])
-                        s[0] += h
-                        s[1] += 1
+    for (face, i, j), h in heights.items():
+        corners = [grid_point(face, i + du, j + dv, m)
+                   for du, dv in ((0, 0), (1, 0), (1, 1), (0, 1))]
+        grid.append((corners, cell_centre(face, i, j, m), h))
+        for p in corners:
+            s = corner_sum.setdefault(corner_key(p), [0.0, 0])
+            s[0] += h
+            s[1] += 1
     tiles = []
     for corners, centre, h in grid:
         raised = []
         for p in corners:
-            s = corner_sum.get(corner_key(p))
-            lift = s[0] / s[1] if s else 0.0
-            r = radius + lift * exaggeration
+            s = corner_sum[corner_key(p)]
+            r = radius + s[0] / s[1] * exaggeration
             raised.append((p[0] * r, p[1] * r, p[2] * r))
-        r = radius + (h or 0.0) * exaggeration
+        r = radius + h * exaggeration
         tiles.append((raised, (centre[0] * r, centre[1] * r, centre[2] * r),
                       h))
     return tiles

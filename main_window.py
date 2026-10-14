@@ -13,6 +13,8 @@ import time
 import tkinter as tk
 from tkinter import messagebox, ttk
 
+from PIL import Image, ImageTk
+
 import heightmap
 import starmap
 
@@ -68,14 +70,20 @@ def open_main(root, state, scl, set_hud):
 
     nb = ttk.Notebook(win)
     nb.pack(fill="both", expand=True, padx=8, pady=8)
-    editor = WaypointEditor(nb, state, scl)
+    def show_waypoint(name):
+        """SHOW ON MAP in the table: open the star map on that waypoint."""
+        nb.select(star.frame)
+        star.show_waypoint(name)
+
+    editor = WaypointEditor(nb, state, scl, show_waypoint)
 
     def pick_waypoint(name):
         """A pin clicked on the map: show that waypoint in the table."""
         nb.select(editor.frame)
         editor.select(name)
 
-    tabs = [StarMap(nb, state, scl, pick_waypoint),
+    star = StarMap(nb, state, scl, pick_waypoint)
+    tabs = [star,
             HeightMapTab(nb, state, scl), editor, ReportViewer(nb, state, scl)]
     for tab, title in zip(tabs, ("Star map", "Height map", "Waypoints",
                                  "Reports")):
@@ -132,6 +140,7 @@ class StarMap:
         # canvas item -> waypoint name. Not a tag: names have spaces in them,
         # and a canvas tag cannot.
         self.pins = {}
+        self.marked = None      # waypoint ringed by SHOW ON MAP
         self.frame = tk.Frame(parent, bg=BG)
         self.system, self.body = starmap.SYSTEMS[0], None
         self.yaw, self.pitch, self.zoom = 0.0, math.radians(60), 1.0
@@ -205,9 +214,9 @@ class StarMap:
 
     # --- navigation ---------------------------------------------------------
 
-    def show(self, system, body):
+    def show(self, system, body, marked=None):
         self.system, self.body, self.zoom, self.yaw = system, body, 1.0, 0.0
-        self.om = None
+        self.om, self.marked = None, marked
         self.system_var.set(system)
         if body is None:
             self.om_bar.place_forget()
@@ -223,6 +232,20 @@ class StarMap:
         the zoom already set. The view stays there as the body turns."""
         self.om = (lat, lon)
         self.draw()
+
+    def show_waypoint(self, name):
+        """Open the view a waypoint is on, turned so it faces you."""
+        wps, bodies = snapshot(self.state)
+        w = next((q for q in wps if q["name"] == name), None)
+        where = starmap.waypoint_view(w, bodies) if w else None
+        if where is None:
+            with self.state.lock:
+                self.state.flash(f"{name}: system unknown, not on the star map")
+            return
+        system, body, om = where
+        self.show(system, body, name)
+        if om is not None:
+            self.view_om(*om)
 
     def open_unplaced(self, _event):
         sel = self.unplaced.curselection()
@@ -319,8 +342,8 @@ class StarMap:
 
     def sphere(self, x, y, r, colours, tags=()):
         """A shaded ball: from the dark rim to a highlight toward the top left,
-        in steps fine enough not to show as bands at full window size."""
-        steps = max(3, min(24, int(r / 6)))
+        in steps one colour shade apart, so no bands show at any zoom."""
+        steps = max(3, min(140, int(r / 2)))
         for i in range(steps):
             k = 1 - i / steps                    # 1 at the rim, toward 0
             rr, off = r * k, r * (1 - k) * 0.4
@@ -347,9 +370,10 @@ class StarMap:
         return self.mesh_tiles
 
     def draw_mesh(self, radius, yaw, pitch, scale, cx, cy):
-        """The body as its height-map mesh: surveyed tiles coloured by height
-        and raised, the rest grey on the reference sphere. Returns how many
-        cells have been surveyed."""
+        """The body as a shaded ball with its surveyed tiles on it, coloured
+        by height and raised. Returns how many cells have been surveyed."""
+        is_moon = any(self.body in m for m in starmap.MOONS.values())
+        self.sphere(cx, cy, radius * scale, MOON if is_moon else PLANET)
         tiles, lo, hi = self.mesh(radius)
         near = []
         for corners, centre, h in tiles:
@@ -363,17 +387,21 @@ class StarMap:
             near.append((n, flat, h))
         near.sort(key=lambda t: -t[0][1])       # farthest first
         for n, flat, h in near:
-            light = heightmap.tile_light(n)
-            self.canvas.create_polygon(
-                *flat, fill=heightmap.height_colour(h, lo, hi, light),
-                outline=heightmap.height_colour(h, lo, hi, light * 0.8))
+            # Outlined in its own colour: no seams between neighbours.
+            col = heightmap.height_colour(h, lo, hi, heightmap.tile_light(n))
+            self.canvas.create_polygon(*flat, fill=col, outline=col)
         return self.mesh_key[3]
 
     def pin(self, x, y, name, label=None):
         """A location marker standing on (x, y), with its name (or `label`)
-        beside it. Clicking any part of it opens the waypoint in the table."""
+        beside it, ringed if SHOW ON MAP picked it. Clicking any part of it
+        opens the waypoint in the table."""
         c = self.canvas
-        ids = [
+        ids = []
+        if name == self.marked:
+            ids.append(c.create_oval(x - 15, y - 27, x + 15, y + 3,
+                                     outline=ACCENT, width=2, tags="pin"))
+        ids += [
             c.create_polygon(x, y, x - 5, y - 10, x + 5, y - 10, fill=PIN,
                              outline="", tags="pin"),
             c.create_oval(x - 6, y - 18, x + 6, y - 6, fill=PIN, outline="",
@@ -388,10 +416,19 @@ class StarMap:
             self.pins[item] = name
 
     def header(self, title, hint):
-        self.canvas.create_text(12, 10, text=title, anchor="nw", fill=ACCENT,
-                                font=("Consolas", 16, "bold"))
-        self.canvas.create_text(12, 36, text=hint, anchor="nw", fill=DIM,
-                                font=("Consolas", 9))
+        c = self.canvas
+        ids = (c.create_text(12, 10, text=title, anchor="nw", fill=ACCENT,
+                             font=("Consolas", 16, "bold")),
+               c.create_text(12, 36, text=hint, anchor="nw", fill=DIM,
+                             font=("Consolas", 9)))
+        # A see-through box under the text, so it stays readable over a globe
+        # that fills the view. The canvas has no transparency of its own.
+        x0, y0, x1, y1 = c.bbox(*ids)
+        rgb = tuple(int(BG[i:i + 2], 16) for i in (1, 3, 5))
+        self.header_bg = ImageTk.PhotoImage(      # Tk drops an image nothing holds
+            Image.new("RGBA", (x1 + 8, y1 + 6), rgb + (190,)))
+        c.tag_lower(c.create_image(0, 0, image=self.header_bg, anchor="nw"),
+                    ids[0])
 
     def draw_system(self, objs, w, h):
         c, yaw, pitch = self.canvas, self.yaw, self.pitch
@@ -760,8 +797,8 @@ class WaypointEditor:
                ("note", 200))
     AUTO = "auto (by distance)"
 
-    def __init__(self, parent, state, scl):
-        self.state, self.scl = state, scl
+    def __init__(self, parent, state, scl, on_show):
+        self.state, self.scl, self.on_show = state, scl, on_show
         self.frame = tk.Frame(parent, bg=BG)
         self.seen, self.loaded = None, False
 
@@ -791,6 +828,8 @@ class WaypointEditor:
         ttk.Button(row, text="RENAME", command=self.rename).pack(side="left")
         ttk.Button(row, text="DELETE", command=self.delete).pack(side="left",
                                                                  padx=6)
+        ttk.Button(row, text="SHOW ON MAP", command=self.show_on_map).pack(
+            side="left")
         # Deep space only: which body the star map shows it around.
         tk.Label(row, text="Shown around", font=MONO, fg=DIM, bg=BG).pack(
             side="left", padx=(18, 6))
@@ -890,6 +929,14 @@ class WaypointEditor:
             scl.save_json(scl.WAYPOINT_FILE, st.waypoints)
             st.flash(f"{name}: shown around {pick}")
         self.refresh()
+
+    def show_on_map(self):
+        name = self.selected()
+        if name is None:
+            with self.state.lock:
+                self.state.flash("select a waypoint first")
+            return
+        self.on_show(name)
 
     def rename(self):
         old, new = self.selected(), self.name_var.get().strip()
