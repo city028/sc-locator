@@ -23,6 +23,7 @@ SUN = ("#B86A12", "#FFB347", "#FFE7B0")
 PLANET = ("#1D4E73", "#3E8CC4", "#A8D8FF")
 MOON = ("#4A5560", "#8A97A4", "#D0D8E0")
 PIN, ORBIT, GRID = "#FF9F43", "#1B3348", "#2D5A80"
+GRID_LINE = "#2E343B"       # LAT/LON on the height map: darker than its grey
 MONO = ("Consolas", 10)
 
 SUN_PX, PLANET_PX, MOON_PX = 14, 9, 5
@@ -657,7 +658,8 @@ class HeightMapTab:
         tk.Label(side, font=("Consolas", 9), fg=DIM, bg=BG, justify="left",
                  anchor="w",
                  text="SURVEY in the overlay\nrecords the ground "
-                      "under you.\n\ngrey: not measured\ndrag to move\n"
+                      "under you.\n\ngrey: not measured\n+ : you are here\n"
+                      "drag to move\n"
                       "wheel to zoom").pack(anchor="w", fill="x")
 
         self.canvas = tk.Canvas(self.frame, bg=heightmap.GREY,
@@ -784,6 +786,8 @@ class HeightMapTab:
                 img.put(heightmap.height_colour(z, lo, hi), to=(x0, y0, x1, y1))
         self.image = img                # Tk drops an image nothing holds
         c.create_image(0, 0, image=img, anchor="nw")
+        if frame:
+            self.draw_grid(frame, radius, w, h)
 
         def spot(p):
             xy = heightmap.to_map(p, frame, radius)
@@ -815,6 +819,36 @@ class HeightMapTab:
                               f"{2 * half_w / 1000:,.1f} x "
                               f"{2 * half_h / 1000:,.1f} km\n"
                               f"{self.mpp:g} m a pixel")
+
+    def draw_grid(self, frame, radius, w, h):
+        """LAT and LON lines, labelled on the left and top edges."""
+        c = self.canvas
+        step, lines = heightmap.map_grid(frame, radius, w / 2 * self.mpp,
+                                         h / 2 * self.mpp, 120 * self.mpp)
+        places = max(0, math.ceil(-math.log10(step) - 1e-9))
+        for kind, deg, runs in lines:
+            edge = None                 # leftmost or topmost point in view
+            for run in runs:
+                flat = []
+                for x, y in run:
+                    sx, sy = w / 2 + x / self.mpp, h / 2 - y / self.mpp
+                    flat += [sx, sy]
+                    # Labels stay out of each other's corner and off the
+                    # scale bar, bottom left.
+                    free = (0 <= sx <= w and 20 <= sy <= h - 30
+                            if kind == "lat" else
+                            45 <= sx <= w and 0 <= sy <= h)
+                    if free and (
+                            edge is None or
+                            (sx < edge[0] if kind == "lat" else sy < edge[1])):
+                        edge = (sx, sy)
+                c.create_line(*flat, fill=GRID_LINE)
+            if edge:
+                c.create_text(edge[0] + 3, edge[1] + (-2 if kind == "lat"
+                                                      else 2),
+                              anchor="sw" if kind == "lat" else "nw",
+                              text=f"{deg:+.{places}f}", fill=FG,
+                              font=("Consolas", 8))
 
     def scale_bar(self, w, h):
         """A round length up to a fifth of the map wide, bottom left."""

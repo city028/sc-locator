@@ -3024,6 +3024,11 @@ def run_overlay(state, cfg):
         size = (root.winfo_reqwidth(), root.winfo_reqheight())
         x, y = anchor_position(box, size, anchor, margin, dragged["corner"])
         root.geometry(f"+{x}+{y}")
+        # Moved now, not when Tk next idles. keep_on_top runs before that, and
+        # its SetWindowPos reports the old position back to Tk, which then
+        # keeps the old top: a block showing up grew the panel down past its
+        # corner instead of up.
+        root.update_idletasks()
 
     def button(parent, text, fn, width=7, bg=ACCENT):
         b = tk.Button(parent, text=text, font=("Consolas", 10, "bold"),

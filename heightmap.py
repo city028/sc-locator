@@ -191,6 +191,76 @@ def from_map(x, y, frame, radius):
                        for i in range(3)))
 
 
+GRID_STEPS = (0.001, 0.002, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1.0, 2.0,
+              5.0, 10.0, 15.0, 30.0)     # degrees between grid lines
+
+
+def latlon(u):
+    """(lat, lon) in degrees of a planet-frame direction, as to_latlon."""
+    u = _unit(u)
+    return (math.degrees(math.asin(max(-1.0, min(1.0, u[2])))),
+            math.degrees(math.atan2(u[1], u[0])))
+
+
+def map_grid(frame, radius, half_w, half_h, min_gap_m):
+    """LAT and LON lines across a map half_w x half_h metres either side of
+    the middle, at the finest step in GRID_STEPS at least `min_gap_m` apart.
+
+    Returns (step, lines), each line ("lat" or "lon", degrees, runs), a run a
+    list of (east m, north m). Meridians come out straight on this map and
+    parallels very nearly so; both are sampled, which also covers a pole.
+    """
+    step = next((s for s in GRID_STEPS
+                 if radius * math.radians(s) >= min_gap_m), GRID_STEPS[-1])
+    c_lat, c_lon = latlon(frame[0])
+    lats, dlons = [], []
+    for i in range(9):
+        for j in range(9):
+            la, lo = latlon(from_map(half_w * (i / 4 - 1), half_h * (j / 4 - 1),
+                                     frame, radius))
+            lats.append(la)
+            dlons.append((lo - c_lon + 180.0) % 360.0 - 180.0)
+    lat0, lat1, d0, d1 = min(lats), max(lats), min(dlons), max(dlons)
+    for pole in (1, -1):
+        xy = to_map((0.0, 0.0, pole), frame, radius)
+        if xy and abs(xy[0]) <= half_w and abs(xy[1]) <= half_h:
+            if pole > 0:
+                lat1 = 90.0
+            else:
+                lat0 = -90.0
+            d0, d1 = -180.0, 180.0
+    lat0, lat1 = max(-90.0, lat0 - step), min(90.0, lat1 + step)
+    d0, d1 = d0 - step, d1 + step
+
+    def runs(points):
+        out, run = [], []
+        for la, lo in points:
+            a, o = math.radians(la), math.radians(lo)
+            xy = to_map((math.cos(a) * math.cos(o), math.cos(a) * math.sin(o),
+                         math.sin(a)), frame, radius)
+            if xy and abs(xy[0]) <= 3 * half_w and abs(xy[1]) <= 3 * half_h:
+                run.append(xy)
+            elif run:
+                out.append(run)
+                run = []
+        if run:
+            out.append(run)
+        return [r for r in out if len(r) > 1]
+
+    n = 64
+    lines = []
+    for k in range(math.ceil(lat0 / step), math.floor(lat1 / step) + 1):
+        la = k * step
+        if abs(la) < 90.0:
+            lines.append(("lat", la, runs(
+                (la, c_lon + d0 + (d1 - d0) * i / n) for i in range(n + 1))))
+    for k in range(math.ceil(d0 / step), math.floor(d1 / step) + 1):
+        lo = c_lon - c_lon % step + k * step     # whole steps of true longitude
+        lines.append(("lon", (lo + 180.0) % 360.0 - 180.0, runs(
+            (lat0 + (lat1 - lat0) * i / n, lo) for i in range(n + 1))))
+    return step, [ln for ln in lines if ln[2]]
+
+
 def local_cells(rec, radius, frame, half_w, half_h):
     """Measured cells inside a map half_w x half_h metres either side of the
     middle, as [(east m, north m, height m)]."""
