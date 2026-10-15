@@ -1291,7 +1291,18 @@ when zoomed out) that reaches only 400 m from a measured cell, so it fills the
 gaps between survey legs and stops at the edge of the survey. Hillshade is from
 the upper left with slopes drawn twice as steep. The grid is kept like the
 contours (`relief_grid`, until the survey or zoom changes or you pan off it)
-and redrawn in 4 px blocks, about 0.3 s a redraw with the 6 km square in view.
+and redrawn in 4 px blocks.
+
+**Drag and zoom speed (2026-10-15).** A full redraw with the 6 km square in
+view cost 0.35 s at 12.5 m a pixel, and every mouse-move event drew once, so
+the events queued up and the map lagged behind the hand. Now: drag and wheel
+events are folded into one *rough* draw per idle moment (0.08 s: kept contours
+and relief used at whatever zoom they were made for, relief in 8 px blocks),
+and the full draw follows 250 ms after the last event. The relief is worked
+out one pixel to a block and blown up by Tk (`image copy -zoom`); putting
+every pixel cost more than working the colours out. A settled redraw is
+0.15 s; the one after a zoom is 0.5-0.7 s at 25 and 12.5 m a pixel, the two
+height grids being worked out again.
 The fill is a guess between legs 200-300 m apart, not measured ground; the
 samples switch shows what was measured.
 

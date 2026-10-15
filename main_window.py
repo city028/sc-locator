@@ -763,6 +763,7 @@ class HeightMapTab:
 
     ZOOMS = (12.5, 25.0, 50.0, 100.0, 200.0, 400.0, 800.0)   # metres a pixel
     RELIEF_BLOCK = 4        # px a side of the filled view's blocks
+    SETTLE_MS = 250         # quiet this long after a drag or zoom: full draw
 
     def __init__(self, parent, state, scl, follow):
         self.state, self.scl, self.follow = state, scl, follow
@@ -774,6 +775,7 @@ class HeightMapTab:
         self.held = None    # as the star map's: set by Go to
         self.contours = None    # (key, frame, (half_w, half_h), lines): draw
         self.relief = None      # (key, frame, (half_w, half_h), relief_grid)
+        self.job, self.settle = None, None      # see schedule
 
         side = tk.Frame(self.frame, bg=BG)
         side.pack(side="left", fill="y", padx=(0, 8))
@@ -877,6 +879,24 @@ class HeightMapTab:
             self.centre = heightmap.from_map(-dx * self.mpp, dy * self.mpp,
                                              heightmap.local_frame(self.centre),
                                              radius)
+        self.schedule()
+
+    def schedule(self):
+        """Draw soon, for a drag or a zoom: events that arrive faster than a
+        draw takes are folded into one, drawn rough from what is kept; the
+        full draw follows once they stop."""
+        if self.job is None:
+            self.job = self.canvas.after_idle(self.rough)
+        if self.settle is not None:
+            self.canvas.after_cancel(self.settle)
+        self.settle = self.canvas.after(self.SETTLE_MS, self.finish)
+
+    def rough(self):
+        self.job = None
+        self.draw(quick=True)
+
+    def finish(self):
+        self.settle = None
         self.draw()
 
     def recentre(self):
@@ -888,7 +908,7 @@ class HeightMapTab:
     def on_wheel(self, e):
         i = self.ZOOMS.index(self.mpp) + (-1 if e.delta > 0 else 1)
         self.mpp = self.ZOOMS[max(0, min(len(self.ZOOMS) - 1, i))]
-        self.draw()
+        self.schedule()
 
     def radius(self):
         """The body's radius. Call with the lock held."""
@@ -923,7 +943,10 @@ class HeightMapTab:
         elif seen != self.seen:
             self.draw()
 
-    def draw(self):
+    def draw(self, quick=False):
+        """Draw the map. `quick` while it is being dragged or zoomed: what is
+        kept is used at whatever zoom it was made for, and the relief is
+        drawn in blocks twice as big, so the map keeps up with the hand."""
         c = self.canvas
         w, h = c.winfo_width(), c.winfo_height()
         if w < 50 or h < 50 or not c.winfo_ismapped() or self.body is None:
@@ -947,10 +970,16 @@ class HeightMapTab:
             key = (self.body, self.seen[1], self.mpp)
 
             def stale(kept):
-                return frame and not (
-                    kept and kept[0] == key and
-                    heightmap.covers(kept[1], kept[2], frame, radius,
-                                     half_w, half_h))
+                if not frame:
+                    return False
+                # Rough: after a zoom, use what there is; the settled draw
+                # makes it right. Panned off it at the same zoom is another
+                # matter, or the ground you drag to would stay blank.
+                if quick and kept and kept[0][0] == self.body and \
+                        kept[0][2] != self.mpp:
+                    return False
+                return not (kept and kept[0] == key and heightmap.covers(
+                    kept[1], kept[2], frame, radius, half_w, half_h))
 
             fresh = self.show["lines"].get() and stale(self.contours)
             fresh_relief = self.show["relief"].get() and stale(self.relief)
@@ -988,10 +1017,15 @@ class HeightMapTab:
                  if frame and self.relief and self.show["relief"].get()
                  else None)
         if shift:
-            for px, py, data in heightmap.relief_spans(
-                    self.relief[3], shift, w, h, self.mpp, self.RELIEF_BLOCK,
-                    lo, hi):
-                img.put(data, to=(px, py))
+            # Worked out one pixel to a block, then blown up by Tk: putting
+            # every pixel took longer than working the colours out.
+            block = self.RELIEF_BLOCK * (2 if quick else 1)
+            small = tk.PhotoImage(width=w // block, height=h // block)
+            small.put(heightmap.GREY, to=(0, 0, w // block, h // block))
+            for bx, by, data in heightmap.relief_spans(
+                    self.relief[3], shift, w, h, self.mpp, block, lo, hi):
+                small.put(data, to=(bx, by))
+            img.tk.call(img, "copy", small, "-zoom", block, block)
         if self.show["samples"].get():
             # Cells are 70-100 m: drawn 100 m wide they overlap, not gap.
             size = max(1, math.ceil(heightmap.CELL_M / self.mpp))

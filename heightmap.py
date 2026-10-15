@@ -459,11 +459,13 @@ def frame_shift(frame0, frame, radius):
 
 
 def relief_spans(relief, shift, w, h, mpp, block, lo, hi):
-    """The filled and shaded view on a w x h px map, in `block` px squares.
+    """The filled and shaded view of a w x h px map, one pixel to a `block` px
+    square of the map, so the result is drawn small and then zoomed by
+    `block` (Tk does that natively, much faster than pixel by pixel).
 
     `relief` as relief_grid gives it, `shift` as frame_shift gives it for the
-    map being drawn. Returns [(px, py, data)], each data a string for
-    PhotoImage.put(data, to=(px, py)) holding one unbroken run of blocks,
+    map being drawn. Returns [(bx, by, data)], each data a string for
+    PhotoImage.put(data, to=(bx, by)) holding one unbroken row of blocks,
     coloured on a lo..hi scale. Blocks with nothing under them are left out.
     """
     x0, y0, step, zs, light = relief
@@ -472,14 +474,16 @@ def relief_spans(relief, shift, w, h, mpp, block, lo, hi):
     ox, oy, c, s = shift
     nj, ni = len(zs), len(zs[0])
     colours = {}
+    scale = 100.0 / (hi - lo) if hi > lo else 0.0
 
     def colour(z, lt):
-        k = (min(100, max(0, round((z - lo) / (hi - lo) * 100)))
-             if hi > lo else 50, round(lt * 20))
-        if k not in colours:
-            colours[k] = height_colour(lo + (hi - lo) * k[0] / 100, lo, hi,
-                                       k[1] / 20)
-        return colours[k]
+        k = (50 if scale == 0.0 else
+             min(100, max(0, int((z - lo) * scale + 0.5))), int(lt * 20 + 0.5))
+        col = colours.get(k)
+        if col is None:
+            col = colours[k] = height_colour(lo + (hi - lo) * k[0] / 100, lo,
+                                             hi, k[1] / 20)
+        return col
 
     def sample(gi, gj):
         i0, j0 = min(int(gi), max(ni - 2, 0)), min(int(gj), max(nj - 2, 0))
@@ -497,30 +501,28 @@ def relief_spans(relief, shift, w, h, mpp, block, lo, hi):
         return colour(z, lt)
 
     out = []
-    for py in range(0, h - block + 1, block):
-        y = (h / 2 - py - block / 2) * mpp
+    di, dj = c * block * mpp / step, s * block * mpp / step
+    x_first = (block / 2 - w / 2) * mpp
+    gi_max, gj_max = ni - 1, nj - 1
+    for by in range(h // block):
+        y = (h / 2 - by * block - block / 2) * mpp
+        gi = (ox + c * x_first - s * y - x0) / step
+        gj = (oy + s * x_first + c * y - y0) / step
         run, start = [], 0
-
-        def flush():
-            if run:
-                row = "{" + " ".join(c_ for c_ in run
-                                     for _ in range(block)) + "}"
-                out.append((start, py, " ".join([row] * block)))
-            run.clear()
-
-        for px in range(0, w - block + 1, block):
-            x = (px + block / 2 - w / 2) * mpp
-            gi = (ox + c * x - s * y - x0) / step
-            gj = (oy + s * x + c * y - y0) / step
+        for bx in range(w // block):
             col = (sample(gi, gj)
-                   if 0 <= gi <= ni - 1 and 0 <= gj <= nj - 1 else None)
-            if col is None:
-                flush()
-            else:
+                   if 0 <= gi <= gi_max and 0 <= gj <= gj_max else None)
+            gi += di
+            gj += dj
+            if col is not None:
                 if not run:
-                    start = px
+                    start = bx
                 run.append(col)
-        flush()
+            elif run:
+                out.append((start, by, "{" + " ".join(run) + "}"))
+                run = []
+        if run:
+            out.append((start, by, "{" + " ".join(run) + "}"))
     return out
 
 
