@@ -98,6 +98,26 @@ def fit_scale(points, width, height, fill=0.42):
     return fill * min(width, height) / far
 
 
+def fit_view(spots, yaw, pitch, width, height, top=0):
+    """Pixels per metre that just fit every spot in the window, seen from
+    yaw/pitch with the origin in the middle, or None if nothing limits it.
+
+    spots: [(point, (left, right, up, down))], how many px the spot's
+    drawing (marker and name) reaches past its point each way. `top` px at
+    the top are kept clear.
+    """
+    cx, cy = width / 2, height / 2
+    best = None
+    for p, (left, right, up, down) in spots:
+        x, _, z = rotate(p, yaw, pitch)
+        for room, d in ((width - cx - right, x), (cx - left, -x),
+                        (cy - top - up, z), (height - cy - down, -z)):
+            if d > 0:
+                s = max(room, 1) / d
+                best = s if best is None else min(best, s)
+    return best
+
+
 def hidden_by_sphere(sx, sy, depth, cx, cy, radius_px):
     """Is a projected point behind a sphere drawn at (cx, cy)?"""
     return depth > 0 and math.hypot(sx - cx, sy - cy) < radius_px

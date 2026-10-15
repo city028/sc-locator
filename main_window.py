@@ -34,6 +34,7 @@ CONTOUR, CONTOUR_INDEX = "#C8925A", "#E0A868"   # brown, as on a paper map
 COURSE = ("#B8C6D4", "#5CC8FF", "#2F7FA8")
 
 SUN_PX, PLANET_PX, MOON_PX = 14, 9, 5
+SYSTEM_PITCH = math.radians(60)     # the system map's default view: tilted
 # Seconds without a body fix before follow me counts you as in deep space:
 # long enough that a few unread frames do not flip the star map's view.
 SPACE_AFTER = 10.0
@@ -248,7 +249,7 @@ class StarMap:
         self.backdrops, self.ramp = {}, None
         self.frame = tk.Frame(parent, bg=BG)
         self.system, self.body = starmap.SYSTEMS[0], None
-        self.yaw, self.pitch, self.zoom = 0.0, math.radians(60), 1.0
+        self.yaw, self.pitch, self.zoom = 0.0, SYSTEM_PITCH, 1.0
         self.press, self.dragged, self.seen = None, False, None
         self.ticks = 0
         self.om = None          # (lat, lon) of the marker the view sits above
@@ -338,7 +339,7 @@ class StarMap:
         else:
             self.reset_btn.place_forget()
             self.om_bar.place(relx=1.0, x=-10, y=10, anchor="ne")
-        self.pitch = math.radians(60 if body is None else 20)
+        self.pitch = SYSTEM_PITCH if body is None else math.radians(20)
         self.draw()
 
     def view_om(self, lat, lon):
@@ -510,7 +511,7 @@ class StarMap:
                           "until\nyou ANALYSE them.\nClick one to open it.",
                           "None in this system.")
             self.back.state(["disabled"])
-            self.draw_system(objs, w, h)
+            self.draw_system(objs, wps, w, h)
         else:
             around = starmap.surroundings(self.body, bodies, wps, self.system)
             self.fill_box(" Moons not analysed yet ", around["unplaced_moons"],
@@ -657,12 +658,34 @@ class StarMap:
         x0, y0, _, _ = c.bbox(*ids)
         self.backdrop("legend", (x0 - 8, y0 - 6, w, h), ids[0])
 
-    def draw_system(self, objs, w, h):
+    def system_fit(self, objs, wps, w, h):
+        """Zoom 1 of the system map: as close as the default view can get
+        with every waypoint in it, and every body that has some, names and
+        all. Worked out for the default view however it is turned now, so
+        turning it does not change the scale."""
+        name_h, pad = mono(9).metrics("linespace"), px(6)
+        # How far each drawing reaches past its spot: see pin and sphere.
+        spots = [(p, (15 + pad, max(15, 9 + mono(9).measure(n)) + pad,
+                      27 + pad, 3 + pad)) for n, p in objs["points"]]
+        on = {wp["planet"] for wp in wps}
+        for b in objs["bodies"]:
+            if b["key"] in on:
+                moon = b["label"] == "moon"
+                r = MOON_PX if moon else PLANET_PX
+                half = max(r, mono(9, True).measure(b["key"].upper()) / 2)
+                named = r + 4 + name_h      # the name above a moon, else below
+                spots.append((b["centre"], (half + pad, half + pad,
+                                            (named if moon else r) + pad,
+                                            (r if moon else named) + pad)))
+        top = 10 + px(26) + name_h + pad    # clear of the header
+        return (starmap.fit_view(spots, 0.0, SYSTEM_PITCH, w, h, top)
+                or starmap.fit_scale([b["centre"] for b in objs["bodies"]]
+                                     + [p for _, p in objs["points"]], w, h))
+
+    def draw_system(self, objs, wps, w, h):
         c, yaw, pitch = self.canvas, self.yaw, self.pitch
         cx, cy = w / 2, h / 2
-        spots = [b["centre"] for b in objs["bodies"]] + \
-            [p for _, p in objs["points"]]
-        scale = starmap.fit_scale(spots, w, h) * self.zoom
+        scale = self.system_fit(objs, wps, w, h) * self.zoom
 
         for b in objs["bodies"]:
             if b["label"] == "moon":
