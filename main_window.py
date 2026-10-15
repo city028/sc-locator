@@ -796,11 +796,14 @@ class HeightMapTab:
         self.legend = tk.Canvas(side, width=170, height=34, bg=BG,
                                 highlightthickness=0)
         self.legend.pack(anchor="w", pady=(8, 4))
-        # What to draw, bottom to top: relief, samples, height lines.
+        # What to draw, bottom to top: relief, samples, height lines, survey
+        # pattern, waypoints.
         self.show = {}
         for name, text, on in (("relief", "Filled relief", True),
                                ("samples", "Survey samples", False),
-                               ("lines", "Height lines", True)):
+                               ("lines", "Height lines", True),
+                               ("course", "Survey pattern", True),
+                               ("waypoints", "Waypoints", True)):
             self.show[name] = tk.BooleanVar(value=on)
             ttk.Checkbutton(side, text=text, variable=self.show[name],
                             command=self.draw).pack(anchor="w")
@@ -1006,7 +1009,7 @@ class HeightMapTab:
             self.draw_grid(frame, radius, w, h)
             if self.show["lines"].get():
                 self.draw_contours(frame, radius, interval, w, h)
-            if plan:
+            if plan and self.show["course"].get():
                 self.draw_course(plan, frame, radius, w, h)
 
         def spot(p):
@@ -1018,7 +1021,8 @@ class HeightMapTab:
         if frame:
             elev = {wp["name"]: wp.get("elev") for wp in wps
                     if wp["planet"] == self.body}
-            for name, p in starmap.body_points(wps, self.body):
+            for name, p in (starmap.body_points(wps, self.body)
+                            if self.show["waypoints"].get() else ()):
                 xy = spot(p)
                 if xy:
                     sx, sy = xy
