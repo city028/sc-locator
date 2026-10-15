@@ -39,6 +39,14 @@ def snapshot(state):
                 {k: dict(v) for k, v in state.bodies.items()})
 
 
+def moved_on(held, here):
+    """True once you have left the (system, body) you were at when a map was
+    moved by hand: a new system, or a different body. A lost fix is not a
+    move, so a few unread frames do not pull the map back to you."""
+    return here[0] != held[0] or (here[1] not in (None, "unknown")
+                                  and here[1] != held[1])
+
+
 def open_main(root, state, scl, set_hud):
     win = tk.Toplevel(root)
     win.title("SC Locator")
@@ -159,6 +167,9 @@ class StarMap:
         self.ticks = 0
         self.om = None          # (lat, lon) of the marker the view sits above
         self.turn = (0.0, 0.0)  # (yaw, pitch) dragged away from you, following
+        # Your (system, body) when the view was moved by hand: follow me waits
+        # until you leave it, so the view is not pulled straight back.
+        self.held = None
         # (fix time, system point) last shown for you, the fix time last
         # judged, and how many fixes in a row were refused as misreads.
         self.track, self.track_t, self.refused = None, None, 0
@@ -230,8 +241,8 @@ class StarMap:
     # --- navigation ---------------------------------------------------------
 
     def show(self, system, body, marked=None, keep_follow=False):
-        if not keep_follow:             # moved by hand: stop following
-            self.follow.set(False)
+        if not keep_follow:             # moved by hand: hold it there
+            self.hold()
         self.system, self.body, self.zoom, self.yaw = system, body, 1.0, 0.0
         self.om, self.marked, self.turn = None, marked, (0.0, 0.0)
         self.system_var.set(system)
@@ -247,15 +258,19 @@ class StarMap:
     def view_om(self, lat, lon):
         """Look down on the body from above one of its orbital markers, at
         the zoom already set. The view stays there as the body turns."""
-        self.follow.set(False)
+        self.hold()
         self.om, self.turn = (lat, lon), (0.0, 0.0)
         self.draw()
 
     def recentre(self):
-        """follow me ticked or unticked: drop any drag away from you."""
-        self.turn = (0.0, 0.0)
+        """follow me ticked or unticked: drop any drag or hold away from you."""
+        self.turn, self.held = (0.0, 0.0), None
         self.refresh()
         self.draw()
+
+    def hold(self):
+        """Keep a view picked by hand until you move on."""
+        self.held = self.where_am_i()[:2]
 
     def where_am_i(self):
         """(system, body, planet-frame pos, system-frame pos) from the
@@ -299,6 +314,10 @@ class StarMap:
         face the viewer. In deep space the body view holds where it is. A drag
         shifts the view from you (self.turn) and leaves it following."""
         system, body, pos, _ = me
+        if self.held is not None:
+            if not moved_on(self.held, me):
+                return
+            self.held = None
         if system not in starmap.SYSTEMS:
             return
         if self.body is None:
@@ -339,7 +358,7 @@ class StarMap:
         dx, dy = e.x - self.press[0], e.y - self.press[1]
         if abs(dx) + abs(dy) > 3:
             self.dragged = True
-        if self.follow.get() and self.om is not None:
+        if self.follow.get() and self.held is None and self.om is not None:
             # Following: turned away from you, and still turning with you.
             self.turn = (self.turn[0] + dx * 0.01,
                          max(-math.pi, min(math.pi, self.turn[1] + dy * 0.01)))
@@ -746,6 +765,7 @@ class HeightMapTab:
         self.offset = (0.0, 0.0)    # (east m, north m) dragged from you
         self.mpp = 100.0
         self.press, self.seen, self.image = None, None, None
+        self.held = None    # as the star map's: set by Go to
 
         side = tk.Frame(self.frame, bg=BG)
         side.pack(side="left", fill="y", padx=(0, 8))
@@ -803,13 +823,14 @@ class HeightMapTab:
 
     def go_to(self):
         """Centre on the waypoint picked in Go to. Following you would pull
-        the map straight back, so that stops."""
+        the map straight back, so it waits until you move on."""
         name = self.goto_var.get()
         wps, _ = snapshot(self.state)
         p = dict(starmap.body_points(wps, self.body)).get(name)
         if p is None:
             return
-        self.follow.set(False)
+        with self.state.lock:
+            self.held = (self.state.system, self.state.planet)
         self.centre = heightmap.local_frame(p)[0]
         self.draw()
 
@@ -838,8 +859,8 @@ class HeightMapTab:
         self.draw()
 
     def recentre(self):
-        """follow me ticked or unticked: drop any drag away from you."""
-        self.offset = (0.0, 0.0)
+        """follow me ticked or unticked: drop any drag or hold away from you."""
+        self.offset, self.held = (0.0, 0.0), None
         self.refresh()
         self.draw()
 
@@ -856,7 +877,11 @@ class HeightMapTab:
     def look(self):
         """What the map depends on, to redraw only when it changes. Lock held."""
         st = self.state
-        on_it = self.follow.get() and st.planet == self.body
+        if self.held is not None and moved_on(self.held,
+                                              (st.system, st.planet)):
+            self.held = None
+        on_it = (self.follow.get() and self.held is None
+                 and st.planet == self.body)
         return (self.body, heightmap.cell_count(st.heightmap, self.body),
                 tuple(st.pos) if on_it and st.pos else None)
 
