@@ -220,10 +220,33 @@ def backfill_systems(wps):
     return changed
 
 
+# What a waypoint is for: a place you want to find again, or where a survey
+# started. Kept apart so the survey markers do not crowd the star map.
+WAYPOINT_TYPES = ("poi", "survey")
+
+
+def backfill_types(wps):
+    """Give older waypoints their type. Returns True if any were changed.
+
+    Survey markers used to carry survey=True instead; that becomes the type.
+    Everything else was saved by hand, so is a point of interest.
+    """
+    changed = False
+    for w in wps:
+        if "survey" in w:
+            w["type"] = "survey" if w.pop("survey") else w.get("type", "poi")
+            changed = True
+        elif "type" not in w:
+            w["type"] = "poi"
+            changed = True
+    return changed
+
+
 def load_waypoints():
-    """Waypoints from disk, with any missing system filled in and saved back."""
+    """Waypoints from disk, with any missing system or type filled in and
+    saved back."""
     wps = load_json(WAYPOINT_FILE, [])
-    if backfill_systems(wps):
+    if backfill_systems(wps) | backfill_types(wps):
         save_json(WAYPOINT_FILE, wps)
     return wps
 
@@ -2069,7 +2092,7 @@ def auto_name(wps, planet):
 
 
 def add_waypoint(wps, planet, pos, radius, name=None, elev=None, agl=None,
-                 system=None, frame="planet"):
+                 system=None, frame="planet", wtype="poi"):
     """Append a waypoint in place and return its name. None auto-names it.
 
     `elev` is the terrain's height over the reference sphere at this spot and
@@ -2094,6 +2117,7 @@ def add_waypoint(wps, planet, pos, radius, name=None, elev=None, agl=None,
         # every waypoint was before deep space; "system" is the system frame,
         # which is the only one that exists with no body in range.
         "frame": frame,
+        "type": wtype,
         "x": x, "y": y, "z": z,
         "saved": time.strftime("%Y-%m-%d %H:%M:%S"),
     }
@@ -2157,16 +2181,18 @@ def set_waypoint_parent(wps, name, parent):
         target["parent"] = parent
 
 
-def filter_waypoints(wps, system, body):
+def filter_waypoints(wps, system, body, wtype="all"):
     """What the waypoint list shows: (shown, systems, bodies).
 
     `system` and `body` are a name or "all"; a name nothing carries any more
-    counts as "all". `systems` are those of every waypoint, `bodies` only those
-    in the chosen system, both sorted, for the filter's choices.
+    counts as "all". `wtype` is one of WAYPOINT_TYPES or "all". `systems` are
+    those of every waypoint of that type, `bodies` only those in the chosen
+    system, both sorted, for the filter's choices.
     """
     def sys_of(w):
         return w.get("system", "unknown")
 
+    wps = [w for w in wps if wtype == "all" or w.get("type", "poi") == wtype]
     systems = sorted({sys_of(w) for w in wps})
     in_sys = [w for w in wps if system not in systems or sys_of(w) == system]
     bodies = sorted({w["planet"] for w in in_sys})
@@ -2553,15 +2579,15 @@ def mark_survey_start(state):
     resumed would otherwise leave a cluster of them. Call with the lock held,
     on a frame the survey kept."""
     for w in state.waypoints:
-        if (w.get("survey") and w["planet"] == state.planet
+        if (w.get("type") == "survey" and w["planet"] == state.planet
                 and math.dist((w["x"], w["y"], w["z"]), state.pos)
                 <= SURVEY_MARK_SPACING_M):
             return
     name = add_waypoint(state.waypoints, state.planet, state.pos,
                         state.radius, survey_name(state.waypoints),
-                        state.elev, state.agl, state.system)
-    # Marked, so it is still known as one after a rename or a new note.
-    state.waypoints[-1].update(survey=True, note="start of a survey")
+                        state.elev, state.agl, state.system,
+                        wtype="survey")
+    state.waypoints[-1]["note"] = "start of a survey"
     save_json(WAYPOINT_FILE, state.waypoints)
     state.flash(f"survey started: saved {name}")
     state.log(f"saved {name} at {state.pos} on {state.planet}")

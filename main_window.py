@@ -109,6 +109,26 @@ def fit_to_screen(win, style):
         tree.column(name, width=px(width))
 
 
+TYPE_LABELS = {"poi": "POI", "survey": "Survey"}   # see WAYPOINT_TYPES
+
+
+def type_switches(parent, on, command):
+    """A tick box per waypoint type, ticked for the types in `on`.
+    Returns {type: BooleanVar}."""
+    out = {}
+    for t, label in TYPE_LABELS.items():
+        out[t] = tk.BooleanVar(value=t in on)
+        ttk.Checkbutton(parent, text=f"{label} waypoints", variable=out[t],
+                        command=command).pack(anchor="w")
+    return out
+
+
+def of_types(wps, switches):
+    """The waypoints whose type is ticked."""
+    return [w for w in wps
+            if switches.get(w.get("type", "poi"), switches["poi"]).get()]
+
+
 def snapshot(state):
     """Copies of the waypoints and analyses, so drawing never holds the lock."""
     with state.lock:
@@ -271,9 +291,11 @@ class StarMap:
         pick.pack(anchor="w", pady=(0, 8))
         pick.bind("<<ComboboxSelected>>",
                   lambda e: self.show(self.system_var.get(), None))
+        # Survey markers would crowd the map: shown only when asked for.
+        self.types = type_switches(side, ("poi",), self.draw)
         self.back = ttk.Button(side, text="< back to system",
                                command=lambda: self.show(self.system, None))
-        self.back.pack(anchor="w", fill="x", pady=(0, 12))
+        self.back.pack(anchor="w", fill="x", pady=(8, 12))
         # One framed box, title, hint and list together, so it is plain which
         # list the words are about.
         self.box = box = tk.LabelFrame(side, font=mono(),
@@ -421,6 +443,8 @@ class StarMap:
         """Open the view a waypoint is on, turned so it faces you."""
         wps, bodies = snapshot(self.state)
         w = next((q for q in wps if q["name"] == name), None)
+        if w is not None:                   # of a type not shown: show it
+            self.types.get(w.get("type"), self.types["poi"]).set(True)
         where = starmap.waypoint_view(w, bodies) if w else None
         if where is None:
             with self.state.lock:
@@ -503,6 +527,7 @@ class StarMap:
         if w < 50 or h < 50:
             return
         wps, bodies = snapshot(self.state)
+        wps = of_types(wps, self.types)
         self.me = self.where_am_i()
         objs = starmap.system_objects(bodies, wps, self.system)
         if self.body is None:
@@ -908,11 +933,11 @@ class HeightMapTab:
         for name, text, on in (("relief", "Filled relief", True),
                                ("samples", "Survey samples", False),
                                ("lines", "Height lines", True),
-                               ("course", "Survey pattern", True),
-                               ("waypoints", "Waypoints", True)):
+                               ("course", "Survey pattern", True)):
             self.show[name] = tk.BooleanVar(value=on)
             ttk.Checkbutton(side, text=text, variable=self.show[name],
                             command=self.draw).pack(anchor="w")
+        self.types = type_switches(side, ("survey",), self.draw)
         tk.Label(side, font=mono(9), fg=DIM, bg=BG, justify="left",
                  anchor="w",
                  text="\nSURVEY in the overlay\nrecords the ground "
@@ -943,8 +968,8 @@ class HeightMapTab:
 
     def goto_choices(self):
         """The open body's waypoints, for Go to."""
-        names = [n for n, _ in starmap.body_points(snapshot(self.state)[0],
-                                                   self.body)]
+        names = [n for n, _ in starmap.body_points(
+            of_types(snapshot(self.state)[0], self.types), self.body)]
         if list(self.goto.cget("values")) != names:
             self.goto.config(values=names)
 
@@ -1156,8 +1181,8 @@ class HeightMapTab:
         if frame:
             elev = {wp["name"]: wp.get("elev") for wp in wps
                     if wp["planet"] == self.body}
-            for name, p in (starmap.body_points(wps, self.body)
-                            if self.show["waypoints"].get() else ()):
+            for name, p in starmap.body_points(of_types(wps, self.types),
+                                               self.body):
                 xy = spot(p)
                 if xy:
                     sx, sy = xy
@@ -1299,7 +1324,8 @@ class HeightMapTab:
 
 
 class WaypointEditor:
-    COLUMNS = (("name", 220), ("system", 80), ("body", 110), ("around", 120),
+    COLUMNS = (("name", 220), ("type", 70), ("system", 80), ("body", 110),
+               ("around", 120),
                ("lat", 80), ("lon", 85), ("height", 280), ("saved", 170),
                ("note", 200))
     AUTO = "auto (by distance)"
@@ -1311,17 +1337,21 @@ class WaypointEditor:
 
         bar = tk.Frame(self.frame, bg=BG)
         bar.pack(side="top", fill="x", pady=(0, 6))
-        self.sys_var, self.body_var = tk.StringVar(value="all"),             tk.StringVar(value="all")
+        self.sys_var, self.body_var, self.type_var = (
+            tk.StringVar(value="all") for _ in range(3))
         picks = []
-        for text, var in (("System", self.sys_var), ("Body", self.body_var)):
+        for text, var in (("System", self.sys_var), ("Body", self.body_var),
+                          ("Type", self.type_var)):
             tk.Label(bar, text=text, font=mono(), fg=DIM, bg=BG).pack(
                 side="left", padx=(0 if not picks else 18, 6))
             picks.append(ttk.Combobox(bar, textvariable=var, width=16,
                                       state="readonly", values=("all",)))
             picks[-1].pack(side="left")
-        self.sys_pick, self.body_pick = picks
+        self.sys_pick, self.body_pick, type_pick = picks
+        type_pick.config(values=["all"] + list(TYPE_LABELS.values()))
         self.sys_pick.bind("<<ComboboxSelected>>", lambda e: self.pick_system())
         self.body_pick.bind("<<ComboboxSelected>>", lambda e: self.refresh())
+        type_pick.bind("<<ComboboxSelected>>", lambda e: self.refresh())
 
         self.tree = ttk.Treeview(self.frame, show="headings", selectmode="browse",
                                  columns=[n for n, _ in self.COLUMNS])
@@ -1376,8 +1406,8 @@ class WaypointEditor:
         it."""
         self.refresh()
         if not self.tree.exists(name):
-            self.sys_var.set("all")
-            self.body_var.set("all")
+            for var in (self.sys_var, self.body_var, self.type_var):
+                var.set("all")
             self.refresh()
         if self.tree.exists(name):
             self.tree.selection_set(name)
@@ -1393,7 +1423,8 @@ class WaypointEditor:
             lat, lon, _ = self.scl.to_latlon(w["x"], w["y"], w["z"])
             lat, lon = f"{lat:+.3f}", f"{lon:+.3f}"
         note = (w.get("note") or "").splitlines()
-        return (w["name"], w.get("system", "unknown"), w["planet"],
+        return (w["name"], TYPE_LABELS.get(w.get("type"), ""),
+                w.get("system", "unknown"), w["planet"],
                 around or "", lat, lon,
                 self.scl.describe_height(w), w.get("saved", ""),
                 note[0] if note else "")
@@ -1402,15 +1433,17 @@ class WaypointEditor:
         wps, bodies = snapshot(self.state)
         placed = {sys: starmap.placed_bodies(bodies, sys)
                   for sys in starmap.SYSTEMS}
+        wtype = {v: k for k, v in TYPE_LABELS.items()}.get(self.type_var.get(),
+                                                           "all")
         shown, systems, bodies = self.scl.filter_waypoints(
-            wps, self.sys_var.get(), self.body_var.get())
+            wps, self.sys_var.get(), self.body_var.get(), wtype)
         for var, names in ((self.sys_var, systems), (self.body_var, bodies)):
             if var.get() not in names:
                 var.set("all")
-        seen = (tuple((w["name"], w["planet"], w.get("note"), w.get("parent"))
-                      for w in wps),
+        seen = (tuple((w["name"], w["planet"], w.get("note"), w.get("parent"),
+                       w.get("type")) for w in wps),
                 tuple((sys, tuple(p)) for sys, p in placed.items()),
-                self.sys_var.get(), self.body_var.get())
+                self.sys_var.get(), self.body_var.get(), wtype)
         if seen == self.seen:
             return
         self.seen = seen
