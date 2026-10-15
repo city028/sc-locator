@@ -295,12 +295,21 @@ def height_grid(cells, half_w, half_h, step, reach=REACH_M, least=3):
     `cells` as local_cells gives them. A point with fewer than `least` cells
     within `reach` gets None: a lone cell would ring itself with contours.
     Returns (x0, y0, rows), rows[j][i] the height at (x0 + i * step,
-    y0 + j * step).
+    y0 + j * step). The grid only spans the cells' own patch of the map,
+    plus `reach`, which on a map mostly empty is far less than all of it.
     """
     nx, ny = math.ceil(half_w / step), math.ceil(half_h / step)
-    x0, y0 = -nx * step, -ny * step
-    cols = 2 * nx + 1
-    sw = [0.0] * (cols * (2 * ny + 1))
+    if not cells:
+        return 0.0, 0.0, []
+    ia = max(-nx, math.floor((min(x for x, _, _ in cells) - reach) / step))
+    ib = min(nx, math.ceil((max(x for x, _, _ in cells) + reach) / step))
+    ja = max(-ny, math.floor((min(y for _, y, _ in cells) - reach) / step))
+    jb = min(ny, math.ceil((max(y for _, y, _ in cells) + reach) / step))
+    if ia > ib or ja > jb:
+        return 0.0, 0.0, []
+    x0, y0 = ia * step, ja * step
+    cols, nrows = ib - ia + 1, jb - ja + 1
+    sw = [0.0] * (cols * nrows)
     sz, found = sw[:], [0] * len(sw)
     # Each cell adds itself to the points within reach of it, which skips
     # the many points nowhere near a cell.
@@ -308,7 +317,8 @@ def height_grid(cells, half_w, half_h, step, reach=REACH_M, least=3):
         i0 = max(0, math.ceil((cx - reach - x0) / step))
         i1 = min(cols - 1, math.floor((cx + reach - x0) / step))
         for j in range(max(0, math.ceil((cy - reach - y0) / step)),
-                       min(2 * ny, math.floor((cy + reach - y0) / step)) + 1):
+                       min(nrows - 1, math.floor((cy + reach - y0) / step))
+                       + 1):
             dy2 = (y0 + j * step - cy) ** 2
             for i in range(i0, i1 + 1):
                 d2 = (x0 + i * step - cx) ** 2 + dy2
@@ -320,7 +330,7 @@ def height_grid(cells, half_w, half_h, step, reach=REACH_M, least=3):
                     found[k] += 1
     rows = [[sz[k] / sw[k] if found[k] >= least else None
              for k in range(j * cols, (j + 1) * cols)]
-            for j in range(2 * ny + 1)]
+            for j in range(nrows)]
     return x0, y0, rows
 
 
@@ -384,6 +394,40 @@ def contour_lines(grid, step, interval):
                 back = walk(ea, m) if m is not None else []
                 out.append((level, back[::-1] + [pa] + fwd))
     return out
+
+
+def contours_on_body(cells, frame, radius, half_w, half_h, step, interval):
+    """contour_lines over a map, each point turned into a unit vector on the
+    body, so the lines can be drawn again on a map moved since (to_map)
+    without working them out again."""
+    grid = height_grid(cells, half_w, half_h, step)
+    return [(level, [from_map(x, y, frame, radius) for x, y in line])
+            for level, line in contour_lines(grid, step, interval)]
+
+
+def covers(frame0, half0, frame, radius, half_w, half_h):
+    """True if a map half_w x half_h either side of `frame`'s middle lies
+    inside the half0 = (half_w, half_h) map around frame0. Close enough for
+    the small turn between two frames tens of km apart."""
+    xy = to_map(frame[0], frame0, radius)
+    return (xy is not None and abs(xy[0]) + half_w <= half0[0]
+            and abs(xy[1]) + half_h <= half0[1])
+
+
+def in_view(line, half_w, half_h):
+    """The stretches of a line (map metres) inside the map, each with the
+    point either side of it so it runs right to the edge."""
+    inside = [abs(x) <= half_w and abs(y) <= half_h for x, y in line]
+    runs, run = [], []
+    for k, p in enumerate(line):
+        if any(inside[max(0, k - 1):k + 2]):
+            run.append(p)
+        elif run:
+            runs.append(run)
+            run = []
+    if run:
+        runs.append(run)
+    return [r for r in runs if len(r) > 1]
 
 
 def is_index(level, interval):

@@ -767,6 +767,7 @@ class HeightMapTab:
         self.mpp = 100.0
         self.press, self.seen, self.image = None, None, None
         self.held = None    # as the star map's: set by Go to
+        self.contours = None    # (key, frame, (half_w, half_h), lines): draw
 
         side = tk.Frame(self.frame, bg=BG)
         side.pack(side="left", fill="y", padx=(0, 8))
@@ -920,16 +921,30 @@ class HeightMapTab:
             frame = (heightmap.local_frame(self.centre)
                      if self.centre is not None else None)
             rec = st.heightmap.get(self.body)
-            # Cells just off the map still shape the contours near its edge.
+            # Contours are worked out for twice the map each way and kept
+            # until the survey or the zoom changes or you pan off them.
+            key = (self.body, self.seen[1], self.mpp)
+            fresh = frame and not (
+                self.contours and self.contours[0] == key and
+                heightmap.covers(self.contours[1], self.contours[2], frame,
+                                 radius, half_w, half_h))
+            # Cells just off that still shape the contours near its edge.
             around = (heightmap.local_cells(rec, radius, frame,
-                                            half_w + heightmap.REACH_M,
-                                            half_h + heightmap.REACH_M)
-                      if frame else [])
+                                            2 * half_w + heightmap.REACH_M,
+                                            2 * half_h + heightmap.REACH_M)
+                      if fresh else [])
+            near = (heightmap.local_cells(rec, radius, frame, half_w, half_h)
+                    if frame else [])
             body_lo, body_hi = heightmap.height_range(
                 v[0] for v in (rec["cells"].values() if rec else ()))
             wps = [dict(x) for x in st.waypoints]
-        near = [p for p in around if abs(p[0]) <= half_w and abs(p[1]) <= half_h]
         interval = heightmap.contour_interval(body_lo, body_hi)
+        if fresh:
+            step = max(heightmap.CELL_M, 5 * self.mpp)  # grid points 5 px apart
+            self.contours = (key, frame, (2 * half_w, 2 * half_h),
+                             heightmap.contours_on_body(
+                                 around, frame, radius, 2 * half_w,
+                                 2 * half_h, step, interval))
         c.delete("all")
         lo, hi = heightmap.height_range(z for _, _, z in near)
         img = tk.PhotoImage(width=w, height=h)
@@ -947,7 +962,7 @@ class HeightMapTab:
         c.create_image(0, 0, image=img, anchor="nw")
         if frame:
             self.draw_grid(frame, radius, w, h)
-            self.draw_contours(around, interval, w, h)
+            self.draw_contours(frame, radius, interval, w, h)
 
         def spot(p):
             xy = heightmap.to_map(p, frame, radius)
@@ -1017,26 +1032,26 @@ class HeightMapTab:
                               text=f"{deg:+.{places}f}", fill=FG,
                               font=("Consolas", 8))
 
-    def draw_contours(self, cells, interval, w, h):
-        """Contour lines over the cells, every INDEX_EVERY-th thicker and
-        labelled with its height. Only near measured ground: see height_grid."""
+    def draw_contours(self, frame, radius, interval, w, h):
+        """The kept contour lines (see draw) over the cells, every
+        INDEX_EVERY-th thicker and labelled with its height. Only near
+        measured ground: see height_grid."""
         c = self.canvas
-        if not cells:
-            return
-        step = max(heightmap.CELL_M, 5 * self.mpp)   # grid points 5 px apart
-        grid = heightmap.height_grid(cells, w / 2 * self.mpp, h / 2 * self.mpp,
-                                     step)
+        half_w, half_h = w / 2 * self.mpp, h / 2 * self.mpp
         labels = []
-        for level, line in heightmap.contour_lines(grid, step, interval):
+        for level, line in self.contours[3]:
             index = heightmap.is_index(level, interval)
-            flat = [v for x, y in line
-                    for v in (w / 2 + x / self.mpp, h / 2 - y / self.mpp)]
-            c.create_line(*flat, fill=CONTOUR_INDEX if index else CONTOUR,
-                          width=2 if index else 1)
-            xy = heightmap.half_way(line, 80 * self.mpp) if index else None
-            if xy:
-                labels.append((w / 2 + xy[0] / self.mpp,
-                               h / 2 - xy[1] / self.mpp, f"{level:g}"))
+            xys = [xy for xy in (heightmap.to_map(p, frame, radius)
+                                 for p in line) if xy]
+            for run in heightmap.in_view(xys, half_w, half_h):
+                flat = [v for x, y in run
+                        for v in (w / 2 + x / self.mpp, h / 2 - y / self.mpp)]
+                c.create_line(*flat, fill=CONTOUR_INDEX if index else CONTOUR,
+                              width=2 if index else 1)
+                xy = heightmap.half_way(run, 80 * self.mpp) if index else None
+                if xy:
+                    labels.append((w / 2 + xy[0] / self.mpp,
+                                   h / 2 - xy[1] / self.mpp, f"{level:g}"))
         # Labels last, each on a patch of background that breaks its line.
         for sx, sy, text in labels:
             t = c.create_text(sx, sy, text=text, fill=CONTOUR_INDEX,
