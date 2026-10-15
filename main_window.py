@@ -8,9 +8,12 @@ paths and its own copy of the data, and could save over the real files.
 The handlers here stay thin: the edits are sc_locator's helpers, the map
 geometry is starmap's.
 """
+import ctypes
 import math
+import os
 import time
 import tkinter as tk
+import tkinter.font as tkfont
 from tkinter import messagebox, ttk
 
 from PIL import Image, ImageTk
@@ -29,12 +32,80 @@ CONTOUR, CONTOUR_INDEX = "#C8925A", "#E0A868"   # brown, as on a paper map
 # Survey legs: flown, now, next. Blue, not ACCENT: you fly along the leg
 # you are on, and in your own green it hid your + (2026-10-15).
 COURSE = ("#B8C6D4", "#5CC8FF", "#2F7FA8")
-MONO = ("Consolas", 10)
 
 SUN_PX, PLANET_PX, MOON_PX = 14, 9, 5
 # Seconds without a body fix before follow me counts you as in deep space:
 # long enough that a few unread frames do not flip the star map's view.
 SPACE_AFTER = 10.0
+
+
+BASE_DPI = 120     # the screen the window was laid out on: 125 %
+ROW_PX = 20        # a table row there
+
+# The window's fonts, one of each (family, points, bold), sized in pixels for
+# the screen it is on. Tk sizes point fonts once, for the main screen, so the
+# Windows scale of any other screen would never reach the text.
+_fonts = {}
+_dpi = [BASE_DPI]
+_columns = []      # (table, column, width as laid out): widths follow too
+
+
+def font_px(points, dpi):
+    """Tk size of a `points` font on a `dpi` screen: negative is pixels."""
+    return -round(points * dpi / 72)
+
+
+def _font(family, points, bold=False):
+    k = (family, points, bold)
+    if k not in _fonts:
+        _fonts[k] = tkfont.Font(family=family, size=font_px(points, _dpi[0]),
+                                weight="bold" if bold else "normal")
+    return _fonts[k]
+
+
+def mono(points=10, bold=False):
+    return _font("Consolas", points, bold)
+
+
+def ui_font():
+    """For buttons, tabs and lists that had Tk's default font."""
+    return _font(tkfont.nametofont("TkDefaultFont").actual("family"), 9)
+
+
+def px(n):
+    """n pixels of the window as laid out, on the screen it is on now."""
+    return round(n * _dpi[0] / BASE_DPI)
+
+
+def set_column(tree, name, width, **kw):
+    """A table column `width` px wide as laid out, kept to scale."""
+    _columns.append((tree, name, width))
+    tree.column(name, width=px(width), **kw)
+
+
+def window_dpi(win):
+    """DPI of the screen `win` is on: 96 at 100 %, 144 at 150 %."""
+    if os.name != "nt":
+        return BASE_DPI
+    u = ctypes.windll.user32
+    u.GetAncestor.restype = ctypes.c_void_p
+    u.GetAncestor.argtypes = [ctypes.c_void_p, ctypes.c_uint]
+    u.GetDpiForWindow.argtypes = [ctypes.c_void_p]
+    return u.GetDpiForWindow(u.GetAncestor(win.winfo_id(), 2)) or BASE_DPI
+
+
+def fit_to_screen(win, style):
+    """Resize every font, and the table rows, if the window has moved to a
+    screen with another Windows scale (or the scale was changed)."""
+    dpi = window_dpi(win)
+    if dpi == _dpi[0]:
+        return
+    _dpi[0] = dpi
+    for (_, points, _), f in _fonts.items():
+        f.configure(size=font_px(points, dpi))
+    style.configure("Treeview", rowheight=px(ROW_PX))
+    for tree, name, width in _columns:
+        tree.column(name, width=px(width))
 
 
 def snapshot(state):
@@ -63,19 +134,24 @@ def open_main(root, state, scl, set_hud):
 
     style = ttk.Style(win)
     style.theme_use("clam")
-    style.configure(".", background=BG, foreground=FG, fieldbackground=PANEL)
+    style.configure(".", background=BG, foreground=FG, fieldbackground=PANEL,
+                    font=ui_font())
+    # Drop-down text and its list are widget options, not style ones.
+    win.option_add("*TCombobox.font", ui_font())
+    win.option_add("*TCombobox*Listbox.font", ui_font())
     style.configure("TNotebook", background=BG)
     style.configure("TNotebook.Tab", background=PANEL, foreground=DIM,
                     padding=(14, 4))
     style.map("TNotebook.Tab", background=[("selected", BG)],
               foreground=[("selected", ACCENT)])
     style.configure("Treeview", background=PANEL, foreground=FG,
-                    fieldbackground=PANEL, font=MONO, rowheight=20)
+                    fieldbackground=PANEL, font=mono(), rowheight=ROW_PX)
     style.map("Treeview", background=[("selected", "#1F3A52")])
     style.configure("Treeview.Heading", background=BG, foreground=DIM)
     style.configure("TButton", background=PANEL, foreground=ACCENT)
     style.configure("TCheckbutton", background=BG, foreground=ACCENT)
     style.configure("TCombobox", foreground=BG)
+    fit_to_screen(win, style)
 
     bar = tk.Frame(win, bg=BG)
     bar.pack(fill="x", padx=8, pady=(6, 0))
@@ -87,7 +163,7 @@ def open_main(root, state, scl, set_hud):
     ttk.Checkbutton(bar, text="follow me", variable=follow,
                     command=lambda: [tab.recentre() for tab in tabs[:2]]).pack(
         side="left", padx=(12, 0))
-    status = tk.Label(bar, text="", font=MONO, fg=DIM, bg=BG, anchor="e")
+    status = tk.Label(bar, text="", font=mono(), fg=DIM, bg=BG, anchor="e")
     status.pack(side="right", fill="x", expand=True)
 
     nb = ttk.Notebook(win)
@@ -111,7 +187,12 @@ def open_main(root, state, scl, set_hud):
                                  "Reports")):
         nb.add(tab.frame, text=title)
 
+    # Dragged to another screen: refit when it lands, not a second later.
+    win.bind("<Configure>", lambda e: e.widget is win
+             and fit_to_screen(win, style))
+
     def tick():
+        fit_to_screen(win, style)   # the Windows scale changed under it
         for tab in tabs:
             tab.refresh()
         with state.lock:
@@ -133,7 +214,7 @@ def blend(colours, t):
 
 
 def text_box(parent, height, readonly=False):
-    t = tk.Text(parent, height=height, font=MONO, bg=PANEL, fg=FG,
+    t = tk.Text(parent, height=height, font=mono(), bg=PANEL, fg=FG,
                 insertbackground=FG, relief="flat", wrap="word")
     if readonly:
         t.config(state="disabled")
@@ -182,7 +263,7 @@ class StarMap:
 
         side = tk.Frame(self.frame, bg=BG)
         side.pack(side="left", fill="y", padx=(0, 8))
-        tk.Label(side, text="System", font=MONO, fg=DIM, bg=BG).pack(anchor="w")
+        tk.Label(side, text="System", font=mono(), fg=DIM, bg=BG).pack(anchor="w")
         self.system_var = tk.StringVar(value=self.system)
         pick = ttk.Combobox(side, textvariable=self.system_var, state="readonly",
                             values=starmap.SYSTEMS, width=14)
@@ -194,14 +275,14 @@ class StarMap:
         self.back.pack(anchor="w", fill="x", pady=(0, 12))
         # One framed box, title, hint and list together, so it is plain which
         # list the words are about.
-        self.box = box = tk.LabelFrame(side, font=MONO,
+        self.box = box = tk.LabelFrame(side, font=mono(),
                             fg=ACCENT, bg=BG, bd=2, relief="groove",
                             padx=6, pady=6)
         box.pack(anchor="w", fill="both", expand=True)
-        self.unplaced_hint = tk.Label(box, font=("Consolas", 9), fg=DIM, bg=BG,
+        self.unplaced_hint = tk.Label(box, font=mono(9), fg=DIM, bg=BG,
                                       justify="left", anchor="w")
         self.unplaced_hint.pack(anchor="w", fill="x", pady=(0, 6))
-        self.unplaced = tk.Listbox(box, font=MONO, bg=PANEL, fg=FG, width=22,
+        self.unplaced = tk.Listbox(box, font=mono(), bg=PANEL, fg=FG, width=22,
                                    height=12, relief="flat",
                                    selectbackground="#1F3A52")
         self.unplaced.pack(fill="both", expand=True)
@@ -217,7 +298,7 @@ class StarMap:
         # View from an orbital marker. Over the canvas, top right; only shown
         # while a body is open, as the system view has no markers.
         self.om_bar = tk.Frame(self.canvas, bg=BG)
-        tk.Label(self.om_bar, text="view from", font=("Consolas", 9), fg=DIM,
+        tk.Label(self.om_bar, text="view from", font=mono(9), fg=DIM,
                  bg=BG).pack(side="left", padx=(0, 4))
         for name, lat, lon in scl.OM_POINTS:
             ttk.Button(self.om_bar, text=name, width=5,
@@ -225,7 +306,7 @@ class StarMap:
                 side="left", padx=1)
         # Surveyed ground is raised by this much, or it would not show at all:
         # a few km of relief on a 1000 km body is under a pixel.
-        tk.Label(self.om_bar, text="relief x", font=("Consolas", 9), fg=DIM,
+        tk.Label(self.om_bar, text="relief x", font=mono(9), fg=DIM,
                  bg=BG).pack(side="left", padx=(8, 2))
         self.relief = tk.StringVar(value="20")
         relief = ttk.Combobox(self.om_bar, textvariable=self.relief, width=4,
@@ -523,7 +604,7 @@ class StarMap:
                           tags="pin"),
             c.create_text(x + 9, y - 12, text=label or name, anchor="w",
                           fill=FG,
-                          font=("Consolas", 9), tags=("pin", "label")),
+                          font=mono(9), tags=("pin", "label")),
         ]
         for item in ids:
             self.pins[item] = name
@@ -535,14 +616,14 @@ class StarMap:
         c.create_line(x, y - 8, x, y + 8, fill=ACCENT, width=2, tags="you")
         if label:
             c.create_text(x + 11, y, text="YOU", anchor="w", fill=ACCENT,
-                          font=("Consolas", 9, "bold"), tags="you")
+                          font=mono(9, True), tags="you")
 
     def header(self, title, hint):
         c = self.canvas
         ids = (c.create_text(12, 10, text=title, anchor="nw", fill=ACCENT,
-                             font=("Consolas", 16, "bold")),
-               c.create_text(12, 36, text=hint, anchor="nw", fill=DIM,
-                             font=("Consolas", 9)))
+                             font=mono(16, True)),
+               c.create_text(12, 10 + px(26), text=hint, anchor="nw",
+                             fill=DIM, font=mono(9)))
         _, _, x1, y1 = c.bbox(*ids)
         self.backdrop("header", (0, 0, x1 + 8, y1 + 6), ids[0])
 
@@ -567,12 +648,12 @@ class StarMap:
                               to=(i, 0, i + 1, 14))
         x, y = w - 172, h - 34
         ids = (c.create_text(x, y - 4, anchor="sw", fill=FG,
-                             font=("Consolas", 9), text="ground height"),
+                             font=mono(9), text="ground height"),
                c.create_image(x, y, image=self.ramp, anchor="nw"),
                c.create_text(x, y + 16, anchor="nw", fill=DIM,
-                             font=("Consolas", 9), text=self.scl.fmt_dist(lo)),
+                             font=mono(9), text=self.scl.fmt_dist(lo)),
                c.create_text(x + 160, y + 16, anchor="ne", fill=DIM,
-                             font=("Consolas", 9), text=self.scl.fmt_dist(hi)))
+                             font=mono(9), text=self.scl.fmt_dist(hi)))
         x0, y0, _, _ = c.bbox(*ids)
         self.backdrop("legend", (x0 - 8, y0 - 6, w, h), ids[0])
 
@@ -617,7 +698,7 @@ class StarMap:
                 c.create_text(sx, sy - r - 4 if moon else sy + r + 4,
                               text=what["key"].upper(),
                               anchor="s" if moon else "n", fill=PLANET[2],
-                              tags=tags, font=("Consolas", 9, "bold"))
+                              tags=tags, font=mono(9, True))
             elif kind == "you":
                 self.you(sx, sy, label=True)
             else:
@@ -699,7 +780,7 @@ class StarMap:
                                         scale, cx, cy)
             c.create_line(ex, ey, sx, sy, fill=GRID, width=2)
             c.create_text(sx, sy, text="N" if sign > 0 else "S", fill=DIM,
-                          font=("Consolas", 9, "bold"))
+                          font=mono(9, True))
 
         def draw_item(item):
             (sx, sy, _), kind, key, label = item
@@ -713,7 +794,7 @@ class StarMap:
             self.sphere(sx, sy, MOON_PX + 2, MOON, tags)
             c.create_text(sx, sy - MOON_PX - 6, text=label, anchor="s",
                           fill=PLANET[2], tags=tags + ("label",),
-                          font=("Consolas", 9, "bold"))
+                          font=mono(9, True))
             self.hand_cursor(tags[0])
 
         for spot, sign in poles:
@@ -779,20 +860,20 @@ class HeightMapTab:
 
         side = tk.Frame(self.frame, bg=BG)
         side.pack(side="left", fill="y", padx=(0, 8))
-        tk.Label(side, text="Body", font=MONO, fg=DIM, bg=BG).pack(anchor="w")
+        tk.Label(side, text="Body", font=mono(), fg=DIM, bg=BG).pack(anchor="w")
         self.body_var = tk.StringVar()
         self.pick = ttk.Combobox(side, textvariable=self.body_var, width=14,
                                  state="readonly")
         self.pick.pack(anchor="w", pady=(0, 8))
         self.pick.bind("<<ComboboxSelected>>",
                        lambda e: self.open(self.body_var.get()))
-        tk.Label(side, text="Go to", font=MONO, fg=DIM, bg=BG).pack(anchor="w")
+        tk.Label(side, text="Go to", font=mono(), fg=DIM, bg=BG).pack(anchor="w")
         self.goto_var = tk.StringVar()
         self.goto = ttk.Combobox(side, textvariable=self.goto_var, width=14,
                                  state="readonly")
         self.goto.pack(anchor="w", pady=(0, 8))
         self.goto.bind("<<ComboboxSelected>>", lambda e: self.go_to())
-        self.info = tk.Label(side, font=MONO, fg=FG, bg=BG, justify="left",
+        self.info = tk.Label(side, font=mono(), fg=FG, bg=BG, justify="left",
                              anchor="w")
         self.info.pack(anchor="w", fill="x")
         self.legend = tk.Canvas(side, width=170, height=34, bg=BG,
@@ -809,7 +890,7 @@ class HeightMapTab:
             self.show[name] = tk.BooleanVar(value=on)
             ttk.Checkbutton(side, text=text, variable=self.show[name],
                             command=self.draw).pack(anchor="w")
-        tk.Label(side, font=("Consolas", 9), fg=DIM, bg=BG, justify="left",
+        tk.Label(side, font=mono(9), fg=DIM, bg=BG, justify="left",
                  anchor="w",
                  text="\nSURVEY in the overlay\nrecords the ground "
                       "under you.\n\ngrey: not measured\nbrown: contour lines\n"
@@ -1062,7 +1143,7 @@ class HeightMapTab:
                     # A spot height, as BM 1570 on a paper map.
                     z = elev.get(name)
                     c.create_text(sx + 7, sy, anchor="w", fill=FG,
-                                  font=("Consolas", 9),
+                                  font=mono(9),
                                   text=name if z is None else f"{name} {z:.0f}")
             xy = spot(pos) if here == self.body and pos else None
             if xy:
@@ -1074,7 +1155,7 @@ class HeightMapTab:
                     c.create_line(sx, sy - 9, sx, sy + 9, fill=colour,
                                   width=wide)
         else:
-            c.create_text(w / 2, h / 2, fill=FG, font=MONO,
+            c.create_text(w / 2, h / 2, fill=FG, font=mono(),
                           text=f"Nothing surveyed on {self.body} yet")
         self.scale_bar(w, h)
         self.draw_legend(lo, hi, bool(near))
@@ -1114,7 +1195,7 @@ class HeightMapTab:
                                                       else 2),
                               anchor="sw" if kind == "lat" else "nw",
                               text=f"{deg:+.{places}f}", fill=FG,
-                              font=("Consolas", 8))
+                              font=mono(8))
 
     def draw_contours(self, frame, radius, interval, w, h):
         """The kept contour lines (see draw) over the cells, every
@@ -1139,7 +1220,7 @@ class HeightMapTab:
         # Labels last, each on a patch of background that breaks its line.
         for sx, sy, text in labels:
             t = c.create_text(sx, sy, text=text, fill=CONTOUR_INDEX,
-                              font=("Consolas", 8))
+                              font=mono(8))
             c.tag_lower(c.create_rectangle(*c.bbox(t), fill=heightmap.GREY,
                                            outline=""), t)
 
@@ -1170,21 +1251,22 @@ class HeightMapTab:
         c = self.canvas
         c.create_line(12, h - 14, 12 + length / self.mpp, h - 14, fill=FG,
                       width=3)
-        c.create_text(12, h - 20, anchor="sw", fill=FG, font=("Consolas", 9),
+        c.create_text(12, h - 20, anchor="sw", fill=FG, font=mono(9),
                       text=self.scl.fmt_dist(length))
 
     def draw_legend(self, lo, hi, any_cells):
         """The height scale, low to high, for the cells in view."""
         lg = self.legend
         lg.delete("all")
+        lg.configure(height=18 + mono(9).metrics("linespace"))
         if not any_cells:
             return
         for i in range(160):
             lg.create_line(i, 0, i, 14, fill=heightmap.height_colour(
                 lo + (hi - lo) * i / 159, lo, hi))
-        lg.create_text(0, 18, anchor="nw", fill=DIM, font=("Consolas", 9),
+        lg.create_text(0, 18, anchor="nw", fill=DIM, font=mono(9),
                        text=self.scl.fmt_dist(lo))
-        lg.create_text(160, 18, anchor="ne", fill=DIM, font=("Consolas", 9),
+        lg.create_text(160, 18, anchor="ne", fill=DIM, font=mono(9),
                        text=self.scl.fmt_dist(hi))
 
 
@@ -1209,7 +1291,7 @@ class WaypointEditor:
         self.sys_var, self.body_var = tk.StringVar(value="all"),             tk.StringVar(value="all")
         picks = []
         for text, var in (("System", self.sys_var), ("Body", self.body_var)):
-            tk.Label(bar, text=text, font=MONO, fg=DIM, bg=BG).pack(
+            tk.Label(bar, text=text, font=mono(), fg=DIM, bg=BG).pack(
                 side="left", padx=(0 if not picks else 18, 6))
             picks.append(ttk.Combobox(bar, textvariable=var, width=16,
                                       state="readonly", values=("all",)))
@@ -1222,7 +1304,7 @@ class WaypointEditor:
                                  columns=[n for n, _ in self.COLUMNS])
         for name, width in self.COLUMNS:
             self.tree.heading(name, text=name.upper())
-            self.tree.column(name, width=width, stretch=name == "note")
+            set_column(self.tree, name, width, stretch=name == "note")
         scroll = ttk.Scrollbar(self.frame, orient="vertical",
                                command=self.tree.yview)
         self.tree.configure(yscrollcommand=scroll.set)
@@ -1234,9 +1316,9 @@ class WaypointEditor:
 
         row = tk.Frame(edit, bg=BG)
         row.pack(fill="x")
-        tk.Label(row, text="Name", font=MONO, fg=DIM, bg=BG).pack(side="left")
+        tk.Label(row, text="Name", font=mono(), fg=DIM, bg=BG).pack(side="left")
         self.name_var = tk.StringVar()
-        name_entry = tk.Entry(row, textvariable=self.name_var, font=MONO,
+        name_entry = tk.Entry(row, textvariable=self.name_var, font=mono(),
                               bg=PANEL, fg=FG, insertbackground=FG,
                               relief="flat", width=32)
         name_entry.pack(side="left", padx=6)
@@ -1247,7 +1329,7 @@ class WaypointEditor:
         ttk.Button(row, text="SHOW ON MAP", command=self.show_on_map).pack(
             side="left")
         # Deep space only: which body the star map shows it around.
-        tk.Label(row, text="Shown around", font=MONO, fg=DIM, bg=BG).pack(
+        tk.Label(row, text="Shown around", font=mono(), fg=DIM, bg=BG).pack(
             side="left", padx=(18, 6))
         self.parent_var = tk.StringVar()
         self.parent_pick = ttk.Combobox(row, textvariable=self.parent_var,
@@ -1255,7 +1337,7 @@ class WaypointEditor:
         self.parent_pick.pack(side="left")
         self.parent_pick.bind("<<ComboboxSelected>>",
                               lambda e: self.set_parent())
-        tk.Label(edit, text="Note", font=MONO, fg=DIM, bg=BG).pack(anchor="w",
+        tk.Label(edit, text="Note", font=mono(), fg=DIM, bg=BG).pack(anchor="w",
                                                                    pady=(6, 0))
         self.note = text_box(edit, 4)
         self.note.pack(fill="x")
@@ -1448,7 +1530,7 @@ class ReportViewer:
 
         bar = tk.Frame(self.frame, bg=BG)
         bar.pack(side="top", fill="x", pady=(0, 6))
-        tk.Label(bar, text="System", font=MONO, fg=DIM, bg=BG).pack(
+        tk.Label(bar, text="System", font=mono(), fg=DIM, bg=BG).pack(
             side="left", padx=(0, 6))
         self.sys_var = tk.StringVar(value="all")
         self.sys_pick = ttk.Combobox(bar, textvariable=self.sys_var, width=16,
@@ -1461,7 +1543,7 @@ class ReportViewer:
         for name, width in (("place", 300), ("system", 80), ("kind", 85),
                             ("analysed", 150)):
             self.tree.heading(name, text=name.upper())
-            self.tree.column(name, width=width, stretch=name == "place")
+            set_column(self.tree, name, width, stretch=name == "place")
         self.tree.pack(side="left", fill="y")
         self.tree.bind("<<TreeviewSelect>>", lambda e: self.show_selected())
 
@@ -1470,7 +1552,7 @@ class ReportViewer:
         self.report = text_box(right, 16, readonly=True)
         self.report.config(wrap="none")
         self.report.pack(fill="both", expand=True)
-        tk.Label(right, text="Your notes", font=MONO, fg=DIM, bg=BG).pack(
+        tk.Label(right, text="Your notes", font=mono(), fg=DIM, bg=BG).pack(
             anchor="w", pady=(6, 0))
         self.notes = text_box(right, 8)
         self.notes.pack(fill="x")
