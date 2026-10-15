@@ -24,6 +24,7 @@ PLANET = ("#1D4E73", "#3E8CC4", "#A8D8FF")
 MOON = ("#4A5560", "#8A97A4", "#D0D8E0")
 PIN, ORBIT, GRID = "#FF9F43", "#1B3348", "#2D5A80"
 GRID_LINE = "#2E343B"       # LAT/LON on the height map: darker than its grey
+CONTOUR, CONTOUR_INDEX = "#C8925A", "#E0A868"   # brown, as on a paper map
 MONO = ("Consolas", 10)
 
 SUN_PX, PLANET_PX, MOON_PX = 14, 9, 5
@@ -791,7 +792,8 @@ class HeightMapTab:
         tk.Label(side, font=("Consolas", 9), fg=DIM, bg=BG, justify="left",
                  anchor="w",
                  text="SURVEY in the overlay\nrecords the ground "
-                      "under you.\n\ngrey: not measured\n+ : you are here\n"
+                      "under you.\n\ngrey: not measured\nbrown: contour lines\n"
+                      "number by a pin: its\nground height\n+ : you are here\n"
                       "drag to move\n"
                       "wheel to zoom").pack(anchor="w", fill="x")
 
@@ -917,10 +919,17 @@ class HeightMapTab:
                                                  radius)
             frame = (heightmap.local_frame(self.centre)
                      if self.centre is not None else None)
-            near = (heightmap.local_cells(st.heightmap.get(self.body), radius,
-                                          frame, half_w, half_h)
-                    if frame else [])
+            rec = st.heightmap.get(self.body)
+            # Cells just off the map still shape the contours near its edge.
+            around = (heightmap.local_cells(rec, radius, frame,
+                                            half_w + heightmap.REACH_M,
+                                            half_h + heightmap.REACH_M)
+                      if frame else [])
+            body_lo, body_hi = heightmap.height_range(
+                v[0] for v in (rec["cells"].values() if rec else ()))
             wps = [dict(x) for x in st.waypoints]
+        near = [p for p in around if abs(p[0]) <= half_w and abs(p[1]) <= half_h]
+        interval = heightmap.contour_interval(body_lo, body_hi)
         c.delete("all")
         lo, hi = heightmap.height_range(z for _, _, z in near)
         img = tk.PhotoImage(width=w, height=h)
@@ -938,6 +947,7 @@ class HeightMapTab:
         c.create_image(0, 0, image=img, anchor="nw")
         if frame:
             self.draw_grid(frame, radius, w, h)
+            self.draw_contours(around, interval, w, h)
 
         def spot(p):
             xy = heightmap.to_map(p, frame, radius)
@@ -946,14 +956,19 @@ class HeightMapTab:
             return None
 
         if frame:
+            elev = {wp["name"]: wp.get("elev") for wp in wps
+                    if wp["planet"] == self.body}
             for name, p in starmap.body_points(wps, self.body):
                 xy = spot(p)
                 if xy:
                     sx, sy = xy
                     c.create_oval(sx - 4, sy - 4, sx + 4, sy + 4, fill=PIN,
                                   outline=BG)
-                    c.create_text(sx + 7, sy, text=name, anchor="w", fill=FG,
-                                  font=("Consolas", 9))
+                    # A spot height, as BM 1570 on a paper map.
+                    z = elev.get(name)
+                    c.create_text(sx + 7, sy, anchor="w", fill=FG,
+                                  font=("Consolas", 9),
+                                  text=name if z is None else f"{name} {z:.0f}")
             xy = spot(pos) if here == self.body and pos else None
             if xy:
                 sx, sy = xy
@@ -968,7 +983,9 @@ class HeightMapTab:
                               f"{len(near):,} in view\n"
                               f"{2 * half_w / 1000:,.1f} x "
                               f"{2 * half_h / 1000:,.1f} km\n"
-                              f"{self.mpp:g} m a pixel")
+                              f"{self.mpp:g} m a pixel\n"
+                              + (f"contour interval {interval:g} m"
+                                 if rec else ""))
 
     def draw_grid(self, frame, radius, w, h):
         """LAT and LON lines, labelled on the left and top edges."""
@@ -999,6 +1016,33 @@ class HeightMapTab:
                               anchor="sw" if kind == "lat" else "nw",
                               text=f"{deg:+.{places}f}", fill=FG,
                               font=("Consolas", 8))
+
+    def draw_contours(self, cells, interval, w, h):
+        """Contour lines over the cells, every INDEX_EVERY-th thicker and
+        labelled with its height. Only near measured ground: see height_grid."""
+        c = self.canvas
+        if not cells:
+            return
+        step = max(heightmap.CELL_M, 5 * self.mpp)   # grid points 5 px apart
+        grid = heightmap.height_grid(cells, w / 2 * self.mpp, h / 2 * self.mpp,
+                                     step)
+        labels = []
+        for level, line in heightmap.contour_lines(grid, step, interval):
+            index = heightmap.is_index(level, interval)
+            flat = [v for x, y in line
+                    for v in (w / 2 + x / self.mpp, h / 2 - y / self.mpp)]
+            c.create_line(*flat, fill=CONTOUR_INDEX if index else CONTOUR,
+                          width=2 if index else 1)
+            xy = heightmap.half_way(line, 80 * self.mpp) if index else None
+            if xy:
+                labels.append((w / 2 + xy[0] / self.mpp,
+                               h / 2 - xy[1] / self.mpp, f"{level:g}"))
+        # Labels last, each on a patch of background that breaks its line.
+        for sx, sy, text in labels:
+            t = c.create_text(sx, sy, text=text, fill=CONTOUR_INDEX,
+                              font=("Consolas", 8))
+            c.tag_lower(c.create_rectangle(*c.bbox(t), fill=heightmap.GREY,
+                                           outline=""), t)
 
     def scale_bar(self, w, h):
         """A round length up to a fifth of the map wide, bottom left."""

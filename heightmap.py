@@ -275,6 +275,137 @@ def local_cells(rec, radius, frame, half_w, half_h):
     return out
 
 
+REACH_M = 1500.0        # contours go no further than this from a measured cell
+INDEX_EVERY = 5         # every 5th contour is thicker and labelled
+
+
+def contour_interval(lo, hi, lines=20):
+    """Metres between contours: a 1, 2 or 5 step giving about `lines` of them
+    over lo..hi, and never under 1 m. Taken from the whole body, so it stays
+    put while you pan."""
+    want = max((hi - lo) / lines, 1.0)
+    step = 10 ** math.floor(math.log10(want))
+    return next(k * step for k in (1, 2, 5, 10) if k * step >= want)
+
+
+def height_grid(cells, half_w, half_h, step, reach=REACH_M, least=3):
+    """Heights on a grid of points `step` m apart over the map, guessed from
+    the measured cells near each one, nearer cells counting for more.
+
+    `cells` as local_cells gives them. A point with fewer than `least` cells
+    within `reach` gets None: a lone cell would ring itself with contours.
+    Returns (x0, y0, rows), rows[j][i] the height at (x0 + i * step,
+    y0 + j * step).
+    """
+    nx, ny = math.ceil(half_w / step), math.ceil(half_h / step)
+    x0, y0 = -nx * step, -ny * step
+    cols = 2 * nx + 1
+    sw = [0.0] * (cols * (2 * ny + 1))
+    sz, found = sw[:], [0] * len(sw)
+    # Each cell adds itself to the points within reach of it, which skips
+    # the many points nowhere near a cell.
+    for cx, cy, cz in cells:
+        i0 = max(0, math.ceil((cx - reach - x0) / step))
+        i1 = min(cols - 1, math.floor((cx + reach - x0) / step))
+        for j in range(max(0, math.ceil((cy - reach - y0) / step)),
+                       min(2 * ny, math.floor((cy + reach - y0) / step)) + 1):
+            dy2 = (y0 + j * step - cy) ** 2
+            for i in range(i0, i1 + 1):
+                d2 = (x0 + i * step - cx) ** 2 + dy2
+                if d2 <= reach * reach:
+                    w = 1.0 / (d2 + CELL_M * CELL_M)
+                    k = j * cols + i
+                    sw[k] += w
+                    sz[k] += w * cz
+                    found[k] += 1
+    rows = [[sz[k] / sw[k] if found[k] >= least else None
+             for k in range(j * cols, (j + 1) * cols)]
+            for j in range(2 * ny + 1)]
+    return x0, y0, rows
+
+
+def contour_lines(grid, step, interval):
+    """Contours through a height_grid every `interval` m.
+
+    Returns [(height, line)], a line a list of (east m, north m); a closed
+    one ends where it starts. Each square of four known grid points is cut
+    where the heights cross a contour (marching squares), and the cuts are
+    joined up through the grid edges they share.
+    """
+    x0, y0, rows = grid
+    corners =((0, 0), (1, 0), (1, 1), (0, 1))
+    ends = {}           # level -> {grid edge: the cuts that end on it}
+    cuts = {}           # level -> [cut]
+    for j in range(len(rows) - 1):
+        for i in range(len(rows[0]) - 1):
+            zs = [rows[j + dj][i + di] for di, dj in corners]
+            if None in zs:
+                continue
+            for k in range(math.ceil(min(zs) / interval),
+                           math.floor(max(zs) / interval) + 1):
+                level = k * interval
+                hits = []
+                for a in range(4):
+                    b = (a + 1) % 4
+                    if (zs[a] < level) != (zs[b] < level):
+                        pa = (i + corners[a][0], j + corners[a][1])
+                        pb = (i + corners[b][0], j + corners[b][1])
+                        t = (level - zs[a]) / (zs[b] - zs[a])
+                        hits.append((tuple(sorted((pa, pb))),
+                                     (x0 + (pa[0] + t * (pb[0] - pa[0])) * step,
+                                      y0 + (pa[1] + t * (pb[1] - pa[1])) * step)))
+                lc, le = cuts.setdefault(level, []), ends.setdefault(level, {})
+                for a in range(0, len(hits) - 1, 2):    # 4 hits: a saddle
+                    le.setdefault(hits[a][0], []).append(len(lc))
+                    le.setdefault(hits[a + 1][0], []).append(len(lc))
+                    lc.append((hits[a], hits[a + 1]))
+    out = []
+    for level in sorted(cuts):
+        lc, le = cuts[level], ends[level]
+        used = [False] * len(lc)
+
+        def walk(edge, n):
+            """Points on from cut n, which is entered at `edge`."""
+            pts = []
+            while True:
+                used[n] = True
+                a, b = lc[n]
+                edge, p = (b if a[0] == edge else a)
+                pts.append(p)
+                n = next((m for m in le[edge] if not used[m]), None)
+                if n is None:
+                    return pts
+
+        for n in range(len(lc)):
+            if not used[n]:
+                ea, pa = lc[n][0]
+                fwd = walk(ea, n)       # round a ring this comes back to pa
+                m = next((m for m in le[ea] if not used[m]), None)
+                back = walk(ea, m) if m is not None else []
+                out.append((level, back[::-1] + [pa] + fwd))
+    return out
+
+
+def is_index(level, interval):
+    """The thicker, labelled contours: every INDEX_EVERY-th, counted from 0."""
+    return round(level / interval) % INDEX_EVERY == 0
+
+
+def half_way(line, least):
+    """The point half way along a line, or None if it is shorter than
+    `least`: where a contour's height label goes."""
+    legs = [math.dist(p, q) for p, q in zip(line, line[1:])]
+    if sum(legs) < least:
+        return None
+    left = sum(legs) / 2
+    for (p, q), d in zip(zip(line, line[1:]), legs):
+        if left <= d:
+            t = left / d
+            return p[0] + t * (q[0] - p[0]), p[1] + t * (q[1] - p[1])
+        left -= d
+    return line[-1]
+
+
 def centre_of(rec, area_m=50_000.0):
     """Unit vector at the middle of the busiest survey area, or None.
 
