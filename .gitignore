@@ -21,3 +21,4 @@ calib_processed.png
 # Kept local, not published
 tests/
 TODO.md
+examples/
