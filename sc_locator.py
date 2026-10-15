@@ -48,6 +48,7 @@ if str(HERE) not in sys.path:            # the maths lives beside this file
 import heightmap                         # noqa: E402
 import spin_analysis as spin             # noqa: E402
 import stations                          # noqa: E402
+import survey                            # noqa: E402
 
 # A one-file .exe unpacks to a temp folder that is deleted on exit, so data is
 # kept beside the .exe instead. BUNDLE is where the packed Tesseract lives.
@@ -61,6 +62,7 @@ WAYPOINT_FILE = HERE / "waypoints.json"
 BODIES_FILE = HERE / "bodies.json"       # what landing on a body taught us
 STATIONS_FILE = HERE / "stations.json"   # UEX's station list, re-fetched weekly
 HEIGHTMAP_FILE = HERE / "heightmap.json" # ground heights from survey mode
+SURVEY_FILE = HERE / "survey.json"       # the last survey square, to resume
 BACKUP_DIR = HERE / "bak"
 BACKUP_KEEP = 30                         # versions of each file kept in bak/
 # How often a running survey is written out. Each write also keeps a backup,
@@ -1413,6 +1415,10 @@ class State:
         self.stations = {}       # {"fetched": time, "data": UEX records}
         self.survey = False      # recording ground heights into the height map
         self.survey_marked = set()  # bodies this survey has put a waypoint on
+        self.survey_pattern = "free fly"   # the last one started, see survey.py
+        self.survey_plan = None  # the course being flown, None for free fly
+        self.survey_saved = None  # the last square, flown or not: SURVEY_FILE
+        self.survey_guide = None  # what survey.step said at the last fix
         self.heightmap = {}      # body -> surveyed cells, see heightmap.py
         self.heightmap_dirty = False
         self.heightmap_saved = 0.0
@@ -1849,6 +1855,16 @@ class State:
                 # HUD's ground turns to noise on a climb is read off this.
                 self.log(f"survey h {r - radius:,.1f} elev {elev} alt {alt} "
                          f"{why or 'kept'}")
+                # Not on a jump either: a misread could pass a corner.
+                if self.survey_plan is not None and not jumped:
+                    plan = self.survey_plan
+                    was = (plan["leg"], plan["joined"], plan["origin"])
+                    moving = (self.heading if self.heading is not None
+                              and now - self.heading_time < 15 else None)
+                    self.survey_guide = survey.step(plan, planet, pos, radius,
+                                                    moving)
+                    if (plan["leg"], plan["joined"], plan["origin"]) != was:
+                        save_json(SURVEY_FILE, plan)  # resumable from here
             # A sample is the system position and the planet-frame position
             # from the same frame. Only a reading this frame produced and the
             # settling accepted counts: otherwise a held value would be
@@ -2441,16 +2457,84 @@ def survey_refusal(elev, alt, fresh_elev, jumped, planet, height, cfg):
 
 
 def toggle_survey(state):
-    """Start or stop recording ground heights. Stopping saves them."""
+    """Start or stop recording ground heights. Stopping saves them; starting
+    flies the pattern started last."""
     with state.lock:
-        state.survey = not state.survey
         on = state.survey
-        if on:
-            state.survey_marked = set()
-        state.flash("survey on" if on else "survey off")
-    state.log(f"survey {'on' if on else 'off'}")
-    if not on:
-        save_heightmap(state, force=True)
+    if on:
+        stop_survey(state)
+    else:
+        start_survey(state, state.survey_pattern)
+
+
+def start_survey(state, pattern):
+    """Start recording ground heights, flying `pattern` (survey.PATTERNS).
+
+    A square starts at the targeted waypoint, so a point of interest is at
+    its middle; with nothing targeted, where you are at the next fix.
+    """
+    with state.lock:
+        wp = next((w for w in state.waypoints if w["name"] == state.target),
+                  None)
+        if wp is not None and wp.get("frame", "planet") != "planet":
+            wp = None                   # deep space: no ground to start on
+        state.survey, state.survey_marked = True, set()
+        state.survey_pattern = pattern
+        plan = survey.new_plan(
+            pattern, wp and wp["planet"], wp and (wp["x"], wp["y"], wp["z"]))
+        state.survey_plan, state.survey_guide = plan, None
+        if plan is not None:            # a new square replaces the last one
+            if wp is not None:
+                plan["start"] = wp["name"]
+            state.survey_saved = plan
+            save_json(SURVEY_FILE, plan)
+        state.flash(f"survey on: {pattern}")
+    state.log(f"survey on: {pattern}")
+
+
+def resume_survey(state, skip=False):
+    """Fly the last square on, from the start of the leg it stopped on, or
+    with `skip` from the first leg past those already flown."""
+    with state.lock:
+        plan = state.survey_saved
+        if plan is None:
+            state.flash("no survey square to resume")
+            return
+        if skip:
+            plan["leg"] = resume_leg(state, plan)
+        plan["joined"] = False
+        state.survey, state.survey_marked = True, set()
+        state.survey_pattern = plan["pattern"]
+        state.survey_plan, state.survey_guide = plan, None
+        save_json(SURVEY_FILE, plan)
+        state.flash(f"survey resumed at LEG {plan['leg'] + 1}")
+    state.log(f"survey resumed at leg {plan['leg'] + 1}: {plan['pattern']}")
+
+
+def resume_leg(state, plan):
+    """The leg skipping ahead would resume `plan` at: survey.skip_to over the
+    cells measured round its start. Call with the lock held."""
+    rec = state.heightmap.get(plan["planet"])
+    if rec is None or plan["origin"] is None:
+        return plan["leg"]
+    frame = heightmap.local_frame(plan["origin"])
+    # 30 x 30 km: at 100 m/s a 500 m square that size is 2.5 hours flying.
+    reach = 15_000.0
+    cells = heightmap.local_cells(rec, rec["radius"], frame, reach, reach)
+    return survey.skip_to(plan, [(x, y) for x, y, _ in cells])
+
+
+def stop_survey(state):
+    """Stop recording ground heights and save them. A square stays saved,
+    at the leg it stopped on, for resume_survey."""
+    with state.lock:
+        state.survey = False
+        state.survey_plan = state.survey_guide = None
+        if state.survey_saved is not None:
+            save_json(SURVEY_FILE, state.survey_saved)
+        state.flash("survey off")
+    state.log("survey off")
+    save_heightmap(state, force=True)
 
 
 def survey_name(wps):
@@ -2651,15 +2735,80 @@ def render_location(state, with_status=True):
 
 
 def render_survey(state):
-    """The survey block: cells so far, the ceiling, and the speed reminder.
-    Empty while not surveying. Its own block, as the location block is full."""
+    """The survey block: cells so far, the ceiling, and the speed reminder,
+    or on a square the course to fly. Empty while not surveying. Its own
+    block, as the location block is full."""
+    return "\n".join(p for p in survey_parts(state)[:3] if p)
+
+
+def survey_parts(state):
+    """The survey block as (top line, middle two, bottom two, colour).
+
+    On a square the middle two are what to fly, and `colour` is the one the
+    panel draws them in, bold, to stand out from the rest of the HUD text:
+    TURN_COLOUR as a corner comes up, else DIRECTIONS. Free fly has none
+    (None): the middle carries the speed table on. All "" while not
+    surveying.
+    """
     with state.lock:
         if not state.survey:
-            return ""
+            return "", "", "", None
         cells = heightmap.cell_count(state.heightmap, state.planet)
         top = fmt_dist(state.cfg["survey_max_height_m"])
-    return "\n".join([f"SURVEY {cells:,} cell{'' if cells == 1 else 's'}"
-                      f" - records below {top}"] + SURVEY_SPEEDS)
+        plan, g = state.survey_plan, state.survey_guide
+    head = f"SURVEY {cells:,} cell{'' if cells == 1 else 's'}"
+    if plan is None:
+        return (f"{head} - records below {top}",
+                "\n".join(SURVEY_SPEEDS[:2]), "\n".join(SURVEY_SPEEDS[2:]),
+                None)
+    course = course_lines(plan, g)
+    speed = (g or {}).get("speed") or survey.speed_for(plan["leg"],
+                                                       plan["spacing"])
+    legs = "short" if speed == survey.SLOW_MS else "long"
+    return (f"{head} - {plan['pattern']}", "\n".join(course[:2]),
+            "\n".join(course[2:] + [f"fly {speed:.0f} m/s on {legs} legs"
+                                    f" - stay below {top}"]),
+            TURN_COLOUR if (g or {}).get("turn") else DIRECTIONS)
+
+
+def course_lines(plan, g):
+    """Up to three lines on what to fly next, from survey.step's `g`."""
+    # Cut to fit "square round " in the block's width.
+    start = (plan.get("start") or "")[:READOUT_COLS - 13]
+    round_ = [f"square round {start}"] if start else []
+    if g is None:
+        if plan["origin"] is None:
+            return ["the square starts where you are", "at the next fix"]
+        return [f"fly to LEG {plan['leg'] + 1} start", "waiting for a fix"] \
+            + round_
+    if "away" in g:
+        return [f"the square is on {g['away']}", "fly there first"]
+    if "to_join" in g:
+        brg = "" if g["bearing"] is None else f", bearing {g['bearing']:03.0f}"
+        return [f"fly to LEG {g['leg']} start: {fmt_dist(g['to_join'])}{brg}",
+                f"then {g['heading']:03d} {g['name']} - joins within "
+                f"{survey.START_M:.0f} m"] + round_
+    if abs(g["off"]) < survey.ON_LINE_M:
+        line = "on the line"
+    else:
+        side = "right" if g["off"] > 0 else "left"
+        line = (f"{fmt_dist(abs(g['off']))} {side} of the line"
+                f" - steer {g['steer']:03.0f}")
+    w, h = g["size"]
+    fly = f"LEG {g['leg']}  FLY {g['heading']:03d} {g['name']}  "
+    then = f"{g['next_heading']:03d} {g['next_name']}"
+    if g["turn"] == "late":             # past the corner, not round yet
+        fly = f"LEG {g['leg']}  TURN NOW to {g['heading']:03d} {g['name']}"
+    elif g["turn"] == "now":
+        fly = f"LEG {g['leg']}  TURN NOW to {then}"
+    elif g["turn"] == "soon":
+        fly += f"TURN {then} in {fmt_dist(g['to_go'])}"
+    else:
+        fly += f"{fmt_dist(g['to_go'])} to go, then {then}"
+    return [fly,
+            line,
+            f"covered {w / 1000:.1f} x {h / 1000:.1f} km"
+            f"  ({w * h / 1e6:.1f} km2)"]
 
 
 def render_target(state):
@@ -2885,6 +3034,8 @@ TARGET_COLS = READOUT_COLS - ARROW_COLS
 ARROW_PX = 72
 LOCATION_ROWS = 6
 SURVEY_ROWS = 5
+DIRECTIONS = "#FFFFFF"  # the survey's what-to-fly lines: apart from all else
+TURN_COLOUR = "#FFE45C"  # and as a corner comes up: catches the eye
 TARGET_ROWS = 5
 REPORT_ROWS = 14        # the body analysis, in its block under the status
 NO_LABEL = "(not labelled)"
@@ -3240,10 +3391,14 @@ def run_overlay(state, cfg):
     # Shown only while surveying; refresh packs and forgets it.
     survey_block = tk.Frame(panel, bg=BG)
     rule(survey_block)
-    survey_lbl = tk.Label(survey_block, text="", justify="left", anchor="nw",
-                          width=READOUT_COLS, height=SURVEY_ROWS,
-                          font=("Consolas", 11), fg=ACCENT, bg=BG)
-    survey_lbl.pack(fill="x", padx=10)
+    # Three labels so the directions can be bold and their own colours; the
+    # rows add up to SURVEY_ROWS, so the block never changes height.
+    survey_lbls = [tk.Label(survey_block, text="", justify="left", anchor="nw",
+                            width=READOUT_COLS, height=rows,
+                            font=("Consolas", 11), fg=ACCENT, bg=BG)
+                   for rows in (1, 2, SURVEY_ROWS - 3)]
+    for lbl in survey_lbls:
+        lbl.pack(fill="x", padx=10)
 
     # Shown only while there is a target; refresh packs and forgets it.
     target_block = tk.Frame(panel, bg=BG)
@@ -3612,9 +3767,45 @@ def run_overlay(state, cfg):
     analyse_btn.pack(side="left")
     report_btn = button(btn_row2, "REPORT", fire("report", do_report), width=7)
     report_btn.pack(side="left", padx=(6, 0))
+    # SURVEY asks which pattern to fly; END SURVEY just ends it.
+    survey_menu = tk.Menu(root, tearoff=False, font=("Consolas", 10),
+                          bg=FIELD, fg="#DCE6F0", activebackground="#1d4f3a")
+
+    def fill_survey_menu():
+        """The patterns, then the last square to resume, if there is one."""
+        survey_menu.delete(0, "end")
+        for pattern in survey.PATTERNS:
+            survey_menu.add_command(
+                label=pattern, command=lambda p=pattern: picked(
+                    "survey", lambda st: start_survey(st, p)))
+        with state.lock:
+            plan = state.survey_saved
+            if plan is None:
+                return
+            ahead = resume_leg(state, plan)
+        size = f"{plan['spacing']:g} m square"
+        survey_menu.add_separator()
+        survey_menu.add_command(
+            label=f"resume {size} at LEG {plan['leg'] + 1}",
+            command=lambda: picked("survey", resume_survey))
+        if ahead > plan["leg"]:
+            survey_menu.add_command(
+                label=f"resume {size}, skip ahead to LEG {ahead + 1}",
+                command=lambda: picked(
+                    "survey", lambda st: resume_survey(st, skip=True)))
+
+    def on_survey():
+        if state.survey:
+            fire("survey", stop_survey)()
+            return
+        fill_survey_menu()
+        menu_opened()
+        survey_menu.tk_popup(survey_btn.winfo_rootx(),
+                             survey_btn.winfo_rooty()
+                             + survey_btn.winfo_height())
+
     # Wide enough for "END SURVEY", so swapping the label cannot resize it.
-    survey_btn = button(btn_row2, "SURVEY", fire("survey", toggle_survey),
-                        width=10)
+    survey_btn = button(btn_row2, "SURVEY", on_survey, width=10)
     survey_btn.pack(side="left", padx=(6, 0))
     button(btn_row2, "QUIT", lambda: root.destroy(), width=5,
            bg="#6A7785").pack(side="right")
@@ -3740,7 +3931,12 @@ def run_overlay(state, cfg):
                     survey_block.pack(fill="x", after=fix_lbl)
                 else:
                     survey_block.pack_forget()
-            survey_lbl.config(text=render_survey(state), fg=colour)
+            *texts, directions = survey_parts(state)
+            for lbl, text in zip(survey_lbls, texts):
+                lbl.config(text=text, fg=colour, font=("Consolas", 11))
+            if directions:
+                survey_lbls[1].config(fg=directions,
+                                      font=("Consolas", 11, "bold"))
             if (state.target is not None) != bool(target_block.winfo_manager()):
                 if state.target is not None:
                     target_block.pack(fill="x", after=fix_lbl)
@@ -3827,6 +4023,7 @@ def cmd_run(args):
     state = State(cfg, load_waypoints())
     state.bodies = load_bodies()
     state.heightmap = load_heightmap()
+    state.survey_saved = load_json(SURVEY_FILE, None)
     state.log = make_logger(args.log)
     stop = threading.Event()
     threading.Thread(target=ocr_worker, args=(state, cfg, stop), daemon=True).start()

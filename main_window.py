@@ -17,6 +17,7 @@ from PIL import Image, ImageTk
 
 import heightmap
 import starmap
+import survey
 
 BG, PANEL, FG, DIM, ACCENT = "#05080c", "#0d141c", "#D8E2EE", "#8FA0B4", "#7CFFB2"
 SUN = ("#B86A12", "#FFB347", "#FFE7B0")
@@ -25,6 +26,9 @@ MOON = ("#4A5560", "#8A97A4", "#D0D8E0")
 PIN, ORBIT, GRID = "#FF9F43", "#1B3348", "#2D5A80"
 GRID_LINE = "#2E343B"       # LAT/LON on the height map: darker than its grey
 CONTOUR, CONTOUR_INDEX = "#C8925A", "#E0A868"   # brown, as on a paper map
+# Survey legs: flown, now, next. Blue, not ACCENT: you fly along the leg
+# you are on, and in your own green it hid your + (2026-10-15).
+COURSE = ("#B8C6D4", "#5CC8FF", "#2F7FA8")
 MONO = ("Consolas", 10)
 
 SUN_PX, PLANET_PX, MOON_PX = 14, 9, 5
@@ -794,7 +798,8 @@ class HeightMapTab:
                  anchor="w",
                  text="SURVEY in the overlay\nrecords the ground "
                       "under you.\n\ngrey: not measured\nbrown: contour lines\n"
-                      "number by a pin: its\nground height\n+ : you are here\n"
+                      "number by a pin: its\nground height\n"
+                      "dashes: survey course\n+ : you are here\n"
                       "drag to move\n"
                       "wheel to zoom").pack(anchor="w", fill="x")
 
@@ -885,8 +890,10 @@ class HeightMapTab:
             self.held = None
         on_it = (self.follow.get() and self.held is None
                  and st.planet == self.body)
+        plan = st.survey_saved
         return (self.body, heightmap.cell_count(st.heightmap, self.body),
-                tuple(st.pos) if on_it and st.pos else None)
+                tuple(st.pos) if on_it and st.pos else None,
+                plan and (plan["origin"], plan["leg"], plan["joined"]))
 
     def refresh(self):
         with self.state.lock:
@@ -938,6 +945,10 @@ class HeightMapTab:
             body_lo, body_hi = heightmap.height_range(
                 v[0] for v in (rec["cells"].values() if rec else ()))
             wps = [dict(x) for x in st.waypoints]
+            # The last square, flown now or paused: where it would resume.
+            plan = (dict(st.survey_saved) if st.survey_saved is not None
+                    and st.survey_saved["planet"] == self.body
+                    and st.survey_saved["origin"] is not None else None)
         interval = heightmap.contour_interval(body_lo, body_hi)
         if fresh:
             step = max(heightmap.CELL_M, 5 * self.mpp)  # grid points 5 px apart
@@ -963,6 +974,8 @@ class HeightMapTab:
         if frame:
             self.draw_grid(frame, radius, w, h)
             self.draw_contours(frame, radius, interval, w, h)
+            if plan:
+                self.draw_course(plan, frame, radius, w, h)
 
         def spot(p):
             xy = heightmap.to_map(p, frame, radius)
@@ -987,8 +1000,12 @@ class HeightMapTab:
             xy = spot(pos) if here == self.body and pos else None
             if xy:
                 sx, sy = xy
-                c.create_line(sx - 8, sy, sx + 8, sy, fill=ACCENT, width=2)
-                c.create_line(sx, sy - 8, sx, sy + 8, fill=ACCENT, width=2)
+                # A dark edge first, so it shows over cells, lines and labels.
+                for colour, wide in ((BG, 5), (ACCENT, 2)):
+                    c.create_line(sx - 9, sy, sx + 9, sy, fill=colour,
+                                  width=wide)
+                    c.create_line(sx, sy - 9, sx, sy + 9, fill=colour,
+                                  width=wide)
         else:
             c.create_text(w / 2, h / 2, fill=FG, font=MONO,
                           text=f"Nothing surveyed on {self.body} yet")
@@ -1058,6 +1075,25 @@ class HeightMapTab:
                               font=("Consolas", 8))
             c.tag_lower(c.create_rectangle(*c.bbox(t), fill=heightmap.GREY,
                                            outline=""), t)
+
+    def draw_course(self, plan, frame, radius, w, h):
+        """The survey square: legs flown dim, the one you are on (or will
+        resume at) bright, the next one faint, all dashed."""
+        c = self.canvas
+        k = plan["leg"]
+        pts = survey.corners(k + 2, plan["spacing"])
+        start = heightmap.local_frame(plan["origin"])
+        xys = [heightmap.to_map(heightmap.from_map(x, y, start, radius),
+                                frame, radius) for x, y in pts]
+        for i, (p, q) in enumerate(zip(xys, xys[1:])):
+            if p is None or q is None:
+                continue
+            colour = (COURSE[2] if i > k else
+                      COURSE[1] if i == k else COURSE[0])
+            c.create_line(w / 2 + p[0] / self.mpp, h / 2 - p[1] / self.mpp,
+                          w / 2 + q[0] / self.mpp, h / 2 - q[1] / self.mpp,
+                          fill=colour, width=2 if i == k else 1,
+                          dash=(6, 4))
 
     def scale_bar(self, w, h):
         """A round length up to a fifth of the map wide, bottom left."""
