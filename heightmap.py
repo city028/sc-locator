@@ -470,8 +470,11 @@ def centre_of(rec, area_m=50_000.0):
     return _unit(tuple(sum(p[i] for p in pts) for i in range(3)))
 
 
-# Low to high: purple, green, yellow, brown, white. Not blue: the globe is.
-RAMP = ("#8A3FB5", "#3F9F5A", "#D9C65A", "#8C5A2E", "#F2F2F2")
+# Hypsometric tints, as on relief maps. Low to high: green, light green,
+# yellow green, tan, pale brown, white, lighter at every step so higher
+# ground always looks higher, and the lowest still lighter than GREY. Not
+# blue: the globe is.
+RAMP = ("#47884F", "#669F4C", "#A3B85E", "#D4B97C", "#E8D5BC", "#FAF7F2")
 GREY = "#5A626B"
 
 
