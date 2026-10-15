@@ -1303,14 +1303,59 @@ out one pixel to a block and blown up by Tk (`image copy -zoom`); putting
 every pixel cost more than working the colours out. A settled redraw is
 0.15 s; the one after a zoom is 0.5-0.7 s at 25 and 12.5 m a pixel, the two
 height grids being worked out again.
+
+**numpy (2026-10-15).** Profiled on microTech's 1,403 cells, Tk itself was
+cheap (16 ms to put and zoom the relief image, 13 ms a globe redraw); the
+time went on per-point Python loops: `height_grid` 290 ms, marching squares
+170 ms, `relief_grid` 160 ms, `relief_spans` 65 ms at 12.5 m a pixel. Moving
+those onto numpy took the full draw there from ~550 ms to ~77 ms, with the
+same heights (within 1e-13), shading and contour lines. The relief is now an
+RGB array handed to Tk through Pillow, coloured on a smooth scale rather than
+the 101 steps the string version cached. Not faster: a 10 m contour interval
+(~230 levels in view) still costs ~0.4 s, each level a pass over the grid;
+the real interval is a twentieth of the body's range, so a handful of levels.
 The fill is a guess between legs 200-300 m apart, not measured ground; the
 samples switch shows what was measured.
 
-**Survey waypoints.** A survey saves `survey-NNN` (marked `"survey": true`,
-so a rename keeps it one) where it first records the ground on a body,
+**Survey waypoints.** A survey saves `survey-NNN` (type `survey`, so a
+rename keeps it one) where it first records the ground on a body,
 unless a survey waypoint is already within 5 km. Checked in game
 (2026-10-14): a restart 2.6-3.1 km from survey-001 added none, one 19 km
 away added survey-002.
+
+**Waypoint types (2026-10-15).** Every waypoint has a `type`: `poi` (saved
+by hand) or `survey` (a survey's start marker). It replaces the old
+`"survey": true` flag; `load_waypoints` fills in a missing type and turns the
+flag into one, so older files convert themselves. Survey markers crowded the
+star map, so each view has its own default: star map POI only, height map
+survey only, waypoint table both. SHOW ON MAP ticks the type of the waypoint
+it shows, or the map would open on nothing. An older exe keeps the field on
+save, since a waypoint is saved as the dict it was loaded as.
+
+## Main window text and screen scale (2026-10-15)
+
+The Windows scale of a second screen never reached the text. `mss` makes the
+process per-monitor DPI aware when it loads (thread awareness 0 before, 2
+after), so Windows stops enlarging the window, and Tk sizes point fonts once
+at start-up from the main screen (`tk scaling` 1.667, 120 dpi, 125 %). An
+iPad as a 150 % screen (144 dpi) got 125 % text, at any scale set for it.
+
+The main window now has its own named fonts sized in pixels
+(`points x dpi / 72`) from `GetDpiForWindow`, checked once a second and when
+the window moves; on a change it resizes them, the table rows and the
+column widths. Tk redraws every widget and canvas text using a named font
+when it changes. Only the main window: the overlay shares the same Tk, and
+one global `tk scaling` cannot serve two screens. Canvas drawings (pins,
+lines) stay in pixels.
+
+## System map default view (2026-10-15)
+
+Zoom 1 used to put the farthest body 0.42 of the window from the star,
+whatever the tilt, which wasted most of a 60-degree-tilted view. It is now
+the closest zoom at which every waypoint shown, and every body that has one,
+fits with its name (`starmap.fit_view`), worked out for the default angle so
+turning the view does not change it. The star stays in the middle, as it is
+what the map turns about. Stanton opened 1.6 times closer, Pyro 1.1.
 
 ## Still open
 

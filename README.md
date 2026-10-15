@@ -161,6 +161,10 @@ A waypoint is a saved position on a body (or in deep space).
   spot on the ground.
 - The list shows **all** waypoints, grouped by `system / body`, with the body
   you are on first.
+- Every waypoint has a **type**: **POI** (point of interest: one you saved) or
+  **Survey** (the marker a survey leaves where it started, see below). The
+  star map shows POI waypoints and the height map survey ones unless you
+  tick the other type; the Waypoints tab shows both.
 
 ### Navigating to a waypoint
 
@@ -276,8 +280,11 @@ quits the program.
 - **HUD overlay** switch: hide or show the in-game pin and panel.
 - **Star map**: pick Stanton, Pyro or Nyx. The star is at the centre; planets
   and moons are placed where ANALYSE measured them, deep-space waypoints where
-  they were saved. Drag to rotate, mouse wheel to zoom; **default view**
-  (top right) puts the view back as it started. Click a planet or moon
+  they were saved. It opens zoomed in as far as it can with every waypoint
+  shown, and every body that has one, in view. Drag to rotate, mouse wheel to
+  zoom; **default view** (top right) puts the view back as it started. The
+  **POI waypoints** and **Survey waypoints** switches pick which types are
+  shown; only POI at first. Click a planet or moon
   to open it: its waypoints are shown on the globe, stations at their real
   height above it. Bodies with waypoints that have not been analysed yet are
   listed on the left and open the same way.
@@ -296,11 +303,17 @@ quits the program.
   longitude +90/-90, OM-5/OM-6 at 0/180). The view stays over the marker as
   the planet turns, until you drag it.
 - **Waypoints**: every waypoint in a table; rename, delete, and add a note.
+  Filter by system, body and type (all, POI or Survey).
 - **Reports**: every analysis result, with your own notes saved alongside it
   in `bodies.json`. A new ANALYSE run of the same place keeps the notes.
 
 Sizes on the system map are not to scale (a planet would be smaller than a
 pixel); positions are.
+
+The window's text follows the Windows scale (Settings > Display > Scale) of
+the screen it is on, so on a small second screen raise that screen's scale
+to make the text bigger. Drag the window to another screen and its text
+resizes within a second. The overlay keeps the size it starts with.
 
 ### Survey mode: your own height map
 
@@ -316,7 +329,8 @@ The first spot a survey records on a body gets a waypoint, `survey-001`,
 `survey-002` and so on, with the note "start of a survey", so every surveyed
 area can be found again from **Go to** in the Height map tab. Rename or delete
 it like any other waypoint. A survey that starts within 5 km of a survey
-waypoint, renamed or not, adds no new one.
+waypoint, renamed or not, adds no new one. These are **Survey** waypoints: the
+height map shows them, the star map only when you tick **Survey waypoints**.
 
 - Works in flight too: the HUD reports the ground under you, not your own
   height. Nothing is recorded more than 5 km over the reference sphere
@@ -344,10 +358,11 @@ waypoint, renamed or not, adds no new one.
   - **Height lines**: contour lines, every fifth thicker and labelled with its
     height in metres.
   - **Survey pattern**: the square course, dashed (see below).
-  - **Waypoints**: your waypoints on that body, each with the ground height
-    where it was saved.
+  - **POI waypoints** / **Survey waypoints**: your waypoints on that body of
+    each type, each with the ground height where it was saved. Only survey
+    waypoints at first.
 
-  A **Go to** list centres the map on a waypoint.
+  A **Go to** list centres the map on a waypoint of the types shown.
 
 #### Flying a pattern
 
