@@ -3866,8 +3866,11 @@ def run_overlay(state, cfg):
 
     # Every click is logged, so one that lands beside a button is
     # distinguishable from one that never reached the window at all.
+    # A click in a combobox's drop-down list arrives as a path string, not a
+    # widget, so there is no class to ask for.
     root.bind_all("<Button-1>", lambda e: state.log(
-        f"click at ({e.x},{e.y}) on {e.widget.winfo_class()}"), add="+")
+        f"click at ({e.x},{e.y}) on "
+        f"{getattr(e.widget, 'winfo_class', lambda: e.widget)()}"), add="+")
 
     def refresh_list():
         """Rebuild the list, keeping the selection on the same waypoint.
