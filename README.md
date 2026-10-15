@@ -333,10 +333,33 @@ waypoint, renamed or not, adds no new one.
   surveyed are coloured by height and raised (**relief x** at the top right
   sets by how much; real relief is invisible at globe size); the rest is grey.
   Each tile covers tens of km, so the globe shows where you have been.
-- **Height map** tab: the ground around you at full detail, one cell to a
-  pixel at 100 m a pixel. Grey is ground nobody measured. It follows you while
-  **follow me** is ticked; drag to move, wheel to zoom (12.5 m to 800 m a
-  pixel). Your waypoints on that body are shown on it.
+- **Height map** tab: the ground around you at full detail, coloured by
+  height from green through tan to white. Grey is ground nobody measured. It
+  follows you while **follow me** is ticked; drag to move, wheel to zoom (12.5 m
+  to 800 m a pixel). Switches on the left turn each layer on or off:
+  - **Filled relief**: the ground between your flight lines filled in and
+    shaded as if lit from the upper left. It only reaches 400 m from a
+    measured cell, and it is a guess between lines, not measured ground.
+  - **Survey samples**: the cells you measured, as coloured squares.
+  - **Height lines**: contour lines, every fifth thicker and labelled with its
+    height in metres.
+  - **Survey pattern**: the square course, dashed (see below).
+  - **Waypoints**: your waypoints on that body, each with the ground height
+    where it was saved.
+
+  A **Go to** list centres the map on a waypoint.
+
+#### Flying a pattern
+
+Pressing **SURVEY** asks which pattern to fly: free fly, or an expanding
+square with lines 500 m or 1000 m apart. The square starts at the waypoint you
+have targeted and winds out clockwise; every leg is due north, east, south or
+west, so it can be flown on the ship's compass alone. The panel shows the two
+lines to fly by, a heading to steer back onto the line, the speed to fly the
+leg at, and a turn warning before each corner. It never ends by itself: end
+the survey when the area is big enough. The square is saved at every corner,
+and the next **SURVEY** offers to resume it at the leg you stopped on or to
+skip ahead past the legs already flown.
 
 ### Automatic backups
 
@@ -432,6 +455,7 @@ All next to the `.exe`:
 | `locator_config.json` | settings |
 | `stations.json` | cached station list from UEX |
 | `heightmap.json` | ground heights from survey mode, per body |
+| `survey.json` | the last survey square, to resume it |
 | `bak/` | automatic backups of the files above |
 
 To move to a new PC, copy the whole folder. To share waypoints with a friend,
