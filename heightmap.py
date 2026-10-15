@@ -405,6 +405,125 @@ def contours_on_body(cells, frame, radius, half_w, half_h, step, interval):
             for level, line in contour_lines(grid, step, interval)]
 
 
+RELIEF_STEP = 50.0      # metres between the filled view's grid points, at least
+RELIEF_REACH_M = 400.0  # the fill goes no further than this from a measured cell
+RELIEF_LIFT = 2.0       # slopes are drawn this much steeper, so gentle ground shades
+SUN = _unit((-0.6, 0.6, 0.53))      # map frame, y north, z up: upper left
+
+
+def relief_grid(cells, half_w, half_h, step):
+    """What the filled and shaded view is drawn from: (x0, y0, step, heights,
+    light). Heights are height_grid's (None where nothing is near enough);
+    `light` is the same shape, a brightness for height_colour: 0.45 on ground
+    facing away from the sun, about 1.1 facing it, 0.85 on the flat.
+    """
+    reach = max(RELIEF_REACH_M, 2 * step)
+    x0, y0, rows = height_grid(cells, half_w, half_h, step, reach=reach,
+                               least=2)
+    light = []
+    for j, row in enumerate(rows):
+        out = []
+        for i, z in enumerate(row):
+            if z is None:
+                out.append(None)
+                continue
+            # Slope across the point; at an edge, from the one side there is.
+            span = []
+            for a, b in (((i - 1, j), (i + 1, j)), ((i, j - 1), (i, j + 1))):
+                pair = [rows[q][p] if 0 <= q < len(rows) and 0 <= p < len(row)
+                        else None for p, q in (a, b)]
+                known = [v for v in pair if v is not None]
+                lo_v, hi_v = [z if v is None else v for v in pair]
+                span.append((hi_v - lo_v) / (len(known) * step)
+                            if known else 0.0)
+            n = (-span[0] * RELIEF_LIFT, -span[1] * RELIEF_LIFT, 1.0)
+            shade = max(0.0, _dot(n, SUN) / math.sqrt(_dot(n, n)))
+            out.append(min(1.15, 0.45 + 0.75 * shade))
+        light.append(out)
+    return x0, y0, step, rows, light
+
+
+def frame_shift(frame0, frame, radius):
+    """(east m, north m, cos, sin): where a map around `frame` sits on the map
+    around frame0, to turn a point of the one into the other with
+    X = east + cos * x - sin * y, Y = north + sin * x + cos * y. None if
+    frame is off frame0's near half. A flat approximation, good for the small
+    move between two maps tens of km apart."""
+    o = to_map(frame[0], frame0, radius)
+    n = to_map(from_map(0.0, 1000.0, frame, radius), frame0, radius)
+    if o is None or n is None:
+        return None
+    vx, vy = n[0] - o[0], n[1] - o[1]
+    d = math.hypot(vx, vy)
+    return o[0], o[1], vy / d, -vx / d
+
+
+def relief_spans(relief, shift, w, h, mpp, block, lo, hi):
+    """The filled and shaded view on a w x h px map, in `block` px squares.
+
+    `relief` as relief_grid gives it, `shift` as frame_shift gives it for the
+    map being drawn. Returns [(px, py, data)], each data a string for
+    PhotoImage.put(data, to=(px, py)) holding one unbroken run of blocks,
+    coloured on a lo..hi scale. Blocks with nothing under them are left out.
+    """
+    x0, y0, step, zs, light = relief
+    if not zs:
+        return []
+    ox, oy, c, s = shift
+    nj, ni = len(zs), len(zs[0])
+    colours = {}
+
+    def colour(z, lt):
+        k = (min(100, max(0, round((z - lo) / (hi - lo) * 100)))
+             if hi > lo else 50, round(lt * 20))
+        if k not in colours:
+            colours[k] = height_colour(lo + (hi - lo) * k[0] / 100, lo, hi,
+                                       k[1] / 20)
+        return colours[k]
+
+    def sample(gi, gj):
+        i0, j0 = min(int(gi), max(ni - 2, 0)), min(int(gj), max(nj - 2, 0))
+        i1, j1 = min(i0 + 1, ni - 1), min(j0 + 1, nj - 1)
+        fx, fy = gi - i0, gj - j0
+        zq = (zs[j0][i0], zs[j0][i1], zs[j1][i0], zs[j1][i1])
+        if None in zq:      # the edge of the fill: the nearest point
+            j, i = (j1 if fy >= 0.5 else j0), (i1 if fx >= 0.5 else i0)
+            return None if zs[j][i] is None else colour(zs[j][i], light[j][i])
+        lq = (light[j0][i0], light[j0][i1], light[j1][i0], light[j1][i1])
+        z = ((zq[0] * (1 - fx) + zq[1] * fx) * (1 - fy)
+             + (zq[2] * (1 - fx) + zq[3] * fx) * fy)
+        lt = ((lq[0] * (1 - fx) + lq[1] * fx) * (1 - fy)
+              + (lq[2] * (1 - fx) + lq[3] * fx) * fy)
+        return colour(z, lt)
+
+    out = []
+    for py in range(0, h - block + 1, block):
+        y = (h / 2 - py - block / 2) * mpp
+        run, start = [], 0
+
+        def flush():
+            if run:
+                row = "{" + " ".join(c_ for c_ in run
+                                     for _ in range(block)) + "}"
+                out.append((start, py, " ".join([row] * block)))
+            run.clear()
+
+        for px in range(0, w - block + 1, block):
+            x = (px + block / 2 - w / 2) * mpp
+            gi = (ox + c * x - s * y - x0) / step
+            gj = (oy + s * x + c * y - y0) / step
+            col = (sample(gi, gj)
+                   if 0 <= gi <= ni - 1 and 0 <= gj <= nj - 1 else None)
+            if col is None:
+                flush()
+            else:
+                if not run:
+                    start = px
+                run.append(col)
+        flush()
+    return out
+
+
 def covers(frame0, half0, frame, radius, half_w, half_h):
     """True if a map half_w x half_h either side of `frame`'s middle lies
     inside the half0 = (half_w, half_h) map around frame0. Close enough for

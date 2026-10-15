@@ -762,6 +762,7 @@ class HeightMapTab:
     cell to a pixel at the start, grey where nothing has been measured."""
 
     ZOOMS = (12.5, 25.0, 50.0, 100.0, 200.0, 400.0, 800.0)   # metres a pixel
+    RELIEF_BLOCK = 4        # px a side of the filled view's blocks
 
     def __init__(self, parent, state, scl, follow):
         self.state, self.scl, self.follow = state, scl, follow
@@ -772,6 +773,7 @@ class HeightMapTab:
         self.press, self.seen, self.image = None, None, None
         self.held = None    # as the star map's: set by Go to
         self.contours = None    # (key, frame, (half_w, half_h), lines): draw
+        self.relief = None      # (key, frame, (half_w, half_h), relief_grid)
 
         side = tk.Frame(self.frame, bg=BG)
         side.pack(side="left", fill="y", padx=(0, 8))
@@ -793,10 +795,18 @@ class HeightMapTab:
         self.info.pack(anchor="w", fill="x")
         self.legend = tk.Canvas(side, width=170, height=34, bg=BG,
                                 highlightthickness=0)
-        self.legend.pack(anchor="w", pady=(8, 8))
+        self.legend.pack(anchor="w", pady=(8, 4))
+        # What to draw, bottom to top: relief, samples, height lines.
+        self.show = {}
+        for name, text, on in (("relief", "Filled relief", True),
+                               ("samples", "Survey samples", False),
+                               ("lines", "Height lines", True)):
+            self.show[name] = tk.BooleanVar(value=on)
+            ttk.Checkbutton(side, text=text, variable=self.show[name],
+                            command=self.draw).pack(anchor="w")
         tk.Label(side, font=("Consolas", 9), fg=DIM, bg=BG, justify="left",
                  anchor="w",
-                 text="SURVEY in the overlay\nrecords the ground "
+                 text="\nSURVEY in the overlay\nrecords the ground "
                       "under you.\n\ngrey: not measured\nbrown: contour lines\n"
                       "number by a pin: its\nground height\n"
                       "dashes: survey course\n+ : you are here\n"
@@ -928,18 +938,24 @@ class HeightMapTab:
             frame = (heightmap.local_frame(self.centre)
                      if self.centre is not None else None)
             rec = st.heightmap.get(self.body)
-            # Contours are worked out for twice the map each way and kept
-            # until the survey or the zoom changes or you pan off them.
+            # Contours and relief are worked out for twice the map each way
+            # and kept until the survey or the zoom changes or you pan off
+            # them. Only what is switched on is worked out.
             key = (self.body, self.seen[1], self.mpp)
-            fresh = frame and not (
-                self.contours and self.contours[0] == key and
-                heightmap.covers(self.contours[1], self.contours[2], frame,
-                                 radius, half_w, half_h))
+
+            def stale(kept):
+                return frame and not (
+                    kept and kept[0] == key and
+                    heightmap.covers(kept[1], kept[2], frame, radius,
+                                     half_w, half_h))
+
+            fresh = self.show["lines"].get() and stale(self.contours)
+            fresh_relief = self.show["relief"].get() and stale(self.relief)
             # Cells just off that still shape the contours near its edge.
             around = (heightmap.local_cells(rec, radius, frame,
                                             2 * half_w + heightmap.REACH_M,
                                             2 * half_h + heightmap.REACH_M)
-                      if fresh else [])
+                      if fresh or fresh_relief else [])
             near = (heightmap.local_cells(rec, radius, frame, half_w, half_h)
                     if frame else [])
             body_lo, body_hi = heightmap.height_range(
@@ -956,24 +972,40 @@ class HeightMapTab:
                              heightmap.contours_on_body(
                                  around, frame, radius, 2 * half_w,
                                  2 * half_h, step, interval))
+        if fresh_relief:
+            step = max(heightmap.RELIEF_STEP, 4 * self.mpp)
+            self.relief = (key, frame, (2 * half_w, 2 * half_h),
+                           heightmap.relief_grid(around, 2 * half_w,
+                                                 2 * half_h, step))
         c.delete("all")
         lo, hi = heightmap.height_range(z for _, _, z in near)
         img = tk.PhotoImage(width=w, height=h)
         img.put(heightmap.GREY, to=(0, 0, w, h))
-        # Cells are 70-100 m: drawn 100 m wide they overlap rather than gap.
-        size = max(1, math.ceil(heightmap.CELL_M / self.mpp))
-        for x, y, z in near:
-            x0 = int(w / 2 + x / self.mpp - size / 2)
-            y0 = int(h / 2 - y / self.mpp - size / 2)
-            x1, y1 = min(w, x0 + size), min(h, y0 + size)
-            x0, y0 = max(0, x0), max(0, y0)
-            if x1 > x0 and y1 > y0:
-                img.put(heightmap.height_colour(z, lo, hi), to=(x0, y0, x1, y1))
+        shift = (heightmap.frame_shift(self.relief[1], frame, radius)
+                 if frame and self.relief and self.show["relief"].get()
+                 else None)
+        if shift:
+            for px, py, data in heightmap.relief_spans(
+                    self.relief[3], shift, w, h, self.mpp, self.RELIEF_BLOCK,
+                    lo, hi):
+                img.put(data, to=(px, py))
+        if self.show["samples"].get():
+            # Cells are 70-100 m: drawn 100 m wide they overlap, not gap.
+            size = max(1, math.ceil(heightmap.CELL_M / self.mpp))
+            for x, y, z in near:
+                x0 = int(w / 2 + x / self.mpp - size / 2)
+                y0 = int(h / 2 - y / self.mpp - size / 2)
+                x1, y1 = min(w, x0 + size), min(h, y0 + size)
+                x0, y0 = max(0, x0), max(0, y0)
+                if x1 > x0 and y1 > y0:
+                    img.put(heightmap.height_colour(z, lo, hi),
+                            to=(x0, y0, x1, y1))
         self.image = img                # Tk drops an image nothing holds
         c.create_image(0, 0, image=img, anchor="nw")
         if frame:
             self.draw_grid(frame, radius, w, h)
-            self.draw_contours(frame, radius, interval, w, h)
+            if self.show["lines"].get():
+                self.draw_contours(frame, radius, interval, w, h)
             if plan:
                 self.draw_course(plan, frame, radius, w, h)
 

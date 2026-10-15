@@ -1283,6 +1283,18 @@ the cells was the first choice and landed on empty ground between New
 Babbage and Harper's Point, ~1,500 km apart -- further than the map shows
 even zoomed out (~650 km).
 
+**Display options (Height map tab, 2026-10-15).** Three switches, drawn
+bottom to top: *Filled relief*, *Survey samples* (the coloured squares),
+*Height lines*. Relief is on by default, with the lines; samples are off, since
+they hide the relief. The relief is `height_grid` on a finer grid (50 m, or 4 px
+when zoomed out) that reaches only 400 m from a measured cell, so it fills the
+gaps between survey legs and stops at the edge of the survey. Hillshade is from
+the upper left with slopes drawn twice as steep. The grid is kept like the
+contours (`relief_grid`, until the survey or zoom changes or you pan off it)
+and redrawn in 4 px blocks, about 0.3 s a redraw with the 6 km square in view.
+The fill is a guess between legs 200-300 m apart, not measured ground; the
+samples switch shows what was measured.
+
 **Survey waypoints.** A survey saves `survey-NNN` (marked `"survey": true`,
 so a rename keeps it one) where it first records the ground on a body,
 unless a survey waypoint is already within 5 km. Checked in game
