@@ -20,6 +20,8 @@ planet frame, which turns with the body, so a cell stays on the same ground.
 """
 import math
 
+import numpy as np
+
 CELL_M = 100.0
 GLOBE_CELLS = 192       # cells per face edge on the globe view: 8 km
                         # on a 1000 km body
@@ -293,45 +295,45 @@ def height_grid(cells, half_w, half_h, step, reach=REACH_M, least=3):
     the measured cells near each one, nearer cells counting for more.
 
     `cells` as local_cells gives them. A point with fewer than `least` cells
-    within `reach` gets None: a lone cell would ring itself with contours.
-    Returns (x0, y0, rows), rows[j][i] the height at (x0 + i * step,
-    y0 + j * step). The grid only spans the cells' own patch of the map,
-    plus `reach`, which on a map mostly empty is far less than all of it.
+    within `reach` gets NaN: a lone cell would ring itself with contours.
+    Returns (x0, y0, rows), rows a numpy array, rows[j, i] the height at
+    (x0 + i * step, y0 + j * step). The grid only spans the cells' own patch
+    of the map, plus `reach`, which on a map mostly empty is far less than
+    all of it.
     """
     nx, ny = math.ceil(half_w / step), math.ceil(half_h / step)
     if not cells:
-        return 0.0, 0.0, []
-    ia = max(-nx, math.floor((min(x for x, _, _ in cells) - reach) / step))
-    ib = min(nx, math.ceil((max(x for x, _, _ in cells) + reach) / step))
-    ja = max(-ny, math.floor((min(y for _, y, _ in cells) - reach) / step))
-    jb = min(ny, math.ceil((max(y for _, y, _ in cells) + reach) / step))
+        return 0.0, 0.0, np.empty((0, 0))
+    pts = np.asarray(cells, dtype=float)
+    ia = max(-nx, math.floor((pts[:, 0].min() - reach) / step))
+    ib = min(nx, math.ceil((pts[:, 0].max() + reach) / step))
+    ja = max(-ny, math.floor((pts[:, 1].min() - reach) / step))
+    jb = min(ny, math.ceil((pts[:, 1].max() + reach) / step))
     if ia > ib or ja > jb:
-        return 0.0, 0.0, []
+        return 0.0, 0.0, np.empty((0, 0))
     x0, y0 = ia * step, ja * step
     cols, nrows = ib - ia + 1, jb - ja + 1
-    sw = [0.0] * (cols * nrows)
-    sz, found = sw[:], [0] * len(sw)
-    # Each cell adds itself to the points within reach of it, which skips
-    # the many points nowhere near a cell.
-    for cx, cy, cz in cells:
-        i0 = max(0, math.ceil((cx - reach - x0) / step))
-        i1 = min(cols - 1, math.floor((cx + reach - x0) / step))
-        for j in range(max(0, math.ceil((cy - reach - y0) / step)),
-                       min(nrows - 1, math.floor((cy + reach - y0) / step))
-                       + 1):
-            dy2 = (y0 + j * step - cy) ** 2
-            for i in range(i0, i1 + 1):
-                d2 = (x0 + i * step - cx) ** 2 + dy2
-                if d2 <= reach * reach:
-                    w = 1.0 / (d2 + CELL_M * CELL_M)
-                    k = j * cols + i
-                    sw[k] += w
-                    sz[k] += w * cz
-                    found[k] += 1
-    rows = [[sz[k] / sw[k] if found[k] >= least else None
-             for k in range(j * cols, (j + 1) * cols)]
-            for j in range(nrows)]
-    return x0, y0, rows
+    sw = np.zeros(cols * nrows)
+    sz, found = np.zeros_like(sw), np.zeros_like(sw)
+    # Each cell adds itself to the points of a window round it, which skips
+    # the many points nowhere near a cell. Cells go in batches, so a big
+    # survey does not need one huge array.
+    win = np.arange(int(2 * reach // step) + 2)
+    for s in range(0, len(pts), 2000):
+        cx, cy, cz = (pts[s:s + 2000, k, None, None] for k in range(3))
+        i = np.ceil((cx - reach - x0) / step) + win[None, None, :]
+        j = np.ceil((cy - reach - y0) / step) + win[None, :, None]
+        d2 = (x0 + i * step - cx) ** 2 + (y0 + j * step - cy) ** 2
+        ok = ((d2 <= reach * reach) & (i >= 0) & (i < cols)
+              & (j >= 0) & (j < nrows))
+        k = (j * cols + i)[ok].astype(np.intp)
+        w = (1.0 / (d2 + CELL_M * CELL_M))[ok]
+        sw += np.bincount(k, w, sw.size)
+        sz += np.bincount(k, w * np.broadcast_to(cz, ok.shape)[ok], sw.size)
+        found += np.bincount(k, None, sw.size)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        rows = np.where(found >= least, sz / sw, np.nan)
+    return x0, y0, rows.reshape(nrows, cols)
 
 
 def contour_lines(grid, step, interval):
@@ -343,56 +345,81 @@ def contour_lines(grid, step, interval):
     joined up through the grid edges they share.
     """
     x0, y0, rows = grid
-    corners =((0, 0), (1, 0), (1, 1), (0, 1))
-    ends = {}           # level -> {grid edge: the cuts that end on it}
-    cuts = {}           # level -> [cut]
-    for j in range(len(rows) - 1):
-        for i in range(len(rows[0]) - 1):
-            zs = [rows[j + dj][i + di] for di, dj in corners]
-            if None in zs:
-                continue
-            for k in range(math.ceil(min(zs) / interval),
-                           math.floor(max(zs) / interval) + 1):
-                level = k * interval
-                hits = []
-                for a in range(4):
-                    b = (a + 1) % 4
-                    if (zs[a] < level) != (zs[b] < level):
-                        pa = (i + corners[a][0], j + corners[a][1])
-                        pb = (i + corners[b][0], j + corners[b][1])
-                        t = (level - zs[a]) / (zs[b] - zs[a])
-                        hits.append((tuple(sorted((pa, pb))),
-                                     (x0 + (pa[0] + t * (pb[0] - pa[0])) * step,
-                                      y0 + (pa[1] + t * (pb[1] - pa[1])) * step)))
-                lc, le = cuts.setdefault(level, []), ends.setdefault(level, {})
-                for a in range(0, len(hits) - 1, 2):    # 4 hits: a saddle
-                    le.setdefault(hits[a][0], []).append(len(lc))
-                    le.setdefault(hits[a + 1][0], []).append(len(lc))
-                    lc.append((hits[a], hits[a + 1]))
     out = []
-    for level in sorted(cuts):
-        lc, le = cuts[level], ends[level]
-        used = [False] * len(lc)
+    if rows.size == 0 or np.isnan(rows).all():
+        return out
+    nr, nc = rows.shape
+    known = ~np.isnan(rows)
+    square = known[:-1, :-1] & known[:-1, 1:] & known[1:, :-1] & known[1:, 1:]
+    # Grid edges by number: the ones along a row, then the ones up a column.
+    n_along = nr * (nc - 1)
+    along = np.arange(n_along).reshape(nr, nc - 1)
+    up = n_along + np.arange((nr - 1) * nc).reshape(nr - 1, nc)
+    # A square's edges, round from its lower left corner: bottom, right, top,
+    # left.
+    edges = np.stack([along[:-1], up[:, 1:], along[1:], up[:, :-1]],
+                     -1).reshape(-1, 4)
+    za, zb = rows[:, :-1], rows[:, 1:]            # the ends of the edges along
+    ua, ub = rows[:-1, :], rows[1:, :]            # and up
+    ii, jj = np.arange(nc), np.arange(nr)
+    for k in range(math.ceil(np.nanmin(rows) / interval),
+                   math.floor(np.nanmax(rows) / interval) + 1):
+        level = k * interval
+        below = rows < level
+        cross_along = below[:, :-1] != below[:, 1:]
+        cross_up = below[:-1, :] != below[1:, :]
+        crossed = np.stack([cross_along[:-1], cross_up[:, 1:],
+                            cross_along[1:], cross_up[:, :-1]], -1)
+        crossed &= square[..., None]
+        crossed = crossed.reshape(-1, 4)
+        hit = crossed.sum(1)
+        if not hit.any():
+            continue
+        # Two edges crossed: one cut between them. Four: a saddle, cut
+        # bottom to right and top to left.
+        two = np.argsort(~crossed[hit == 2], axis=1, kind="stable")[:, :2]
+        two_edges = np.take_along_axis(edges[hit == 2], two, 1)
+        four = edges[hit == 4]
+        cuts = np.concatenate([two_edges, four[:, :2], four[:, 2:]])
+        # Where each crossed edge is cut, in map metres.
+        with np.errstate(invalid="ignore", divide="ignore"):
+            t_along = (level - za) / (zb - za)
+            t_up = (level - ua) / (ub - ua)
+        px = np.concatenate([(x0 + (ii[None, :-1] + t_along) * step).ravel(),
+                             np.broadcast_to(x0 + ii[None, :] * step,
+                                             (nr - 1, nc)).ravel()])
+        py = np.concatenate([np.broadcast_to(y0 + jj[:, None] * step,
+                                             (nr, nc - 1)).ravel(),
+                             (y0 + (jj[:-1, None] + t_up) * step).ravel()])
+        # Ends of cuts: end e is cut e % m's first end, or its second from m
+        # on. An edge is shared by at most two cuts: pair their ends up.
+        m = len(cuts)
+        end_edge = np.concatenate([cuts[:, 0], cuts[:, 1]])
+        order = np.argsort(end_edge, kind="stable")
+        same = end_edge[order[1:]] == end_edge[order[:-1]]
+        partner = np.full(2 * m, -1)
+        partner[order[:-1][same]] = order[1:][same]
+        partner[order[1:][same]] = order[:-1][same]
+        part, edge_of, used = partner.tolist(), end_edge.tolist(), bytearray(m)
 
-        def walk(edge, n):
-            """Points on from cut n, which is entered at `edge`."""
-            pts = []
+        def walk(e):
+            """The edges passed going on out of end e."""
+            passed = []
             while True:
-                used[n] = True
-                a, b = lc[n]
-                edge, p = (b if a[0] == edge else a)
-                pts.append(p)
-                n = next((m for m in le[edge] if not used[m]), None)
-                if n is None:
-                    return pts
+                passed.append(edge_of[e])
+                p = part[e]
+                if p < 0 or used[p % m]:
+                    return passed
+                used[p % m] = 1
+                e = p + m if p < m else p - m       # out the cut's other end
 
-        for n in range(len(lc)):
-            if not used[n]:
-                ea, pa = lc[n][0]
-                fwd = walk(ea, n)       # round a ring this comes back to pa
-                m = next((m for m in le[ea] if not used[m]), None)
-                back = walk(ea, m) if m is not None else []
-                out.append((level, back[::-1] + [pa] + fwd))
+        for c in range(m):
+            if not used[c]:
+                used[c] = 1
+                # Round a ring, forward comes back to the edge it started on.
+                line = walk(c)[::-1] + walk(c + m)
+                out.append((level, list(zip(px[line].tolist(),
+                                            py[line].tolist()))))
     return out
 
 
@@ -401,8 +428,14 @@ def contours_on_body(cells, frame, radius, half_w, half_h, step, interval):
     body, so the lines can be drawn again on a map moved since (to_map)
     without working them out again."""
     grid = height_grid(cells, half_w, half_h, step)
-    return [(level, [from_map(x, y, frame, radius) for x, y in line])
-            for level, line in contour_lines(grid, step, interval)]
+    c, e, nth = (np.array(v) for v in frame)
+    out = []
+    for level, line in contour_lines(grid, step, interval):
+        xy = np.array(line) / radius
+        p = c + xy[:, :1] * e + xy[:, 1:] * nth         # from_map, all at once
+        p /= np.linalg.norm(p, axis=1)[:, None]
+        out.append((level, list(map(tuple, p.tolist()))))
+    return out
 
 
 RELIEF_STEP = 50.0      # metres between the filled view's grid points, at least
@@ -413,33 +446,27 @@ SUN = _unit((-0.6, 0.6, 0.53))      # map frame, y north, z up: upper left
 
 def relief_grid(cells, half_w, half_h, step):
     """What the filled and shaded view is drawn from: (x0, y0, step, heights,
-    light). Heights are height_grid's (None where nothing is near enough);
+    light). Heights are height_grid's (NaN where nothing is near enough);
     `light` is the same shape, a brightness for height_colour: 0.45 on ground
     facing away from the sun, about 1.1 facing it, 0.85 on the flat.
     """
     reach = max(RELIEF_REACH_M, 2 * step)
     x0, y0, rows = height_grid(cells, half_w, half_h, step, reach=reach,
                                least=2)
-    light = []
-    for j, row in enumerate(rows):
-        out = []
-        for i, z in enumerate(row):
-            if z is None:
-                out.append(None)
-                continue
-            # Slope across the point; at an edge, from the one side there is.
-            span = []
-            for a, b in (((i - 1, j), (i + 1, j)), ((i, j - 1), (i, j + 1))):
-                pair = [rows[q][p] if 0 <= q < len(rows) and 0 <= p < len(row)
-                        else None for p, q in (a, b)]
-                known = [v for v in pair if v is not None]
-                lo_v, hi_v = [z if v is None else v for v in pair]
-                span.append((hi_v - lo_v) / (len(known) * step)
-                            if known else 0.0)
-            n = (-span[0] * RELIEF_LIFT, -span[1] * RELIEF_LIFT, 1.0)
-            shade = max(0.0, _dot(n, SUN) / math.sqrt(_dot(n, n)))
-            out.append(min(1.15, 0.45 + 0.75 * shade))
-        light.append(out)
+    # Slope across each point; at an edge, from the one side there is.
+    pad = np.pad(rows, 1, constant_values=np.nan)
+    span = []
+    for a, b in ((pad[1:-1, :-2], pad[1:-1, 2:]),
+                 (pad[:-2, 1:-1], pad[2:, 1:-1])):
+        known = (~np.isnan(a)).astype(int) + ~np.isnan(b)
+        rise = np.where(np.isnan(b), rows, b) - np.where(np.isnan(a), rows, a)
+        span.append(np.divide(rise, known * step, out=np.zeros_like(rows),
+                              where=known > 0))
+    nx_, ny_ = -span[0] * RELIEF_LIFT, -span[1] * RELIEF_LIFT
+    shade = np.maximum(0.0, (nx_ * SUN[0] + ny_ * SUN[1] + SUN[2])
+                       / np.sqrt(nx_ * nx_ + ny_ * ny_ + 1.0))
+    light = np.where(np.isnan(rows), np.nan,
+                     np.minimum(1.15, 0.45 + 0.75 * shade))
     return x0, y0, step, rows, light
 
 
@@ -458,71 +485,46 @@ def frame_shift(frame0, frame, radius):
     return o[0], o[1], vy / d, -vx / d
 
 
-def relief_spans(relief, shift, w, h, mpp, block, lo, hi):
+def relief_image(relief, shift, w, h, mpp, block, lo, hi):
     """The filled and shaded view of a w x h px map, one pixel to a `block` px
     square of the map, so the result is drawn small and then zoomed by
     `block` (Tk does that natively, much faster than pixel by pixel).
 
     `relief` as relief_grid gives it, `shift` as frame_shift gives it for the
-    map being drawn. Returns [(bx, by, data)], each data a string for
-    PhotoImage.put(data, to=(bx, by)) holding one unbroken row of blocks,
-    coloured on a lo..hi scale. Blocks with nothing under them are left out.
+    map being drawn. Returns an (h // block, w // block, 3) array of 8 bit
+    RGB, coloured on a lo..hi scale; GREY where nothing is under a block.
     """
     x0, y0, step, zs, light = relief
-    if not zs:
-        return []
+    out = np.empty((h // block, w // block, 3), np.uint8)
+    out[:] = [int(GREY[i:i + 2], 16) for i in (1, 3, 5)]
+    if zs.size == 0:
+        return out
     ox, oy, c, s = shift
-    nj, ni = len(zs), len(zs[0])
-    colours = {}
-    scale = 100.0 / (hi - lo) if hi > lo else 0.0
+    nj, ni = zs.shape
+    # Each block's middle, on the map and then on the relief grid.
+    x = ((np.arange(w // block) + 0.5) * block - w / 2) * mpp
+    y = (h / 2 - (np.arange(h // block) + 0.5) * block) * mpp
+    gi = (ox + c * x[None, :] - s * y[:, None] - x0) / step
+    gj = (oy + s * x[None, :] + c * y[:, None] - y0) / step
+    inside = (gi >= 0) & (gi <= ni - 1) & (gj >= 0) & (gj <= nj - 1)
+    gi, gj = np.where(inside, gi, 0.0), np.where(inside, gj, 0.0)
+    i0 = np.minimum(gi.astype(int), max(ni - 2, 0))
+    j0 = np.minimum(gj.astype(int), max(nj - 2, 0))
+    i1, j1 = np.minimum(i0 + 1, ni - 1), np.minimum(j0 + 1, nj - 1)
+    fx, fy = gi - i0, gj - j0
 
-    def colour(z, lt):
-        k = (50 if scale == 0.0 else
-             min(100, max(0, int((z - lo) * scale + 0.5))), int(lt * 20 + 0.5))
-        col = colours.get(k)
-        if col is None:
-            col = colours[k] = height_colour(lo + (hi - lo) * k[0] / 100, lo,
-                                             hi, k[1] / 20)
-        return col
+    def mix(g):
+        return ((g[j0, i0] * (1 - fx) + g[j0, i1] * fx) * (1 - fy)
+                + (g[j1, i0] * (1 - fx) + g[j1, i1] * fx) * fy)
 
-    def sample(gi, gj):
-        i0, j0 = min(int(gi), max(ni - 2, 0)), min(int(gj), max(nj - 2, 0))
-        i1, j1 = min(i0 + 1, ni - 1), min(j0 + 1, nj - 1)
-        fx, fy = gi - i0, gj - j0
-        zq = (zs[j0][i0], zs[j0][i1], zs[j1][i0], zs[j1][i1])
-        if None in zq:      # the edge of the fill: the nearest point
-            j, i = (j1 if fy >= 0.5 else j0), (i1 if fx >= 0.5 else i0)
-            return None if zs[j][i] is None else colour(zs[j][i], light[j][i])
-        lq = (light[j0][i0], light[j0][i1], light[j1][i0], light[j1][i1])
-        z = ((zq[0] * (1 - fx) + zq[1] * fx) * (1 - fy)
-             + (zq[2] * (1 - fx) + zq[3] * fx) * fy)
-        lt = ((lq[0] * (1 - fx) + lq[1] * fx) * (1 - fy)
-              + (lq[2] * (1 - fx) + lq[3] * fx) * fy)
-        return colour(z, lt)
-
-    out = []
-    di, dj = c * block * mpp / step, s * block * mpp / step
-    x_first = (block / 2 - w / 2) * mpp
-    gi_max, gj_max = ni - 1, nj - 1
-    for by in range(h // block):
-        y = (h / 2 - by * block - block / 2) * mpp
-        gi = (ox + c * x_first - s * y - x0) / step
-        gj = (oy + s * x_first + c * y - y0) / step
-        run, start = [], 0
-        for bx in range(w // block):
-            col = (sample(gi, gj)
-                   if 0 <= gi <= gi_max and 0 <= gj <= gj_max else None)
-            gi += di
-            gj += dj
-            if col is not None:
-                if not run:
-                    start = bx
-                run.append(col)
-            elif run:
-                out.append((start, by, "{" + " ".join(run) + "}"))
-                run = []
-        if run:
-            out.append((start, by, "{" + " ".join(run) + "}"))
+    z, lt = mix(zs), mix(light)
+    # At the edge of the fill a corner is unknown: the nearest point.
+    edge = np.isnan(z)
+    jn, i_n = np.where(fy >= 0.5, j1, j0), np.where(fx >= 0.5, i1, i0)
+    z = np.where(edge, zs[jn, i_n], z)
+    lt = np.where(edge, light[jn, i_n], lt)
+    fill = inside & ~np.isnan(z)
+    out[fill] = height_colours(z[fill], lo, hi, lt[fill])
     return out
 
 
@@ -619,6 +621,19 @@ def height_colour(h, lo, hi, light=1.0):
     t *= len(RAMP) - 1
     i = min(int(t), len(RAMP) - 2)
     return _hex(_mix(RAMP[i], RAMP[i + 1], t - i), light)
+
+
+def height_colours(h, lo, hi, light):
+    """height_colour for arrays of heights and lights: (..., 3) 8 bit RGB."""
+    ramp = np.array([[int(c[k:k + 2], 16) for k in (1, 3, 5)] for c in RAMP],
+                    float)
+    t = (np.full(np.shape(h), 0.5) if hi <= lo
+         else np.clip((np.asarray(h) - lo) / (hi - lo), 0.0, 1.0))
+    t = t * (len(RAMP) - 1)
+    i = np.minimum(t.astype(int), len(RAMP) - 2)
+    rgb = ramp[i] + (ramp[i + 1] - ramp[i]) * (t - i)[..., None]
+    return np.clip(np.rint(rgb * np.asarray(light)[..., None]), 0,
+                   255).astype(np.uint8)
 
 
 LIGHT = _unit((-0.4, -1.0, 0.5))   # view frame: from the viewer, upper left

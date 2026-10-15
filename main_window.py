@@ -1020,11 +1020,8 @@ class HeightMapTab:
             # Worked out one pixel to a block, then blown up by Tk: putting
             # every pixel took longer than working the colours out.
             block = self.RELIEF_BLOCK * (2 if quick else 1)
-            small = tk.PhotoImage(width=w // block, height=h // block)
-            small.put(heightmap.GREY, to=(0, 0, w // block, h // block))
-            for bx, by, data in heightmap.relief_spans(
-                    self.relief[3], shift, w, h, self.mpp, block, lo, hi):
-                small.put(data, to=(bx, by))
+            small = ImageTk.PhotoImage(Image.fromarray(heightmap.relief_image(
+                self.relief[3], shift, w, h, self.mpp, block, lo, hi)))
             img.tk.call(img, "copy", small, "-zoom", block, block)
         if self.show["samples"].get():
             # Cells are 70-100 m: drawn 100 m wide they overlap, not gap.

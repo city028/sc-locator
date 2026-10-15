@@ -1,5 +1,6 @@
 # Python packages:  pip install -r requirements.txt
 mss
+numpy
 pillow
 pytesseract
 
