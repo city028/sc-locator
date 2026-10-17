@@ -11,6 +11,7 @@ locator_config.json
 stations.json
 heightmap.json
 survey.json
+traces.json
 bak/
 *.bak
 

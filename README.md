@@ -297,15 +297,19 @@ quits the program.
   analysed are listed on the left. A deep-space waypoint is shown around the
   nearest body within 1,000 Mm; to choose by hand, use **Shown around** in the
   Waypoints tab (e.g. a Lagrange station that sits far from its planet).
-  Clicking a pin opens it in the Waypoints tab.
+  Clicking a pin opens it in the Waypoints tab. Right-click a pin for
+  **Show on height map** (a waypoint on a planet or moon) or **Show details**,
+  which opens the waypoint in a small window of its own.
 - **View from an orbital marker**: with a planet or moon open, the **OM-1** to
   **OM-6** buttons at the top right look down on it from above that marker, at
   the zoom you have set (OM-1 north pole, OM-2 south pole, OM-3/OM-4 equator at
   longitude +90/-90, OM-5/OM-6 at 0/180). The view stays over the marker as
   the planet turns, until you drag it.
 - **Waypoints**: every waypoint in a table; rename, delete, and add a note.
-  Filter by system, body and type (all, POI or Survey). Copy, export and
-  import them, see [Sharing](#sharing-waypoints-and-reports).
+  Filter by system, body and type (all, POI or Survey). **SHOW ON MAP** opens
+  the selected one on the star map, **SHOW ON HEIGHT MAP** centres the height
+  map on it. Copy, export and import them, see
+  [Sharing](#sharing-waypoints-and-reports).
 - **Reports**: every analysis result, with your own notes saved alongside it
   in `bodies.json`. A new ANALYSE run of the same place keeps the notes.
   Copy, export and import them the same way.
@@ -413,9 +417,44 @@ the survey when the area is big enough. The square is saved at every corner,
 and the next **SURVEY** offers to resume it at the leg you stopped on or to
 skip ahead past the legs already flown.
 
+#### Tracing a railway
+
+**SURVEY** > **trace a railway** records a line instead of heights: fly (or
+ride the train) along a track and every fix adds a point to it, `railway-001`,
+`railway-002` and so on. Height does not matter, only where you go; fly right
+over the track at about 30 m/s for a point every ~60 m. The panel shows the
+length so far and why a fix added nothing, if it did not. Press **END TRACE**
+at the end of the track; it is saved then and every 30 s while tracing. A
+trace of one point is dropped.
+
+The height map draws railways with the topographic map symbol for a standard
+gauge railroad, multiple track: two black lines with ticks across them
+(switch **Railways**). A body you have only traced on shows up in the
+height map's body list too.
+
+#### Surveying a lake
+
+**SURVEY** > **survey a lake** maps a lake from the route you fly round it:
+
+1. Get as low over the water as you can and pick **survey a lake**. The first
+   fix sets the lake's level: your camera's height, less 2 m
+   (`water_below_cam_m`). The HUD cannot give it: over a lake its ground
+   height is neither the bed nor the surface.
+2. Climb to a safe height, fly to the shore and follow the waterline all
+   the way round.
+3. Press **END LAKE**. Everything between where you started and the route
+   you flew is water.
+
+The height map draws it flat light blue with a blue shore line and its
+level, as on a paper map (switch **Lakes**); heights measured inside a lake
+are left out of its height lines and shading. Start somewhere you can see
+the whole shore you will follow across the water: a headland the start
+cannot see past is counted as water. Lakes that overlap merge, so a big one
+can be done in parts, `lake-001`, `lake-002` and so on.
+
 ### Automatic backups
 
-Every time `waypoints.json`, `bodies.json`, `heightmap.json` or
+Every time `waypoints.json`, `bodies.json`, `heightmap.json`, `traces.json` or
 `locator_config.json` is rewritten, the previous version is copied to the `bak/` folder. The last 30
 versions of each file are kept. If something goes wrong, copy one back.
 
@@ -432,6 +471,8 @@ versions of each file are kept. If something goes wrong, copy one back.
 | **ANALYSE** / **STOP** | start a body or place analysis |
 | **REPORT** / **HIDE** | show or hide the analysis for where you are |
 | **SURVEY** / **END SURVEY** | record the ground's height under you into the height map, or stop and save |
+| **END TRACE** | stop tracing a railway (started from the **SURVEY** menu) and save it |
+| **END LAKE** | stop surveying a lake (started from the **SURVEY** menu) and save it |
 | **CLOSE** | collapse the panel back to the pin |
 | **QUIT** | exit the program |
 
@@ -485,6 +526,7 @@ program is closed. The ones you are most likely to change:
 | `stale_after` | `3.0` | seconds without a good reading before the fix shows as stale |
 | `space_line_m` | `100000` | height (m) above which it says "In Space near …" |
 | `survey_max_height_m` | `5000` | height (m) over the reference sphere above which survey records nothing |
+| `water_below_cam_m` | `2` | how far (m) below your camera the water is when a lake survey starts |
 | `min_move` | `20.0` | metres you must move before your heading updates |
 | `game_process` | `["starcitizen.exe"]` | process names that count as the game running |
 | `tesseract_cmd` | `null` | path to your own `tesseract.exe`, to use instead of the packed one |
@@ -508,6 +550,7 @@ All next to the `.exe`:
 | `stations.json` | cached station list from UEX |
 | `heightmap.json` | ground heights from survey mode, per body |
 | `survey.json` | the last survey square, to resume it |
+| `traces.json` | railways you traced and lakes you surveyed |
 | `bak/` | automatic backups of the files above |
 
 To move to a new PC, copy the whole folder. To share waypoints or reports with

@@ -18,6 +18,7 @@ A height is ElevationUnderCam: the ground over the reference sphere, so the
 ground under a cell is at radius + height from the centre. Positions are in the
 planet frame, which turns with the body, so a cell stays on the same ground.
 """
+import itertools
 import math
 
 import numpy as np
@@ -263,18 +264,44 @@ def map_grid(frame, radius, half_w, half_h, min_gap_m):
     return step, [ln for ln in lines if ln[2]]
 
 
+_centres = {}      # id(rec) -> (rec, cell count, their centres): see below
+
+
+def cell_centres(rec):
+    """The centres of a body's measured cells, as an (N, 3) array of unit
+    vectors in rec["cells"]' order. The map asks for them on every drag
+    step, and working them out cost ~20 ms there (2026-10-17), so they are
+    kept. Cells are only ever added, at the end of the dict, so only the
+    new ones are worked out: redoing all of them took 0.8 s at 92,000 cells,
+    on nearly every fix of a survey with the map open. The rec itself is
+    kept with them, so its id cannot be reused."""
+    count = len(rec["cells"])
+    kept = _centres.get(id(rec))
+    if kept and kept[0] is rec and kept[1] == count:
+        return kept[2]
+    done = kept[1] if kept and kept[0] is rec and kept[1] < count else 0
+    n = rec["n"]
+    new = np.array([cell_centre(*unkey(k), n)
+                    for k in itertools.islice(rec["cells"], done, None)],
+                   dtype=float).reshape(-1, 3)
+    pts = np.concatenate([kept[2], new]) if done else new
+    _centres[id(rec)] = (rec, count, pts)
+    return pts
+
+
 def local_cells(rec, radius, frame, half_w, half_h):
     """Measured cells inside a map half_w x half_h metres either side of the
     middle, as [(east m, north m, height m)]."""
-    if not rec:
+    if not rec or not rec["cells"]:
         return []
-    n = rec["n"]
-    out = []
-    for k, (mean, _) in rec["cells"].items():
-        xy = to_map(cell_centre(*unkey(k), n), frame, radius)
-        if xy and abs(xy[0]) <= half_w and abs(xy[1]) <= half_h:
-            out.append((xy[0], xy[1], mean))
-    return out
+    pts = cell_centres(rec)
+    z = np.fromiter((v[0] for v in rec["cells"].values()), float, len(pts))
+    c, e, nth = (np.array(v) for v in frame)
+    d = pts @ c                                 # to_map, all at once
+    with np.errstate(invalid="ignore", divide="ignore"):
+        x, y = radius * (pts @ e) / d, radius * (pts @ nth) / d
+    keep = (d > 0) & (np.abs(x) <= half_w) & (np.abs(y) <= half_h)
+    return list(zip(x[keep].tolist(), y[keep].tolist(), z[keep].tolist()))
 
 
 REACH_M = 1500.0        # contours go no further than this from a measured cell

@@ -1327,6 +1327,20 @@ the real interval is a twentieth of the body's range, so a handful of levels.
 The fill is a guess between legs 200-300 m apart, not measured ground; the
 samples switch shows what was measured.
 
+**Drag step (2026-10-17).** Reported slow after railways were added; the
+railways cost ~1 ms a draw, so not them. A drag step was ~100 ms, of which
+the legend (160 canvas lines redrawn every step) took ~17 ms and
+`local_cells` (cell centres worked out in Python, twice a draw) ~20 ms.
+The legend's bar is the whole ramp whatever the range, so it is now drawn
+only when it appears or goes flat, and its labels updated; cell centres are
+kept per body (`cell_centres`, redone when the cell count changes) and
+`local_cells` is numpy. Drag step ~70 ms, same cells to 1e-10 m. Only new
+cells' centres are worked out (cells are only added, at the end of the
+dict): redoing all of them took 0.7-0.8 s at 92,000 cells, one new cell now
+5 ms. Scaling plan in TODO.md. What is
+left: Tk's own redisplay ~30 ms, putting the relief image ~22 ms, LAT/LON
+grid ~17 ms, contours ~13 ms.
+
 **Survey waypoints.** A survey saves `survey-NNN` (type `survey`, so a
 rename keeps it one) where it first records the ground on a body,
 unless a survey waypoint is already within 5 km. Checked in game
@@ -1341,6 +1355,107 @@ star map, so each view has its own default: star map POI only, height map
 survey only, waypoint table both. SHOW ON MAP ticks the type of the waypoint
 it shows, or the map would open on nothing. An older exe keeps the field on
 save, since a waypoint is saved as the dict it was loaded as.
+
+## Traced lines: railways (2026-10-17)
+
+**Map symbols.** `examples/topomapsymbols.pdf` (USGS, "Topographic Map
+Symbols") is the reference for how features are drawn on the height map.
+`examples/` is kept local, not published. Railways use "Standard gauge
+railroad, multiple track" (page 3): two parallel lines with ticks across.
+
+**Survey modes.** A height survey records ElevationUnderCam into cells; a
+trace records only where you went, as a line. `traces.py` holds the logic
+(no Tk); `traces.json` is a list of `{"name", "kind", "planet", "started",
+"points": [[x, y, z], ...]}` in the planet frame. Started from the SURVEY
+menu (`trace a railway`), stopped with END TRACE. Only `railway` exists so
+far; `kind` is there for shore lines next (see TODO.md).
+
+**What a trace keeps.** The HUD's heights are not used: on foot they are
+often not shown, and on the metro they contradicted good positions (below).
+Each fix is judged against the last point kept instead. Dropped: a height
+over the centre that changed faster than TRACE_MAX_CLIMB (100 m/s), a move
+faster than SURVEY_MAX_SPEED (a dropped minus sign keeps the height), a fix
+on another body, and one within 25 m of the last point (hovering). A
+one-point trace is dropped on stop.
+
+**First ride, New Babbage metro (2026-10-17).** railway-001: 54 points over
+42 km, a fix every ~2 s at up to ~400 m/s, so points 700-900 m apart. The
+first gate (drop when the heights contradict the position) dropped 45 of 107
+fixes, though the positions logged in those stretches were continuous and
+changed height at ~20 m/s; a 45 s stretch was lost and joined by a 5.6 km
+straight line. The common misread, 0 read as 6 in x (520,018 -> 526,217),
+moves the fix ~6 km and ~3.5 km up at New Babbage, so the height jump
+catches it; replayed on the earlier flight it dropped all 9 and kept the
+route. Weak spots: a misread digit in a coordinate near 0 barely changes the
+height, and after a long gap the allowance grows (100 m per second of gap).
+The first point has nothing to be judged against.
+
+**Drawing.** A wide black line with a thin light one down its middle gives
+the two rails with clean joins on curves; ticks every 40 px, 6 px either
+side, drawn on top so they cross both rails.
+
+## ElevationUnderCam over a liquid lake (microTech, 2026-10-17)
+
+A free-fly survey of a small lake (~500 x 900 m), started skimming the water
+in a small ship, with every frame logged. The ship held 1,231-1,251 m over
+the reference sphere throughout; 392 frames had both heights read:
+
+- 297: **elev - alt = ship's height**, to under 1 m. The HUD's "ground" was
+  *above* the ship, by 0-73 m, and Altitude was the distance up to it.
+  This "ground" is neither the water surface (not flat: 1,235-1,309 m) nor
+  the bed (it cannot be above the ship). It rises smoothly to the west like
+  terrain: most likely the planet's ground as if the lake were not there.
+- 49: the usual elev + alt = height, ground 1,224-1,246 m, 0-18 m below the
+  ship: mostly the south and south-east, where a settlement's piers stand
+  in the water and the ship flew a little higher. Survey mode kept these.
+- 52: neither, misreads.
+
+The sweep went round the shore and zig-zagged across the middle. The
+middle looked empty on a first plot only because positions are logged
+every ~6 s and survey lines every ~2 s; placed by time between logged
+positions, 395 of 429 frames land on the track. From 19:32 to 19:38 the
+reader kept losing the HUD (debug HUD not on screen, CamPos row unread,
+`-687,287` read as `87,254`), down to ~10 frames a minute from ~30: most
+likely bright water or sky behind the HUD text, as before.
+
+So over a lake the HUD gives no depth and no surface. The water level has
+to come from the ship's own height while skimming (~1,232 m here). Survey
+mode was right to drop the 297: they fail its identity. A frame where the
+HUD's ground is above the ship (elev - alt = height) is a sign of water --
+or of anything else cut below the planet's ground -- but where that ground
+dips below the water it reads as normal, so it cannot mark the whole lake.
+The ice sea near New Babbage (exactly -40.0 m, passing the normal identity)
+behaves differently: a sea level, not a carved lake.
+
+**Lake survey (built 2026-10-17).** A trace of kind `lake` (SURVEY > survey
+a lake). Its first fix sets `level`: the camera's height over the reference
+sphere less `water_below_cam_m` (2 m), as the pilot starts skimming the
+water; a height over the sphere, so the surface curves with the body. The
+water is the fan of triangles from the first point to each step of the
+route (`traces.fan`): "everything between the start and the route flown".
+Filling the outline instead would go wrong twice over: PIL fills polygons
+even-odd (a pentagram's middle comes out empty), so a route crossing itself
+or flown round one and a half times leaves holes. The fan's limit: the start
+must see the shore across water, or a headland it cannot see past is
+covered. On the height map all lakes are painted into one mask (overlaps
+merge), drawn as an RGBA image over relief and contours with the LAT/LON
+grid raised back over it; the shore is the mask's edge, 2 px, found by
+erosion padded with the edge's own pixels (PIL's FIND_EDGES drew a shore
+along the map's edge where a lake ran off it). Cells inside a lake are left
+out of contours, relief and the colour range; the contour cache key holds
+the lakes' point count. Replayed with the sweep above (169 logged
+positions): the lake comes out as flown, a drag step 25 ms with it, 21 ms
+without. Not yet surveyed in game with the new mode. That replay was then
+added to `traces.json` as `lake-001` (169 logged positions, level 1,229.9 m)
+so the lake shows until it is surveyed with the new mode.
+
+**Jumping to the height map (2026-10-17).** SHOW ON HEIGHT MAP in the
+Waypoints tab, and a right-click menu on star map pins (Show on height map,
+Show details), call `HeightMapTab.show_waypoint`: it opens the waypoint's
+body, turns its type on and centres on it as Go to does, keeping the zoom.
+Show details is `waypoint_text` (as Copy) plus the save time, in a window of
+its own. The height map's legend text was cut off at the bottom by then
+(two more switches, two more key lines) and was shortened to fit.
 
 ## Main window text and screen scale (2026-10-15)
 

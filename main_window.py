@@ -16,11 +16,13 @@ import tkinter as tk
 import tkinter.font as tkfont
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
-from PIL import Image, ImageTk
+import numpy as np
+from PIL import Image, ImageDraw, ImageTk
 
 import heightmap
 import starmap
 import survey
+import traces
 
 BG, PANEL, FG, DIM, ACCENT = "#05080c", "#0d141c", "#D8E2EE", "#8FA0B4", "#7CFFB2"
 SUN = ("#B86A12", "#FFB347", "#FFE7B0")
@@ -32,6 +34,10 @@ CONTOUR, CONTOUR_INDEX = "#C8925A", "#E0A868"   # brown, as on a paper map
 # Survey legs: flown, now, next. Blue, not ACCENT: you fly along the leg
 # you are on, and in your own green it hid your + (2026-10-15).
 COURSE = ("#B8C6D4", "#5CC8FF", "#2F7FA8")
+# Railways: black lines, the paper's colour between them, as on a paper map.
+RAIL, RAIL_GAP = "#000000", "#FAF7F2"
+# Lakes: light blue water and a darker blue shore line, as on a paper map.
+WATER, SHORE = (169, 212, 239), (42, 122, 184)
 
 SUN_PX, PLANET_PX, MOON_PX = 14, 9, 5
 SYSTEM_PITCH = math.radians(60)     # the system map's default view: tilted
@@ -194,16 +200,21 @@ def open_main(root, state, scl, set_hud):
         nb.select(star.frame)
         star.show_waypoint(name)
 
-    editor = WaypointEditor(nb, state, scl, show_waypoint)
+    def show_on_height_map(name):
+        """SHOW ON HEIGHT MAP in the table: open the height map on it."""
+        nb.select(height.frame)
+        height.show_waypoint(name)
+
+    editor = WaypointEditor(nb, state, scl, show_waypoint, show_on_height_map)
 
     def pick_waypoint(name):
         """A pin clicked on the map: show that waypoint in the table."""
         nb.select(editor.frame)
         editor.select(name)
 
-    star = StarMap(nb, state, scl, pick_waypoint, follow)
-    tabs = [star, HeightMapTab(nb, state, scl, follow), editor,
-            ReportViewer(nb, state, scl)]
+    star = StarMap(nb, state, scl, pick_waypoint, follow, show_on_height_map)
+    height = HeightMapTab(nb, state, scl, follow)
+    tabs = [star, height, editor, ReportViewer(nb, state, scl)]
     for tab, title in zip(tabs, ("Star map", "Height map", "Waypoints",
                                  "Reports")):
         nb.add(tab.frame, text=title)
@@ -234,6 +245,32 @@ def blend(colours, t):
     return "#" + "".join(f"{round(u + (v - u) * t):02x}" for u, v in zip(ca, cb))
 
 
+def waypoint_details(parent, state, scl, name):
+    """Show details on a star map pin: the waypoint in a window of its own,
+    as Copy puts it on the clipboard, with when it was saved."""
+    wps, bodies = snapshot(state)
+    w = next((q for q in wps if q["name"] == name), None)
+    if w is None:
+        return
+    system = w.get("system")
+    placed = (starmap.placed_bodies(bodies, system)
+              if system in starmap.SYSTEMS else {})
+    text = scl.waypoint_text(w, starmap.attached_body(w, placed), bold=False)
+    if w.get("saved"):
+        text += f"\nSaved {w['saved']}"
+    win = tk.Toplevel(parent)
+    win.title(name)
+    win.configure(bg=BG)
+    win.transient(parent.winfo_toplevel())
+    box = text_box(win, text.count("\n") + 2, readonly=True)
+    box.config(width=64)
+    set_text(box, text)
+    box.pack(fill="both", expand=True, padx=10, pady=(10, 6))
+    ttk.Button(win, text="CLOSE", command=win.destroy).pack(pady=(0, 10))
+    win.bind("<Escape>", lambda e: win.destroy())
+    return win
+
+
 def text_box(parent, height, readonly=False):
     t = tk.Text(parent, height=height, font=mono(), bg=PANEL, fg=FG,
                 insertbackground=FG, relief="flat", wrap="word")
@@ -259,9 +296,9 @@ def set_text(widget, text):
 class StarMap:
     """One system at a time; click a body to zoom in on it and its waypoints."""
 
-    def __init__(self, parent, state, scl, on_pick, follow):
+    def __init__(self, parent, state, scl, on_pick, follow, on_height):
         self.state, self.scl, self.on_pick = state, scl, on_pick
-        self.follow = follow
+        self.follow, self.on_height = follow, on_height
         # canvas item -> waypoint name. Not a tag: names have spaces in them,
         # and a canvas tag cannot.
         self.pins = {}
@@ -318,6 +355,10 @@ class StarMap:
         self.canvas.bind("<B1-Motion>", self.on_drag)
         self.canvas.bind("<ButtonRelease-1>", self.on_release)
         self.canvas.bind("<MouseWheel>", self.on_wheel)
+        self.canvas.bind("<Button-3>", self.pin_menu)
+        # Right-click on a pin: what to do with that waypoint.
+        self.menu = tk.Menu(self.canvas, tearoff=False, font=mono(), bg=PANEL,
+                            fg=FG, activebackground="#1d4f3a")
         # View from an orbital marker. Over the canvas, top right; only shown
         # while a body is open, as the system view has no markers.
         self.om_bar = tk.Frame(self.canvas, bg=BG)
@@ -493,6 +534,26 @@ class StarMap:
                     self.show(self.system, tag[5:])
                     break
         self.press = None
+
+    def pin_menu(self, e):
+        """Right-click on a pin: show it on the height map (a waypoint on a
+        body only) or its details in a window of its own."""
+        current = self.canvas.find_withtag("current")
+        name = self.pins.get(current[0]) if current else None
+        if name is None:
+            return
+        wps, _ = snapshot(self.state)
+        w = next((q for q in wps if q["name"] == name), None)
+        on_body = w is not None and w.get("frame", "planet") == "planet"
+        self.menu.delete(0, "end")
+        self.menu.add_command(label="Show on height map",
+                              command=lambda: self.on_height(name),
+                              state="normal" if on_body else "disabled")
+        self.menu.add_command(
+            label="Show details",
+            command=lambda: waypoint_details(self.frame, self.state, self.scl,
+                                             name))
+        self.menu.tk_popup(e.x_root, e.y_root)
 
     def on_wheel(self, e):
         self.zoom = max(0.2, min(200.0, self.zoom * 1.15 ** (e.delta / 120)))
@@ -901,6 +962,7 @@ class HeightMapTab:
         self.offset = (0.0, 0.0)    # (east m, north m) dragged from you
         self.mpp = 100.0
         self.press, self.seen, self.image = None, None, None
+        self.water = None       # the lakes' image, held as self.image is
         self.held = None    # as the star map's: set by Go to
         self.contours = None    # (key, frame, (half_w, half_h), lines): draw
         self.relief = None      # (key, frame, (half_w, half_h), relief_grid)
@@ -927,25 +989,30 @@ class HeightMapTab:
         self.legend = tk.Canvas(side, width=170, height=34, bg=BG,
                                 highlightthickness=0)
         self.legend.pack(anchor="w", pady=(8, 4))
+        self.legend_key = None      # what the legend's bar was drawn for
         # What to draw, bottom to top: relief, samples, height lines, survey
-        # pattern, waypoints.
+        # pattern, railways, waypoints.
         self.show = {}
         for name, text, on in (("relief", "Filled relief", True),
                                ("samples", "Survey samples", False),
                                ("lines", "Height lines", True),
-                               ("course", "Survey pattern", True)):
+                               ("course", "Survey pattern", True),
+                               ("lake", "Lakes", True),
+                               ("rail", "Railways", True)):
             self.show[name] = tk.BooleanVar(value=on)
             ttk.Checkbutton(side, text=text, variable=self.show[name],
                             command=self.draw).pack(anchor="w")
         self.types = type_switches(side, ("survey",), self.draw)
         tk.Label(side, font=mono(9), fg=DIM, bg=BG, justify="left",
                  anchor="w",
-                 text="\nSURVEY in the overlay\nrecords the ground "
-                      "under you.\n\ngrey: not measured\nbrown: contour lines\n"
+                 text="SURVEY in the overlay\nrecords the ground "
+                      "under you.\ngrey: not measured\nbrown: contour lines\n"
                       "number by a pin: its\nground height\n"
-                      "dashes: survey course\n+ : you are here\n"
-                      "drag to move\n"
-                      "wheel to zoom").pack(anchor="w", fill="x")
+                      "dashes: survey course\n"
+                      "ticked line: railway\n"
+                      "blue: lake, its level\n"
+                      "+ : you are here\n"
+                      "drag: move, wheel: zoom").pack(anchor="w", fill="x")
 
         self.canvas = tk.Canvas(self.frame, bg=heightmap.GREY,
                                 highlightthickness=0)
@@ -964,6 +1031,11 @@ class HeightMapTab:
         self.goto_choices()
         with self.state.lock:
             self.centre = heightmap.centre_of(self.state.heightmap.get(body))
+            # Nothing surveyed: the end of the last line traced there.
+            ends = [t["points"][-1] for t in self.state.traces
+                    if t["planet"] == body and t["points"]]
+        if self.centre is None and ends:
+            self.centre = heightmap.local_frame(ends[-1])[0]
         self.draw()
 
     def goto_choices(self):
@@ -972,6 +1044,24 @@ class HeightMapTab:
             of_types(snapshot(self.state)[0], self.types), self.body)]
         if list(self.goto.cget("values")) != names:
             self.goto.config(values=names)
+
+    def show_waypoint(self, name):
+        """SHOW ON HEIGHT MAP in the Waypoints tab: open the waypoint's body
+        and centre on it, as Go to does."""
+        wps, _ = snapshot(self.state)
+        w = next((q for q in wps if q["name"] == name), None)
+        if w is None or w.get("frame", "planet") != "planet":
+            with self.state.lock:
+                self.state.flash(f"{name}: not on a body, not on the height map")
+            return
+        self.types.get(w.get("type"), self.types["poi"]).set(True)
+        if w["planet"] != self.body:
+            self.body_var.set(w["planet"])
+            self.open(w["planet"])
+        self.offset = (0.0, 0.0)
+        self.goto_choices()
+        self.goto_var.set(name)
+        self.go_to()
 
     def go_to(self):
         """Centre on the waypoint picked in Go to. Following you would pull
@@ -1055,11 +1145,14 @@ class HeightMapTab:
         plan = st.survey_saved
         return (self.body, heightmap.cell_count(st.heightmap, self.body),
                 tuple(st.pos) if on_it and st.pos else None,
-                plan and (plan["origin"], plan["leg"], plan["joined"]))
+                plan and (plan["origin"], plan["leg"], plan["joined"]),
+                sum(len(t["points"]) for t in st.traces
+                    if t["planet"] == self.body))
 
     def refresh(self):
         with self.state.lock:
-            bodies = sorted(self.state.heightmap)
+            bodies = sorted(set(self.state.heightmap) | {
+                t["planet"] for t in self.state.traces if t["planet"]})
             here = self.state.planet
             seen = self.look()
         if here in self.scl.BODY_RADII and here not in bodies:
@@ -1093,10 +1186,14 @@ class HeightMapTab:
             frame = (heightmap.local_frame(self.centre)
                      if self.centre is not None else None)
             rec = st.heightmap.get(self.body)
+            lakes = [(list(t["points"]), t.get("level")) for t in st.traces
+                     if t["planet"] == self.body and t["kind"] == "lake"
+                     and len(t["points"]) >= traces.LEAST["lake"]]
             # Contours and relief are worked out for twice the map each way
-            # and kept until the survey or the zoom changes or you pan off
-            # them. Only what is switched on is worked out.
-            key = (self.body, self.seen[1], self.mpp)
+            # and kept until the survey, a lake or the zoom changes or you
+            # pan off them. Only what is switched on is worked out.
+            key = (self.body, self.seen[1], self.mpp,
+                   sum(len(p) for p, _ in lakes))
 
             def stale(kept):
                 if not frame:
@@ -1126,6 +1223,15 @@ class HeightMapTab:
             plan = (dict(st.survey_saved) if st.survey_saved is not None
                     and st.survey_saved["planet"] == self.body
                     and st.survey_saved["origin"] is not None else None)
+            rails = [list(t["points"]) for t in st.traces
+                     if t["planet"] == self.body and t["kind"] == "railway"]
+        # Over a lake the HUD's ground is neither the bed nor the surface
+        # (NOTES.md): the cells there shape no contour, shade or colour.
+        lake_xys = [(xys, level) for xys, level in (
+            (self.on_map(points, frame, radius), level)
+            for points, level in lakes) if xys] if frame else []
+        around = self.outside(around, lake_xys)
+        near = self.outside(near, lake_xys)
         interval = heightmap.contour_interval(body_lo, body_hi)
         if fresh:
             step = max(heightmap.CELL_M, 5 * self.mpp)  # grid points 5 px apart
@@ -1171,6 +1277,10 @@ class HeightMapTab:
                 self.draw_contours(frame, radius, interval, w, h)
             if plan and self.show["course"].get():
                 self.draw_course(plan, frame, radius, w, h)
+            if self.show["lake"].get():
+                self.draw_lakes(lake_xys, w, h)
+            if self.show["rail"].get():
+                self.draw_rails(rails, frame, radius, w, h)
 
         def spot(p):
             xy = heightmap.to_map(p, frame, radius)
@@ -1237,13 +1347,13 @@ class HeightMapTab:
                             edge is None or
                             (sx < edge[0] if kind == "lat" else sy < edge[1])):
                         edge = (sx, sy)
-                c.create_line(*flat, fill=GRID_LINE)
+                c.create_line(*flat, fill=GRID_LINE, tags="grid")
             if edge:
                 c.create_text(edge[0] + 3, edge[1] + (-2 if kind == "lat"
                                                       else 2),
                               anchor="sw" if kind == "lat" else "nw",
                               text=f"{deg:+.{places}f}", fill=FG,
-                              font=mono(8))
+                              font=mono(8), tags="grid")
 
     def draw_contours(self, frame, radius, interval, w, h):
         """The kept contour lines (see draw) over the cells, every
@@ -1291,6 +1401,82 @@ class HeightMapTab:
                           fill=colour, width=2 if i == k else 1,
                           dash=(6, 4))
 
+    @staticmethod
+    def on_map(points, frame, radius):
+        """Planet-frame points as (east m, north m) on the map, or None if
+        any is on the far half of the body."""
+        xys = [heightmap.to_map(p, frame, radius) for p in points]
+        return None if None in xys else xys
+
+    @staticmethod
+    def outside(cells, lake_xys):
+        """The cells (as local_cells gives them) outside every lake."""
+        if not cells or not lake_xys:
+            return cells
+        xs, ys = np.array([c[0] for c in cells]), np.array([c[1] for c in cells])
+        wet = np.zeros(len(cells), bool)
+        for xys, _ in lake_xys:
+            wet |= traces.inside(xs, ys, xys)
+        return [c for c, w in zip(cells, wet.tolist()) if not w]
+
+    def draw_lakes(self, lake_xys, w, h):
+        """Lakes as flat water: every lake painted into one mask as its fan
+        of triangles (traces.fan), so lakes that overlap (one surveyed in
+        parts) merge, and the shore line is the mask's edge. Drawn as an image over the relief and height lines;
+        the LAT/LON grid is raised back over it."""
+        c = self.canvas
+        mask = Image.new("L", (w, h), 0)
+        paint = ImageDraw.Draw(mask)
+        labels = []
+        for xys, level in lake_xys:
+            px = [(w / 2 + x / self.mpp, h / 2 - y / self.mpp) for x, y in xys]
+            xs, ys = [p[0] for p in px], [p[1] for p in px]
+            if max(xs) < 0 or min(xs) > w or max(ys) < 0 or min(ys) > h:
+                continue
+            for tri in traces.fan(px):
+                paint.polygon(tri, fill=255)
+            if level is not None:
+                labels.append((sum(xs) / len(xs), sum(ys) / len(ys), level))
+        wet = np.array(mask) > 0
+        if not wet.any():
+            return
+        # The shore: water within 2 px of land. Padded with the edge's own
+        # pixels, so a lake running off the map has no shore along the edge.
+        inner = wet
+        for _ in range(2):
+            p = np.pad(inner, 1, mode="edge")
+            inner = (p[1:-1, 1:-1] & p[:-2, 1:-1] & p[2:, 1:-1]
+                     & p[1:-1, :-2] & p[1:-1, 2:])
+        rgba = np.zeros((h, w, 4), np.uint8)
+        rgba[wet] = (*WATER, 255)
+        rgba[wet & ~inner] = (*SHORE, 255)
+        self.water = ImageTk.PhotoImage(Image.fromarray(rgba, "RGBA"))
+        c.create_image(0, 0, image=self.water, anchor="nw")
+        c.tag_raise("grid")
+        # The level, as a lake's elevation is printed on a paper map.
+        for x, y, level in labels:
+            c.create_text(x, y, text=f"{level:,.0f}", fill="#%02x%02x%02x"
+                          % SHORE, font=mono(9))
+
+    def draw_rails(self, rails, frame, radius, w, h):
+        """Traced railways, as the map symbol for a multiple track railroad:
+        two black lines (a wide black one with a thin light one down its
+        middle) and ticks across them."""
+        c = self.canvas
+        half_w, half_h = w / 2 * self.mpp, h / 2 * self.mpp
+        for points in rails:
+            xys = [xy for xy in (heightmap.to_map(p, frame, radius)
+                                 for p in points) if xy]
+            for run in heightmap.in_view(xys, half_w, half_h):
+                px = [(w / 2 + x / self.mpp, h / 2 - y / self.mpp)
+                      for x, y in run]
+                flat = [v for p in px for v in p]
+                c.create_line(*flat, fill=RAIL, width=6, joinstyle="round")
+                c.create_line(*flat, fill=RAIL_GAP, width=2,
+                              joinstyle="round")
+                for x0, y0, x1, y1 in traces.ticks(px):
+                    c.create_line(x0, y0, x1, y1, fill=RAIL, width=2)
+
     def scale_bar(self, w, h):
         """A round length up to a fifth of the map wide, bottom left."""
         want = w / 5 * self.mpp
@@ -1303,8 +1489,19 @@ class HeightMapTab:
                       text=self.scl.fmt_dist(length))
 
     def draw_legend(self, lo, hi, any_cells):
-        """The height scale, low to high, for the cells in view."""
+        """The height scale, low to high, for the cells in view.
+
+        The bar's colours run the whole ramp whatever lo and hi are (one
+        colour when they are equal), so it is drawn again only when that
+        changes and the labels are just updated. Its 160 lines cost as much
+        as the contours on every drag step (2026-10-17)."""
         lg = self.legend
+        key = any_cells and hi > lo
+        if any_cells and key == self.legend_key:
+            lg.itemconfig("lo", text=self.scl.fmt_dist(lo))
+            lg.itemconfig("hi", text=self.scl.fmt_dist(hi))
+            return
+        self.legend_key = key if any_cells else None
         lg.delete("all")
         lg.configure(height=18 + mono(9).metrics("linespace"))
         if not any_cells:
@@ -1313,9 +1510,9 @@ class HeightMapTab:
             lg.create_line(i, 0, i, 14, fill=heightmap.height_colour(
                 lo + (hi - lo) * i / 159, lo, hi))
         lg.create_text(0, 18, anchor="nw", fill=DIM, font=mono(9),
-                       text=self.scl.fmt_dist(lo))
+                       text=self.scl.fmt_dist(lo), tags="lo")
         lg.create_text(160, 18, anchor="ne", fill=DIM, font=mono(9),
-                       text=self.scl.fmt_dist(hi))
+                       text=self.scl.fmt_dist(hi), tags="hi")
 
 
 # ----------------------------------------------------------------------------
@@ -1330,8 +1527,9 @@ class WaypointEditor:
                ("note", 200))
     AUTO = "auto (by distance)"
 
-    def __init__(self, parent, state, scl, on_show):
+    def __init__(self, parent, state, scl, on_show, on_height):
         self.state, self.scl, self.on_show = state, scl, on_show
+        self.on_height = on_height
         self.frame = tk.Frame(parent, bg=BG)
         self.seen, self.loaded = None, False
 
@@ -1387,6 +1585,9 @@ class WaypointEditor:
                                                                  padx=6)
         ttk.Button(row, text="SHOW ON MAP", command=self.show_on_map).pack(
             side="left")
+        ttk.Button(row, text="SHOW ON HEIGHT MAP",
+                   command=lambda: self.show_on_map(self.on_height)).pack(
+            side="left", padx=(6, 0))
         ttk.Button(row, text="IMPORT", command=self.import_file).pack(
             side="left", padx=6)
         # Deep space only: which body the star map shows it around.
@@ -1638,13 +1839,14 @@ class WaypointEditor:
             st.flash(f"{name}: shown around {pick}")
         self.refresh()
 
-    def show_on_map(self):
+    def show_on_map(self, show=None):
+        """SHOW ON MAP, or with `show` SHOW ON HEIGHT MAP."""
         name = self.selected()
         if name is None:
             with self.state.lock:
                 self.state.flash("select one waypoint first")
             return
-        self.on_show(name)
+        (show or self.on_show)(name)
 
     def rename(self):
         old, new = self.selected(), self.name_var.get().strip()

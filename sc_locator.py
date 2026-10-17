@@ -49,6 +49,7 @@ import heightmap                         # noqa: E402
 import spin_analysis as spin             # noqa: E402
 import stations                          # noqa: E402
 import survey                            # noqa: E402
+import traces                            # noqa: E402
 
 # A one-file .exe unpacks to a temp folder that is deleted on exit, so data is
 # kept beside the .exe instead. BUNDLE is where the packed Tesseract lives.
@@ -63,15 +64,20 @@ BODIES_FILE = HERE / "bodies.json"       # what landing on a body taught us
 STATIONS_FILE = HERE / "stations.json"   # UEX's station list, re-fetched weekly
 HEIGHTMAP_FILE = HERE / "heightmap.json" # ground heights from survey mode
 SURVEY_FILE = HERE / "survey.json"       # the last survey square, to resume
+TRACES_FILE = HERE / "traces.json"       # railways traced, see traces.py
 BACKUP_DIR = HERE / "bak"
 BACKUP_KEEP = 30                         # versions of each file kept in bak/
 # How often a running survey is written out. Each write also keeps a backup,
 # so thirty of them cover the last hour.
 HEIGHTMAP_SAVE_SECONDS = 120.0
+TRACES_SAVE_SECONDS = 30.0               # and a running trace
 # Fastest a survey sample may have moved since the last fix. Flight in
 # atmosphere stays well under it; a misread coordinate moves the fix hundreds
 # of km in a second.
 SURVEY_MAX_SPEED = 3000.0                # m/s
+# Fastest a trace point may climb or drop since the last one. The metro
+# changed height at ~20 m/s; a misread digit, by kilometres in seconds.
+TRACE_MAX_CLIMB = 100.0                  # m/s
 # A survey starting this close to a survey waypoint does not add another.
 SURVEY_MARK_SPACING_M = 5000.0
 
@@ -128,7 +134,12 @@ DEFAULT_CONFIG = {
     # it out; below 5 km four frames in five read. Measured from the
     # position, not the HUD's heights, which are the suspect part.
     "survey_max_height_m": 5000.0,
-    "stale_after": 3.0,                 # seconds before a fix is flagged stale
+    # A lake survey starts skimming the water, and its level is the camera's
+    # height over the reference sphere at that first fix less this much. The
+    # HUD cannot give it: over a microTech lake its ground read up to 73 m
+    # above the water, neither the bed nor the surface (2026-10-17).
+    "water_below_cam_m": 2.0,
+    "stale_after": 3.0,                # seconds before a fix is flagged stale
     "default_radius": 1000000.0,         # used when the zone is not in BODY_RADII
     "min_move": 20.0,                    # metres moved before heading is updated
     "mirror": False,                     # flip left/right turn hint if it feels reversed
@@ -261,6 +272,12 @@ def load_heightmap():
     """Surveyed ground heights, keyed by body. Empty if there are none yet."""
     data = load_json(HEIGHTMAP_FILE, {})
     return data if isinstance(data, dict) else {}
+
+
+def load_traces():
+    """Traced lines, oldest first. Empty if there are none yet."""
+    data = load_json(TRACES_FILE, [])
+    return data if isinstance(data, list) else []
 
 
 def load_config():
@@ -1451,6 +1468,12 @@ class State:
         self.heightmap = {}      # body -> surveyed cells, see heightmap.py
         self.heightmap_dirty = False
         self.heightmap_saved = 0.0
+        self.traces = []         # traced lines, see traces.py: TRACES_FILE
+        self.trace = None        # the one being traced, also in self.traces
+        self.trace_last = None   # (pos, time) of its last point
+        self.trace_why = None    # why the last fix added no point, or None
+        self.traces_dirty = False
+        self.traces_saved = 0.0
         self.checked_pos = None  # (planet, pos, time) the heights last backed
         self.log = lambda msg: None
 
@@ -1895,6 +1918,8 @@ class State:
                                                     moving)
                     if (plan["leg"], plan["joined"], plan["origin"]) != was:
                         save_json(SURVEY_FILE, plan)  # resumable from here
+            if self.trace is not None:
+                trace_fix(self, planet, radius, pos, now)
             # A sample is the system position and the planet-frame position
             # from the same frame. Only a reading this frame produced and the
             # settling accepted counts: otherwise a held value would be
@@ -2992,6 +3017,85 @@ def stop_survey(state):
     save_heightmap(state, force=True)
 
 
+def start_trace(state, kind):
+    """Start tracing a line of `kind` (traces.KINDS) from the next fix."""
+    with state.lock:
+        name = traces.trace_name(state.traces, kind)
+        state.trace = traces.new_trace(kind, name, time.time())
+        state.traces.append(state.trace)
+        state.trace_last = state.trace_why = None
+        state.flash(f"tracing {name}")
+    state.log(f"trace on: {name}")
+
+
+def trace_fix(state, planet, radius, pos, now):
+    """Add this fix to the trace being flown. Call with the lock held.
+
+    A lake's first point also sets its level: the camera's height over the
+    reference sphere less water_below_cam_m, as it starts skimming the water.
+
+    The HUD's heights are not asked to vouch for the position, as survey
+    mode does: on foot they are often not shown, and on the metro they
+    contradicted good positions on 45 of 107 fixes (New Babbage, 2026-10-17).
+    The position is judged against the last point instead. One whose height
+    over the centre changed faster than TRACE_MAX_CLIMB is a misread: a 0
+    read as 6 moves the fix ~6 km and, at New Babbage, ~3 km up or down. One
+    that moved faster than SURVEY_MAX_SPEED is too (a dropped minus sign
+    keeps the height).
+    """
+    climb = None
+    if state.trace_last is not None:
+        last, then = state.trace_last
+        climb = abs(math.dist(pos, (0, 0, 0)) - math.dist(last, (0, 0, 0)))
+    if climb is not None and climb > TRACE_MAX_CLIMB * max(now - then, 1.0):
+        why = f"dropped: height jumped {climb:,.0f} m"
+    elif climb is not None and too_fast(last, then, pos, now):
+        why = "dropped: position jumped"
+    else:
+        why = traces.add_point(state.trace, planet, pos)
+        if why is None:
+            state.trace_last = (pos, now)
+            state.traces_dirty = True
+            if state.trace["kind"] == "lake" and "level" not in state.trace:
+                state.trace["level"] = round(
+                    math.dist(pos, (0, 0, 0)) - radius
+                    - state.cfg["water_below_cam_m"], 1)
+    state.trace_why = why
+    state.log(f"trace {state.trace['name']}: {why or 'added'}")
+
+
+def stop_trace(state):
+    """Stop tracing and save. A trace of fewer points than its kind needs
+    (traces.LEAST: two for a line, three for a lake) is dropped."""
+    with state.lock:
+        t, state.trace = state.trace, None
+        if t is None:
+            return
+        if len(t["points"]) < traces.LEAST[t["kind"]]:
+            state.traces.remove(t)
+            state.flash(f"{t['name']} dropped: too short")
+        else:
+            state.flash(f"saved {t['name']}: "
+                        f"{fmt_dist(traces.length(t))}")
+        state.traces_dirty = True
+    state.log(f"trace off: {t['name']}, {len(t['points'])} points")
+    save_traces(state, force=True)
+
+
+def save_traces(state, force=False, now=None):
+    """Write the traces if they changed and TRACES_SAVE_SECONDS have passed
+    since the last write, or at once with `force`. True if written."""
+    now = time.time() if now is None else now
+    with state.lock:
+        if not state.traces_dirty or (
+                not force and now - state.traces_saved < TRACES_SAVE_SECONDS):
+            return False
+        save_json(TRACES_FILE, state.traces, indent=None)
+        state.traces_dirty = False
+        state.traces_saved = now
+    return True
+
+
 def survey_name(wps):
     """First free 'survey-NNN'."""
     existing = {w["name"] for w in wps}
@@ -3206,6 +3310,8 @@ def survey_parts(state):
     surveying.
     """
     with state.lock:
+        if state.trace is not None:
+            return trace_parts(state.trace, state.trace_why)
         if not state.survey:
             return "", "", "", None
         cells = heightmap.cell_count(state.heightmap, state.planet)
@@ -3224,6 +3330,28 @@ def survey_parts(state):
             "\n".join(course[2:] + [f"fly {speed:.0f} m/s on {legs} legs"
                                     f" - stay below {top}"]),
             TURN_COLOUR if (g or {}).get("turn") else DIRECTIONS)
+
+
+def trace_parts(trace, why):
+    """survey_parts while tracing: how far it has come, and how to fly it."""
+    n = len(trace["points"])
+    top = (f" {trace['name']} - {fmt_dist(traces.length(trace))}, "
+           f"{n:,} point{'' if n == 1 else 's'}")
+    if trace["kind"] == "lake":
+        level = trace.get("level")
+        return ("LAKE" + top,
+                "skim the water: the first fix sets its level"
+                if level is None else f"water level {level:,.0f} m\n"
+                "fly right along the waterline, all round",
+                f"{why or 'last fix added'}\n"
+                "END LAKE closes it back to the start",
+                None)
+    return ("TRACE" + top,
+            "fly along it, right over it\n"
+            "about 30 m/s: a point every ~60 m",
+            f"{why or 'last fix added'}\n"
+            "END TRACE when you reach its end",
+            None)
 
 
 def course_lines(plan, g):
@@ -4233,6 +4361,11 @@ def run_overlay(state, cfg):
             survey_menu.add_command(
                 label=pattern, command=lambda p=pattern: picked(
                     "survey", lambda st: start_survey(st, p)))
+        survey_menu.add_separator()
+        for kind, label in traces.KINDS.items():
+            survey_menu.add_command(
+                label=label, command=lambda k=kind: picked(
+                    "trace", lambda st: start_trace(st, k)))
         with state.lock:
             plan = state.survey_saved
             if plan is None:
@@ -4250,6 +4383,9 @@ def run_overlay(state, cfg):
                     "survey", lambda st: resume_survey(st, skip=True)))
 
     def on_survey():
+        if state.trace is not None:
+            fire("trace", stop_trace)()
+            return
         if state.survey:
             fire("survey", stop_survey)()
             return
@@ -4384,8 +4520,9 @@ def run_overlay(state, cfg):
         if showing["panel"]:
             fix_lbl.config(text=render_location(state, with_status=False),
                            fg=colour)
-            if state.survey != bool(survey_block.winfo_manager()):
-                if state.survey:
+            busy = state.survey or state.trace is not None
+            if busy != bool(survey_block.winfo_manager()):
+                if busy:
                     survey_block.pack(fill="x", after=fix_lbl)
                 else:
                     survey_block.pack_forget()
@@ -4411,7 +4548,11 @@ def run_overlay(state, cfg):
                 show_report()               # a run just began: open its block
             view["was_analysing"] = bool(analysing)
             analyse_btn.config(text="STOP" if analysing else "ANALYSE")
-            survey_btn.config(text="END SURVEY" if state.survey else "SURVEY")
+            tracing = state.trace       # once: END can clear it meanwhile
+            survey_btn.config(
+                text=("END LAKE" if tracing["kind"] == "lake" else "END TRACE")
+                if tracing is not None
+                else "END SURVEY" if state.survey else "SURVEY")
             # Toast: what a save or an edit just reported replaces the health
             # line until it fades.
             toast = f">> {state.note}" if fresh else ""
@@ -4427,6 +4568,7 @@ def run_overlay(state, cfg):
             note.config(text=analysing or (state.note if fresh else ""),
                         fg=colour if (fresh or analysing) else DIM)
         save_heightmap(state)
+        save_traces(state)
         reposition_if_resized()
         if hud["on"]:               # hidden on purpose: keep_on_top shows it
             keep_on_top(root)
@@ -4481,6 +4623,7 @@ def cmd_run(args):
     state = State(cfg, load_waypoints())
     state.bodies = load_bodies()
     state.heightmap = load_heightmap()
+    state.traces = load_traces()
     state.survey_saved = load_json(SURVEY_FILE, None)
     state.log = make_logger(args.log)
     stop = threading.Event()
@@ -4497,6 +4640,7 @@ def cmd_run(args):
     finally:
         stop.set()
         save_heightmap(state, force=True)
+        save_traces(state, force=True)
 
 
 def cmd_calibrate(args):
