@@ -563,5 +563,163 @@
       "armistice": true,
       "source": "UEX 2026-10-08"
     }
+  },
+  "space -11785012,15091236,-2797 km": {
+    "scope": "space",
+    "system": "stanton",
+    "analysed": "2026-10-15 16:04",
+    "site_sys": [
+      -11785012430.9,
+      15091236267.8,
+      -2796936.5
+    ],
+    "samples": 10,
+    "duration_s": 57.960163831710815,
+    "kind": "fixed",
+    "label": "Lagrange station",
+    "station": {
+      "name": "CRU-L5 Beautiful Glen Station",
+      "body": "Crusader Lagrange Point 5",
+      "faction": "United Empire of Earth",
+      "services": [
+        "repair",
+        "refuel",
+        "clinic",
+        "shops",
+        "trade",
+        "habs"
+      ],
+      "pads": null,
+      "armistice": true,
+      "source": "UEX 2026-10-08"
+    }
+  },
+  "space -25045525,14463256,-1892 km": {
+    "scope": "space",
+    "system": "stanton",
+    "analysed": "2026-10-15 16:19",
+    "site_sys": [
+      -25045525397.5,
+      14463255763.1,
+      -1892021.0
+    ],
+    "samples": 34,
+    "duration_s": 60.04857325553894,
+    "kind": "fixed",
+    "label": "Lagrange station",
+    "station": {
+      "name": "ARC-L3 Modern Express Station",
+      "body": "ArcCorp Lagrange Point 3",
+      "faction": "United Empire of Earth",
+      "services": [
+        "repair",
+        "refuel",
+        "shops",
+        "trade",
+        "habs"
+      ],
+      "pads": null,
+      "armistice": true,
+      "source": "UEX 2026-10-08"
+    }
+  },
+  "space 3310460,-27979390,-2676298 km": {
+    "scope": "space",
+    "system": "stanton",
+    "analysed": "2026-10-15 16:31",
+    "site_sys": [
+      3310459639.8999996,
+      -27979390111.8,
+      -2676298024.7
+    ],
+    "samples": 30,
+    "duration_s": 58.42878794670105,
+    "kind": "fixed",
+    "label": "Lagrange station",
+    "station": {
+      "name": "Pyro Gateway (Stanton)",
+      "body": "Pyro Gateway (Stanton system)",
+      "faction": "United Empire of Earth",
+      "services": [
+        "refinery",
+        "repair",
+        "refuel",
+        "clinic",
+        "shops",
+        "trade",
+        "habs",
+        "cargo"
+      ],
+      "pads": "",
+      "armistice": true,
+      "source": "UEX 2026-10-08"
+    }
+  },
+  "space 51118174,-5269995,-4339547 km": {
+    "scope": "space",
+    "system": "stanton",
+    "analysed": "2026-10-15 16:49",
+    "site_sys": [
+      51118174079.899994,
+      -5269995019.2,
+      -4339547393.8
+    ],
+    "samples": 18,
+    "duration_s": 59.90149545669556,
+    "kind": "fixed",
+    "label": "jump point",
+    "station": {
+      "name": "Terra Gateway (Stanton)",
+      "body": "Terra Gateway (Stanton system)",
+      "faction": "United Empire of Earth",
+      "services": [
+        "refinery",
+        "repair",
+        "refuel",
+        "clinic",
+        "shops",
+        "trade",
+        "habs",
+        "cargo"
+      ],
+      "pads": "",
+      "armistice": true,
+      "source": "UEX 2026-10-08"
+    }
+  },
+  "nyx1": {
+    "planet": "nyx1",
+    "system": "nyx",
+    "radius_m": 1000000.0,
+    "analysed": "2026-10-16 07:09",
+    "kind": "rotating",
+    "site": {
+      "lat": 51.48703615885752,
+      "lon": -4.1994925562642464
+    },
+    "samples": 11,
+    "duration_s": 32.08696389198303,
+    "rho_m": 623081.7543599559,
+    "rho_local_m": 622711.4916704636,
+    "omega_deg_s": 0.040450538478821456,
+    "period_s": 8899.757915175442,
+    "sigma": 0.0033510887428020316,
+    "arc_deg": 1.3016753398353116,
+    "axis": [
+      0.0,
+      0.0,
+      1.0
+    ],
+    "axis_tilt_deg": 0.0,
+    "centre": [
+      6469339537.2251835,
+      -3794425278.549696,
+      294.83827167598065
+    ],
+    "star_distance_m": 7500001149.493377,
+    "declination_deg": -2.2523981355798025e-06,
+    "t_ref": 1792120184.4860075,
+    "subsolar_lon_ref": -66.71403084007272,
+    "label": "planet"
   }
 }
