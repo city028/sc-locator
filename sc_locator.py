@@ -2228,9 +2228,9 @@ def waypoint_text(w, around=None, bold=True):
     return "\n".join(lines)
 
 
-def export_waypoints(path, wps):
-    """Write waypoints to `path` as a list, the same format as waypoints.json."""
-    Path(path).write_text(json.dumps(wps, indent=2), encoding="utf-8")
+def export_json(path, data):
+    """Write waypoints or reports to `path` in the format of their own file."""
+    Path(path).write_text(json.dumps(data, indent=2), encoding="utf-8")
 
 
 IMPORT_NEAR_M = 1000.0   # an imported waypoint this close to one of ours asks
@@ -2424,6 +2424,211 @@ def set_report_notes(bodies, key, notes):
         rec["notes"] = notes
     else:
         rec.pop("notes", None)
+
+
+def stored_report_lines(rec):
+    """A report as the viewer shows it for a place you are not at."""
+    lines = spin.report_lines(rec)
+    if rec.get("station"):
+        lines += stations.report_lines(rec["station"], READOUT_COLS)
+    return lines
+
+
+def report_text(title, rec, lines):
+    """A report to paste into a chat such as Discord: the report itself in a
+    code block, so its columns stay lined up, then the notes."""
+    out = [f"**{title}** — {rec.get('system', 'unknown').title()}",
+           "```", *lines, "```"]
+    notes = (rec.get("notes") or "").strip()
+    if notes:
+        out.append(f"Notes: {notes}")
+    return "\n".join(out)
+
+
+# What each kind of report is placed and drawn by, from what the analysis
+# writes (spin.make_record, spin.make_space_record) and the report reads.
+REPORT_COMMON = {"body": "planet system radius_m kind site samples duration_s",
+                 "space": "system kind site_sys samples duration_s"}
+REPORT_NEEDS = {
+    ("body", "rotating"): "rho_m rho_local_m omega_deg_s period_s sigma "
+                          "arc_deg axis axis_tilt_deg centre star_distance_m "
+                          "declination_deg t_ref subsolar_lon_ref",
+    ("body", "moving"): "rho_m rho_local_m",
+    ("body", "static"): "period_longer_than_s",
+    ("space", "fixed"): "",
+    ("space", "moving"): "speed_mps direction",
+}
+_VECTORS = {"axis", "centre", "site_sys", "site_over", "direction"}
+_TEXTS = {"planet", "system", "kind", "label", "notes", "over", "analysed"}
+
+
+def _field_problem(key, v):
+    """What is wrong with one report field's value, or None."""
+    if key in _VECTORS:
+        ok = (isinstance(v, list) and len(v) == 3
+              and all(_is_number(c) for c in v))
+        return None if ok else f"{key} is not a position"
+    if key == "site":
+        ok = isinstance(v, dict) and all(_is_number(v.get(c))
+                                         for c in ("lat", "lon"))
+        return None if ok else "site is not a lat/lon"
+    if key == "station":
+        ok = isinstance(v, dict) and isinstance(v.get("name"), str)
+        return None if ok else "station has no name"
+    if key in _TEXTS:
+        return None if isinstance(v, str) else f"{key} is not text"
+    return None if _is_number(v) else f"{key} is not a number"
+
+
+def check_report_record(key, rec):
+    """What stops a report from a shared file being used; [] if nothing.
+
+    The fields required depend on what the report is: a body (rotating,
+    static or moving) or a place in space (fixed or moving). Label, notes,
+    station and the analysed date are optional; the date is replaced anyway.
+    """
+    if not isinstance(rec, dict):
+        return ["not a report"]
+    scope = "space" if rec.get("scope") == "space" else "body"
+    if "scope" in rec and rec["scope"] != "space":
+        return [f"scope '{rec['scope']}' unknown"]
+    kind = rec.get("kind")
+    if kind is None:
+        return ["kind missing"]
+    if (scope, kind) not in REPORT_NEEDS:
+        return [f"kind '{kind}' unknown for a {scope} report"]
+    need = (REPORT_COMMON[scope] + " " + REPORT_NEEDS[scope, kind]).split()
+    if "over" in rec or "site_over" in rec:
+        need += ["over", "site_over"]
+    problems = []
+    for field in need:
+        if field not in rec:
+            problems.append(f"{field} missing")
+        elif _field_problem(field, rec[field]):
+            problems.append(_field_problem(field, rec[field]))
+    for field in ("label", "notes", "station", "analysed"):
+        if field in rec and _field_problem(field, rec[field]):
+            problems.append(_field_problem(field, rec[field]))
+    if scope == "body" and isinstance(rec.get("planet"), str) \
+            and key != rec["planet"]:
+        problems.append(f"filed under '{key}', not its body '{rec['planet']}'")
+    if scope == "space" and not key.startswith("space "):
+        problems.append(f"'{key}' is not a place name")
+    return problems
+
+
+def read_report_file(path):
+    """(good, bad) from a shared reports file.
+
+    `good` is [(key, record)]; `bad` is [(key, problems)] for the records
+    that cannot be used. A file that is not a set of reports raises
+    ValueError.
+    """
+    try:
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"not a reports file: {exc}") from None
+    if not isinstance(data, dict):
+        raise ValueError("not a reports file: expected reports by place")
+    good, bad = [], []
+    for key, rec in data.items():
+        problems = check_report_record(key, rec)
+        if problems:
+            bad.append((f"'{key}'", problems))
+        else:
+            good.append((key, rec))
+    return good, bad
+
+
+def prepare_report_import(rec, now):
+    """A checked report as ours: dated now, with the notes saying so."""
+    out = dict(rec)
+    out["analysed"] = now
+    notes = (rec.get("notes") or "").strip()
+    out["notes"] = f"Imported on : {now}" + (f"\n{notes}" if notes else "")
+    return out
+
+
+def place_gap(a, b):
+    """Metres between two places in space, or None where they cannot be
+    compared. As spin.nearest_space matches them: a place that turns with a
+    body only by its position over that same body, any other by its system
+    position in the same system."""
+    if a.get("system") != b.get("system"):
+        return None
+    if a.get("site_over") is not None or b.get("site_over") is not None:
+        if a.get("over") != b.get("over") or None in (a.get("site_over"),
+                                                     b.get("site_over")):
+            return None
+        return math.dist(a["site_over"], b["site_over"])
+    return math.dist(a["site_sys"], b["site_sys"])
+
+
+def report_conflicts(key, rec, bodies):
+    """(same, nearby) for an imported report against ours.
+
+    `same` is our report under the same key, or None. `nearby` is
+    [(metres, key, report)] for our other places in space close enough to
+    count as the same place, nearest first.
+    """
+    same = bodies.get(key)
+    nearby = []
+    if rec.get("scope") == "space":
+        for k, q in bodies.items():
+            if k == key or not isinstance(q, dict) \
+                    or q.get("scope") != "space":
+                continue
+            gap = place_gap(rec, q)
+            if gap is not None and gap <= spin.SPACE_MATCH_M:
+                nearby.append((gap, k, q))
+        nearby.sort(key=lambda p: p[0])
+    return same, nearby
+
+
+def report_conflict_text(key, rec, same, nearby):
+    """The warning shown before an imported report that clashes is added.
+    With `same`, only No and Replace are offered: one key holds one report."""
+    def block(r):
+        lines = stored_report_lines(r)
+        notes = (r.get("notes") or "").strip()
+        if notes:
+            lines += [f"Notes    {line}" if i == 0 else f"         {line}"
+                      for i, line in enumerate(notes.splitlines())]
+        return "\n".join("    " + line for line in lines)
+
+    out = [f"'{rec.get('label') or key}' in the file clashes with your "
+           "reports.", "", "Imported:", block(rec)]
+    if same is not None:
+        out += ["", "Yours for the same "
+                + ("place:" if rec.get("scope") == "space" else "body:"),
+                block(same)]
+    if nearby:
+        out += ["", f"Within {fmt_dist(spin.SPACE_MATCH_M)} of yours, which "
+                "the app counts as the same place:"]
+        for gap, _, q in nearby:
+            out += [f"  {fmt_dist(gap)} away:", block(q)]
+    if same is not None:
+        out += ["", "Only one report is kept here: No keeps yours, Replace "
+                "takes theirs."]
+    else:
+        target = nearby[0][2].get("label") or nearby[0][1]
+        out += ["", "Yes adds it as well, No leaves it out, Replace puts it "
+                f"in place of '{target}'."]
+    return "\n".join(out)
+
+
+def import_report(bodies, key, rec, replace=None):
+    """Add an imported report in place, in place of the one under `replace`.
+
+    Checked before anything is removed, so a refused import loses nothing.
+    """
+    if replace is not None and replace not in bodies:
+        raise ValueError(f"no report for '{replace}'")
+    if key in bodies and key != replace:
+        raise ValueError(f"'{key}' already has a report")
+    if replace is not None:
+        del bodies[replace]
+    bodies[key] = rec
 
 
 def save_waypoint(state, name=None):

@@ -1363,8 +1363,6 @@ class WaypointEditor:
                             fg=FG, activebackground="#1d4f3a")
         self.menu.add_command(label="Copy", command=self.copy)
         self.menu.add_command(label="Export...", command=self.export)
-        self.menu.add_separator()
-        self.menu.add_command(label="Import...", command=self.import_file)
         scroll = ttk.Scrollbar(self.frame, orient="vertical",
                                command=self.tree.yview)
         self.tree.configure(yscrollcommand=scroll.set)
@@ -1421,11 +1419,10 @@ class WaypointEditor:
 
     def popup(self, event):
         row = self.tree.identify_row(event.y)
-        if row and row not in self.tree.selection():
+        if not row:
+            return
+        if row not in self.tree.selection():
             self.tree.selection_set(row)
-        on = "normal" if self.tree.selection() else "disabled"
-        for label in ("Copy", "Export..."):
-            self.menu.entryconfig(label, state=on)
         self.menu.tk_popup(event.x_root, event.y_root)
 
     def copy(self):
@@ -1456,7 +1453,7 @@ class WaypointEditor:
         if not path:
             return
         try:
-            self.scl.export_waypoints(path, wps)
+            self.scl.export_json(path, wps)
         except OSError as exc:
             messagebox.showerror("Export waypoints", str(exc),
                                  parent=self.frame)
@@ -1705,11 +1702,12 @@ class WaypointEditor:
         self.refresh()
 
 
-def ask_conflict(parent, text):
+def ask_conflict(parent, text, can_keep=True):
     """Yes, No or Replace for one clashing import, as ("yes" | "no" |
-    "replace", apply_to_all). Closing the window is No."""
+    "replace", apply_to_all). Closing the window is No. Without `can_keep`
+    there is no Yes: both cannot be kept."""
     win = tk.Toplevel(parent, bg=BG)
-    win.title("Import waypoints")
+    win.title("Import")
     win.transient(parent.winfo_toplevel())
     answer = {"action": "no"}
     to_all = tk.BooleanVar(value=False)
@@ -1729,6 +1727,8 @@ def ask_conflict(parent, text):
 
     for label, action in (("YES", "yes"), ("NO", "no"),
                           ("REPLACE", "replace")):
+        if action == "yes" and not can_keep:
+            continue
         ttk.Button(row, text=label, command=lambda a=action: choose(a)).pack(
             side="left", padx=(6, 0))
     win.grab_set()
@@ -1763,8 +1763,11 @@ class ReportViewer:
                                      state="readonly", values=("all",))
         self.sys_pick.pack(side="left")
         self.sys_pick.bind("<<ComboboxSelected>>", lambda e: self.refresh())
+        ttk.Button(bar, text="IMPORT", command=self.import_file).pack(
+            side="right")
 
-        self.tree = ttk.Treeview(self.frame, show="headings", selectmode="browse",
+        self.tree = ttk.Treeview(self.frame, show="headings",
+                                 selectmode="extended",
                                  columns=("place", "system", "kind", "analysed"))
         for name, width in (("place", 300), ("system", 80), ("kind", 85),
                             ("analysed", 150)):
@@ -1772,6 +1775,11 @@ class ReportViewer:
             set_column(self.tree, name, width, stretch=name == "place")
         self.tree.pack(side="left", fill="y")
         self.tree.bind("<<TreeviewSelect>>", lambda e: self.show_selected())
+        self.tree.bind("<Button-3>", self.popup)
+        self.menu = tk.Menu(self.tree, tearoff=False, font=mono(), bg=PANEL,
+                            fg=FG, activebackground="#1d4f3a")
+        self.menu.add_command(label="Copy", command=self.copy)
+        self.menu.add_command(label="Export...", command=self.export)
 
         right = tk.Frame(self.frame, bg=BG)
         right.pack(side="left", fill="both", expand=True, padx=(8, 0))
@@ -1786,8 +1794,115 @@ class ReportViewer:
             anchor="e", pady=(4, 0))
 
     def selected(self):
+        """The one selected place; None when none or several are."""
         sel = self.tree.selection()
-        return sel[0] if sel else None
+        return sel[0] if len(sel) == 1 else None
+
+    def chosen(self):
+        """The selected (key, report) pairs, in list order."""
+        _, bodies = snapshot(self.state)
+        return [(k, bodies[k]) for k in self.tree.selection() if k in bodies]
+
+    def popup(self, event):
+        row = self.tree.identify_row(event.y)
+        if not row:
+            return
+        if row not in self.tree.selection():
+            self.tree.selection_set(row)
+        self.menu.tk_popup(event.x_root, event.y_root)
+
+    def lines_for(self, key):
+        """The report lines for one place: live where you are now."""
+        st, scl = self.state, self.scl
+        with st.lock:
+            rec = st.bodies.get(key)
+            if rec is not None and scl.current_place(st)[0] == key:
+                return scl.body_report(st)   # live sun where you are now
+        return None if rec is None else scl.stored_report_lines(rec)
+
+    def copy(self):
+        texts = [self.scl.report_text(place_title(k, rec), rec,
+                                      self.lines_for(k) or [])
+                 for k, rec in self.chosen()]
+        if not texts:
+            return
+        self.frame.clipboard_clear()
+        self.frame.clipboard_append("\n\n".join(texts))
+        with self.state.lock:
+            self.state.flash(f"copied {len(texts)} report"
+                             + ("s" if len(texts) > 1 else ""))
+
+    def export(self):
+        reports = dict(self.chosen())
+        if not reports:
+            return
+        first = next(iter(reports))
+        path = filedialog.asksaveasfilename(
+            parent=self.frame, title="Export reports",
+            defaultextension=".json", filetypes=[("Reports", "*.json")],
+            initialfile=((reports[first].get("label") or first)
+                         if len(reports) == 1 else "reports") + ".json")
+        if not path:
+            return
+        try:
+            self.scl.export_json(path, reports)
+        except OSError as exc:
+            messagebox.showerror("Export reports", str(exc), parent=self.frame)
+            return
+        with self.state.lock:
+            self.state.flash(f"exported {len(reports)} to "
+                             f"{os.path.basename(path)}")
+
+    def import_file(self):
+        path = filedialog.askopenfilename(
+            parent=self.frame, title="Import reports",
+            filetypes=[("Reports", "*.json"), ("All files", "*.*")])
+        if not path:
+            return
+        st, scl = self.state, self.scl
+        try:
+            good, bad = scl.read_report_file(path)
+        except (OSError, ValueError) as exc:
+            messagebox.showerror("Import reports", str(exc), parent=self.frame)
+            return
+        now = time.strftime("%Y-%m-%d %H:%M")
+        added, replaced, declined = [], [], []
+        always = None                    # the answer ticked "apply to all"
+        for key, rec in good:
+            rec = scl.prepare_report_import(rec, now)
+            _, bodies = snapshot(st)
+            same, nearby = scl.report_conflicts(key, rec, bodies)
+            replace = None
+            if same is not None or nearby:
+                can_keep = same is None
+                action = always if always != "yes" or can_keep else None
+                if action is None:
+                    action, to_all = ask_conflict(
+                        self.frame,
+                        scl.report_conflict_text(key, rec, same, nearby),
+                        can_keep)
+                    if to_all:
+                        always = action
+                if action == "no":
+                    declined.append(key)
+                    continue
+                if action == "replace":
+                    replace = key if same is not None else nearby[0][1]
+            with st.lock:
+                try:
+                    scl.import_report(st.bodies, key, rec, replace)
+                except ValueError as exc:
+                    bad.append((f"'{key}'", [str(exc)]))
+                    continue
+            (replaced if replace else added).append(key)
+        with st.lock:
+            if added or replaced:
+                scl.save_json(scl.BODIES_FILE, st.bodies)
+            st.flash(f"imported {len(added) + len(replaced)} reports")
+        self.refresh()
+        messagebox.showinfo("Import reports", scl.import_summary(
+            os.path.basename(path), added, replaced, declined, bad),
+            parent=self.frame)
 
     def refresh(self):
         _, bodies = snapshot(self.state)
@@ -1800,7 +1915,7 @@ class ReportViewer:
         if seen != self.seen:
             self.seen = seen
             self.sys_pick.config(values=["all"] + systems)
-            chosen = self.selected()
+            chosen = self.tree.selection()
             self.tree.delete(*self.tree.get_children())
             shown = {k: v for k, v in bodies.items()
                      if pick == "all" or v.get("system", "?") == pick}
@@ -1810,25 +1925,17 @@ class ReportViewer:
                 self.tree.insert("", "end", iid=key, values=(
                     place_title(key, rec), rec.get("system", "?"),
                     rec.get("kind", "?"), rec.get("analysed", "")))
-            if chosen and self.tree.exists(chosen):
+            chosen = [k for k in chosen if self.tree.exists(k)]
+            if chosen:
                 self.tree.selection_set(chosen)
         self.show_report()          # every tick: the sun figures are live
 
     def show_report(self):
-        key = self.selected()
-        st, scl = self.state, self.scl
-        with st.lock:
-            rec = st.bodies.get(key)
-            here = rec is not None and scl.current_place(st)[0] == key
-        if rec is None:
-            lines = ["select a place on the left"]
-        elif here:
-            lines = scl.body_report(st)      # live sun where you are now
-        else:
-            lines = scl.spin.report_lines(rec)
-            if rec.get("station"):
-                lines += scl.stations.report_lines(rec["station"],
-                                                   scl.READOUT_COLS)
+        many = len(self.tree.selection())
+        lines = self.lines_for(self.selected())
+        if lines is None:
+            lines = [f"{many} places selected" if many > 1
+                     else "select a place on the left"]
         set_text(self.report, "\n".join(lines))
 
     def show_selected(self):
@@ -1842,7 +1949,7 @@ class ReportViewer:
         st, scl = self.state, self.scl
         with st.lock:
             if key is None:
-                st.flash("select a place first")
+                st.flash("select one place first")
                 return
             try:
                 scl.set_report_notes(st.bodies, key,
