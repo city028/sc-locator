@@ -14,7 +14,7 @@ import os
 import time
 import tkinter as tk
 import tkinter.font as tkfont
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, messagebox, simpledialog, ttk
 
 from PIL import Image, ImageTk
 
@@ -1363,6 +1363,8 @@ class WaypointEditor:
                             fg=FG, activebackground="#1d4f3a")
         self.menu.add_command(label="Copy", command=self.copy)
         self.menu.add_command(label="Export...", command=self.export)
+        self.menu.add_separator()
+        self.menu.add_command(label="Import...", command=self.import_file)
         scroll = ttk.Scrollbar(self.frame, orient="vertical",
                                command=self.tree.yview)
         self.tree.configure(yscrollcommand=scroll.set)
@@ -1387,6 +1389,8 @@ class WaypointEditor:
                                                                  padx=6)
         ttk.Button(row, text="SHOW ON MAP", command=self.show_on_map).pack(
             side="left")
+        ttk.Button(row, text="IMPORT", command=self.import_file).pack(
+            side="left", padx=6)
         # Deep space only: which body the star map shows it around.
         tk.Label(row, text="Shown around", font=mono(), fg=DIM, bg=BG).pack(
             side="left", padx=(18, 6))
@@ -1417,10 +1421,11 @@ class WaypointEditor:
 
     def popup(self, event):
         row = self.tree.identify_row(event.y)
-        if not row:
-            return
-        if row not in self.tree.selection():
+        if row and row not in self.tree.selection():
             self.tree.selection_set(row)
+        on = "normal" if self.tree.selection() else "disabled"
+        for label in ("Copy", "Export..."):
+            self.menu.entryconfig(label, state=on)
         self.menu.tk_popup(event.x_root, event.y_root)
 
     def copy(self):
@@ -1458,6 +1463,81 @@ class WaypointEditor:
             return
         with self.state.lock:
             self.state.flash(f"exported {len(wps)} to {os.path.basename(path)}")
+
+    def import_file(self):
+        path = filedialog.askopenfilename(
+            parent=self.frame, title="Import waypoints",
+            filetypes=[("Waypoints", "*.json"), ("All files", "*.*")])
+        if not path:
+            return
+        st, scl = self.state, self.scl
+        try:
+            good, bad = scl.read_import_file(path)
+        except (OSError, ValueError) as exc:
+            messagebox.showerror("Import waypoints", str(exc),
+                                 parent=self.frame)
+            return
+        now = time.strftime("%Y-%m-%d %H:%M:%S")
+        added, replaced, declined = [], [], []
+        always = None                    # the answer ticked "apply to all"
+        for w in good:
+            w = scl.prepare_import(w, now)
+            wps, _ = snapshot(st)
+            same, nearby = scl.import_conflicts(w, wps)
+            replace = None
+            if same is not None or nearby:
+                action = always
+                if action is None:
+                    action, to_all = ask_conflict(
+                        self.frame, scl.conflict_text(w, same, nearby))
+                    if to_all:
+                        always = action
+                if action == "no":
+                    declined.append(w["name"])
+                    continue
+                if action == "replace":
+                    replace = (same or nearby[0][1])["name"]
+                elif same is not None:
+                    name = self.ask_new_name(w["name"], wps)
+                    if name is None:
+                        declined.append(w["name"])
+                        continue
+                    w["name"] = name
+            with st.lock:
+                try:
+                    scl.import_waypoint(st.waypoints, w, replace)
+                except ValueError as exc:
+                    bad.append((f"'{w['name']}'", [str(exc)]))
+                    continue
+                if replace is not None and st.target == replace:
+                    st.target = w["name"]
+            (replaced if replace else added).append(w["name"])
+        with st.lock:
+            if added or replaced:
+                scl.save_json(scl.WAYPOINT_FILE, st.waypoints)
+            st.flash(f"imported {len(added) + len(replaced)} waypoints")
+        self.refresh()
+        messagebox.showinfo("Import waypoints", scl.import_summary(
+            os.path.basename(path), added, replaced, declined, bad),
+            parent=self.frame)
+
+    def ask_new_name(self, name, wps):
+        """A free name for an imported waypoint whose own is taken, or None."""
+        taken = {w["name"] for w in wps}
+        new = self.scl.free_name(wps, name)
+        while True:
+            new = simpledialog.askstring(
+                "Name taken", f"You already have a waypoint called '{name}'.\n"
+                "Name for the imported one:", initialvalue=new,
+                parent=self.frame)
+            if new is None:
+                return None
+            new = new.strip()
+            if new and new not in taken:
+                return new
+            messagebox.showerror("Name taken", f"'{new}' is taken too."
+                                 if new else "The name cannot be empty.",
+                                 parent=self.frame)
 
     def select(self, name):
         """Select a waypoint and scroll to it, clearing a filter that hides
@@ -1623,6 +1703,37 @@ class WaypointEditor:
             scl.save_json(scl.WAYPOINT_FILE, st.waypoints)
             st.flash(f"note saved on {name}")
         self.refresh()
+
+
+def ask_conflict(parent, text):
+    """Yes, No or Replace for one clashing import, as ("yes" | "no" |
+    "replace", apply_to_all). Closing the window is No."""
+    win = tk.Toplevel(parent, bg=BG)
+    win.title("Import waypoints")
+    win.transient(parent.winfo_toplevel())
+    answer = {"action": "no"}
+    to_all = tk.BooleanVar(value=False)
+    body = text_box(win, min(30, text.count("\n") + 2))
+    body.config(width=80, wrap="none")
+    set_text(body, text)
+    body.config(state="disabled")
+    body.pack(fill="both", expand=True, padx=10, pady=(10, 6))
+    ttk.Checkbutton(win, text="apply to all remaining conflicts",
+                    variable=to_all).pack(anchor="w", padx=10)
+    row = tk.Frame(win, bg=BG)
+    row.pack(anchor="e", padx=10, pady=10)
+
+    def choose(action):
+        answer["action"] = action
+        win.destroy()
+
+    for label, action in (("YES", "yes"), ("NO", "no"),
+                          ("REPLACE", "replace")):
+        ttk.Button(row, text=label, command=lambda a=action: choose(a)).pack(
+            side="left", padx=(6, 0))
+    win.grab_set()
+    win.wait_window()
+    return answer["action"], to_all.get()
 
 
 # ----------------------------------------------------------------------------

@@ -2203,14 +2203,16 @@ def filter_waypoints(wps, system, body, wtype="all"):
 TYPE_NAMES = {"poi": "point of interest", "survey": "survey"}
 
 
-def waypoint_text(w, around=None):
+def waypoint_text(w, around=None, bold=True):
     """A waypoint as a few lines to paste into a chat such as Discord.
 
     `around` is the body a deep-space waypoint is shown around, if any: out
-    there it is the only place a reader can find on their own map.
+    there it is the only place a reader can find on their own map. `bold`
+    marks the name up as Discord bold.
     """
     kind = TYPE_NAMES.get(w.get("type", "poi"))
-    lines = [f"**{w['name']}**" + (f" — {kind}" if kind else "")]
+    name = f"**{w['name']}**" if bold else w["name"]
+    lines = [name + (f" — {kind}" if kind else "")]
     system = w.get("system", "unknown").title()
     if w.get("frame") == "system":
         lines.append(f"{system} › deep space"
@@ -2229,6 +2231,187 @@ def waypoint_text(w, around=None):
 def export_waypoints(path, wps):
     """Write waypoints to `path` as a list, the same format as waypoints.json."""
     Path(path).write_text(json.dumps(wps, indent=2), encoding="utf-8")
+
+
+IMPORT_NEAR_M = 1000.0   # an imported waypoint this close to one of ours asks
+# What an imported waypoint may carry; anything else in the file is dropped.
+IMPORT_FIELDS = ("name", "planet", "system", "frame", "type", "x", "y", "z",
+                 "radius", "elev", "agl", "parent", "note")
+
+
+def _is_number(v):
+    return (isinstance(v, (int, float)) and not isinstance(v, bool)
+            and math.isfinite(v))
+
+
+def check_import_record(w):
+    """What stops a waypoint from a shared file being used; [] if nothing.
+
+    Every field a waypoint is placed by is required. Not every waypoint has
+    every field, though: radius is only on the planet frame, elev and agl only
+    where the HUD agreed with itself, and frame is missing on the oldest
+    (which are all planet frame). Those are checked only when present.
+    """
+    if not isinstance(w, dict):
+        return ["not a waypoint"]
+    problems = []
+    for key in ("name", "planet", "system"):
+        if not isinstance(w.get(key), str) or not w[key].strip():
+            problems.append(f"{key} missing" if key not in w
+                            else f"{key} is not a name")
+    if "type" not in w:
+        problems.append("type missing")
+    elif w["type"] not in WAYPOINT_TYPES:
+        problems.append(f"type '{w['type']}' unknown")
+    for key in ("x", "y", "z"):
+        if key not in w:
+            problems.append(f"{key} missing")
+        elif not _is_number(w[key]):
+            problems.append(f"{key} is not a number")
+    frame = w.get("frame", "planet")
+    if frame not in ("planet", "system"):
+        problems.append(f"frame '{frame}' unknown")
+    elif frame == "planet":
+        if "radius" not in w:
+            problems.append("radius missing")
+        elif not _is_number(w["radius"]) or w["radius"] <= 0:
+            problems.append("radius is not a size")
+    for key in ("elev", "agl"):
+        if w.get(key) is not None and not _is_number(w[key]):
+            problems.append(f"{key} is not a number")
+    for key in ("note", "parent"):
+        if key in w and not isinstance(w[key], str):
+            problems.append(f"{key} is not text")
+    return problems
+
+
+def read_import_file(path):
+    """(good, bad) from a shared waypoints file.
+
+    `bad` is [(label, problems)] for the records that cannot be used. A file
+    that is not a list of records at all raises ValueError.
+    """
+    try:
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"not a waypoints file: {exc}") from None
+    if not isinstance(data, list):
+        raise ValueError("not a waypoints file: expected a list of waypoints")
+    good, bad = [], []
+    for i, w in enumerate(data, 1):
+        problems = check_import_record(w)
+        if problems:
+            name = w.get("name") if isinstance(w, dict) else None
+            bad.append((f"'{name}'" if isinstance(name, str) and name.strip()
+                        else f"record {i}", problems))
+        else:
+            good.append(w)
+    return good, bad
+
+
+def prepare_import(w, now):
+    """A checked record as our waypoint: saved now, with the note saying so."""
+    out = {k: w[k] for k in IMPORT_FIELDS if k in w}
+    out["name"] = out["name"].strip()
+    out["frame"] = out.get("frame", "planet")
+    out["saved"] = now
+    note = (w.get("note") or "").strip()
+    out["note"] = f"Imported on : {now}" + (f"\n{note}" if note else "")
+    return out
+
+
+def waypoint_gap(a, b):
+    """Metres between two waypoints, or None where their coordinates cannot be
+    compared: planet-frame ones only on the same body, system-frame ones only
+    in the same system."""
+    frame = a.get("frame", "planet")
+    if frame != b.get("frame", "planet"):
+        return None
+    if a.get("system") != b.get("system"):
+        return None
+    if frame == "planet" and a["planet"] != b["planet"]:
+        return None
+    return math.dist((a["x"], a["y"], a["z"]), (b["x"], b["y"], b["z"]))
+
+
+def import_conflicts(w, wps, near_m=IMPORT_NEAR_M):
+    """(same_name, nearby) for an imported waypoint against ours.
+
+    `same_name` is our waypoint with its name, or None. `nearby` is
+    [(metres, waypoint)] for our others within near_m, nearest first.
+    """
+    same = next((q for q in wps if q["name"] == w["name"]), None)
+    nearby = []
+    for q in wps:
+        if q is same:
+            continue
+        gap = waypoint_gap(w, q)
+        if gap is not None and gap <= near_m:
+            nearby.append((gap, q))
+    nearby.sort(key=lambda p: p[0])
+    return same, nearby
+
+
+def conflict_text(w, same, nearby):
+    """The warning shown before an imported waypoint that clashes is added."""
+    def block(q):
+        lines = waypoint_text(q, bold=False).splitlines()
+        if q.get("saved"):
+            lines.insert(1, f"saved {q['saved']}")
+        return "\n".join("    " + line for line in lines)
+
+    out = [f"'{w['name']}' in the file clashes with your waypoints.", "",
+           "Imported:", block(w)]
+    if same is not None:
+        gap = waypoint_gap(w, same)
+        out += ["", "Has the same name as yours"
+                + (f" ({fmt_dist(gap)} away):" if gap is not None else ":"),
+                block(same)]
+    if nearby:
+        out += ["", f"Is within {IMPORT_NEAR_M:,.0f} m of yours:"]
+        for gap, q in nearby:
+            out += [f"  {fmt_dist(gap)} away:", block(q)]
+    target = (same or nearby[0][1])["name"]
+    out += ["", "Yes adds it as well"
+            + (" under a new name" if same is not None else "")
+            + f", No leaves it out, Replace puts it in place of '{target}'."]
+    return "\n".join(out)
+
+
+def free_name(wps, name):
+    """`name`, or the first of 'name (2)', 'name (3)', ... nobody has."""
+    taken = {w["name"] for w in wps}
+    n, out = 2, name
+    while out in taken:
+        out, n = f"{name} ({n})", n + 1
+    return out
+
+
+def import_waypoint(wps, w, replace=None):
+    """Add an imported waypoint in place, in place of the one named `replace`.
+
+    Checked before anything is removed, so a refused import loses nothing.
+    """
+    if replace is not None and not any(q["name"] == replace for q in wps):
+        raise ValueError(f"no waypoint named '{replace}'")
+    if any(q["name"] == w["name"] and q["name"] != replace for q in wps):
+        raise ValueError(f"'{w['name']}' already exists")
+    if replace is not None:
+        delete_waypoint(wps, replace)
+    wps.append(w)
+
+
+def import_summary(source, added, replaced, declined, bad):
+    """What an import did, for the message at its end."""
+    out = [f"From {source}:",
+           f"  {len(added)} added",
+           f"  {len(replaced)} replaced one of yours",
+           f"  {len(declined)} left out by you",
+           f"  {len(bad)} skipped with problems"]
+    if bad:
+        out.append("")
+        out += [f"{label}: {', '.join(problems)}" for label, problems in bad]
+    return "\n".join(out)
 
 
 def set_report_notes(bodies, key, notes):
