@@ -397,6 +397,11 @@ BODY_RADII_KM = {
     "pyrov": 7812.3, "terminus": 285.0, "pyrovi": 285.0,
     "adir": 431.0, "fairo": 392.24, "fuego": 465.67, "ignis": 393.17,
     "vatra": 365.81, "vuur": 452.83,
+    # Nyx I: the HUD prints 1,000,000 and the identity holds against it to the
+    # millimetre (3,052.095 m both ways). Without an entry the radius was voted
+    # on, and a misread 16,066 let fixes 625 km from the centre through
+    # (2026-10-16).
+    "nyx1": 1000.0,
 }
 BODY_RADII = {k: v * 1000.0 for k, v in BODY_RADII_KM.items()}
 
@@ -1414,6 +1419,7 @@ class State:
         self.heights_bad = 0     # height reads dropped for failing the identity
         self.heights_time = 0.0  # when heights were last believed
         self.heights_conflict = False   # last frame's heights contradicted it
+        self.heights_seen = None # (elev, alt, |pos| - radius, radius) when they did
         self.game_up = None      # True / False / None when it cannot be told
         self.planet_misses = 0   # frames whose Planet row could not be read
         self.radius_from_table = 0  # frames whose radius reading was overruled
@@ -1816,6 +1822,7 @@ class State:
                     # the disagreement is as likely to be the position's fault
                     # as the heights'.
                     self.heights_conflict = True
+                    self.heights_seen = (elev, alt, r - radius, radius)
                     self.heights_bad += 1
                     if self.heights_bad == 1:
                         self.log(f"heights dropped: elev {elev:,.1f} + alt "
@@ -2667,7 +2674,10 @@ def save_waypoint(state, name=None):
         # different from a good one. A refused save costs a second.
         if state.heights_conflict:
             state.flash("HUD heights disagree with the position - not saved")
-            state.log(f"save refused: heights contradict pos={state.pos}")
+            elev, alt, h, radius = state.heights_seen
+            state.log(f"save refused: heights contradict pos={state.pos}: "
+                      f"elev {elev:,.1f} + alt {alt:,.1f} != {h:,.1f} "
+                      f"(radius {radius:,.0f})")
             return
         try:
             name = add_waypoint(state.waypoints, state.planet, state.pos,

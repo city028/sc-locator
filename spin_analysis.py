@@ -393,6 +393,12 @@ def subsolar_longitude(ship_lon, ship_sys, centre, axis, star=(0.0, 0.0, 0.0)):
 SPIN_MATCH_M = 10_000.0
 SPIN_MATCH_FRACTION = 1e-6      # of the distance from the centre, if larger
 
+# Nor closer to the spin axis than this. The angle is measured around the
+# axis, and the centre is only known to some hundreds of metres (Nyx I's fit:
+# 370 m), so near a pole it can come out anywhere: 0.49 km from Nyx I's axis
+# it re-anchored by -42.8 deg (2026-10-16). At 1,000 km, 370 m is 0.02 deg.
+SPIN_MIN_AXIS_M = 1_000_000.0
+
 # The rate is corrected from the old anchor only when that is this far back --
 # closer, the timing of a frame is a noticeable part of the drift -- and only
 # by up to this much of itself, beyond which whole turns may have been lost.
@@ -419,6 +425,8 @@ def measured_subsolar(rec, sys_pos, pos):
     centre, axis = rec["centre"], rec.get("axis") or (0.0, 0.0, 1.0)
     v = _sub(sys_pos, centre)
     r = _norm(pos)
+    if math.hypot(pos[0], pos[1]) < SPIN_MIN_AXIS_M:
+        return None
     tol = max(SPIN_MATCH_M, SPIN_MATCH_FRACTION * r)
     if abs(_norm(v) - r) > tol or abs(_dot(v, axis) - pos[2]) > tol:
         return None
