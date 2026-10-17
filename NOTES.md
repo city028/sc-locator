@@ -719,6 +719,10 @@ on transition from a working state.
 A click that lands beside a button is logged with its widget, so it is
 distinguishable from one that never reached the window at all.
 
+A save refused because the HUD heights contradict the position logs the
+numbers that disagreed (elevation + altitude against |position| - radius, and
+the radius used), so a log shows which side was misread.
+
 `--log` belongs to `run`: `sc-locator.exe run --log session.log`. Placed
 before the subcommand it is taken as the command name and refused.
 
@@ -1120,6 +1124,12 @@ against the analysis's 5.083 h. A round number, so very likely the game's own.
 It saved once and not again. microTech, 17 minutes later: `+11.075 deg out`
 after eight days, a day of 4.1200 h against 4.1227 h -- round again.
 
+**Not near the axis (2026-10-16).** The anchor is an angle around the spin
+axis, and the centre is only known to some hundreds of metres (Nyx I's fit:
+370 m). Close to a pole that is a large angle: 0.49 km from Nyx I's axis a
+frame re-anchored the record by -42.8 deg. Frames within 1,000 km of the axis
+(`SPIN_MIN_AXIS_M`) no longer count; at that distance 370 m is 0.02 deg.
+
 ## Height map (survey mode, 2026-10-14)
 
 `ElevationUnderCam` is the ground's height over the reference sphere under
@@ -1357,14 +1367,61 @@ fits with its name (`starmap.fit_view`), worked out for the default angle so
 turning the view does not change it. The star stays in the middle, as it is
 what the map turns about. Stanton opened 1.6 times closer, Pyro 1.1.
 
+## Sharing waypoints and reports (2026-10-17)
+
+Both tables take several rows (Ctrl/Shift-click); right-click gives **Copy**
+and **Export**, and an **IMPORT** button reads a file someone sent. Export
+writes the selected records in the format of their own file
+(`waypoints.json` is a list, `bodies.json` a dict by place), so an export
+can be imported or dropped in as is.
+
+Copy is meant for Discord. A waypoint is a few readable lines (name, type,
+system and body, lat/lon, height, note), not coordinates: the user chose
+readable over re-importable. A report goes in a ``` code block, because its
+lines are column-aligned and Discord's proportional font breaks them.
+
+What an import checks, and why:
+
+- **Fields.** Everything a record is placed or drawn by is required, but not
+  every record has every field: `radius` only in the planet frame, `elev` and
+  `agl` only where the HUD agreed, `frame` missing on the oldest waypoints
+  (all planet frame). Reports need different fields per kind (rotating,
+  static or moving body; fixed or moving place), taken from what
+  `spin.make_record` / `make_space_record` write and `report_lines` reads.
+  Bad records are skipped and listed; the rest still import.
+- **The date.** `saved` / `analysed` become the import time, and the note
+  starts `Imported on : <date>`. A report's `t_ref` (the sun's phase anchor)
+  is left alone: it is a measurement, not a date.
+- **Waypoint clashes.** The same name, or within 1,000 m of one of yours.
+  Distances only compare like with like: planet-frame waypoints on the same
+  body (each body's coordinates are its own), system-frame ones in the same
+  system. Yes on a name clash asks for a new name, as names are keys.
+- **Report clashes.** A body has one report, so the same body offers only
+  No / Replace. Places in space clash within 20 km, the app's own
+  same-place distance (`SPACE_MATCH_M`): anything closer would compete with
+  yours when you ANALYSE or open the report there. A place that turns with a
+  body is compared by its position over that body, as `nearest_space` does;
+  its system position is only where it was during the analysis.
+- **Order.** Each accepted record is added before the next is checked, so
+  records in one file are also checked against each other. A Replace is
+  checked before anything is removed, so a refused one loses nothing. The
+  file is saved once at the end.
+
+Replacing a body report replaces what the sun times and the star map's
+placing of that body come from.
+
 ## Still open
 
 - `HDG` is course over ground, not facing — wrong whenever hovering, strafing
   or reversing. Still mislabelled on the overlay.
 - `to_latlon` divides by zero on `(0,0,0)` — currently unreachable, one gate
   change away.
-- `BODY_RADII` covers Stanton and Pyro only; Nyx is absent. Harmless, since the
-  HUD's own `Radius` wins and the table is only a fallback.
+- `BODY_RADII` covers Stanton, Pyro and Nyx I; the rest of Nyx is absent.
+  Not harmless: without an entry the radius is voted on, and on Nyx I a
+  misread 16,066 let fixes 625 km from the centre through (2026-10-16). Nyx I
+  prints 1,000,000 and the height identity holds against it to the millimetre
+  (3,052.095 m both ways), so it is in the table now. Add the other Nyx bodies
+  the same way as they are visited.
 - The panel rebuilds its waypoint list once a second to refresh distances. The
   selection is restored by name, but a `Listbox` is the wrong widget for rows
   that change under the user.

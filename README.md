@@ -28,6 +28,7 @@ game.
   - [Body analysis: spin, sun, sunset](#body-analysis-spin-sun-sunset)
   - [Places in space and station info](#places-in-space-and-station-info)
   - [Main window: star map, waypoints, reports](#main-window-star-map-waypoints-reports)
+  - [Sharing waypoints and reports](#sharing-waypoints-and-reports)
   - [Survey mode: your own height map](#survey-mode-your-own-height-map)
   - [Automatic backups](#automatic-backups)
 - [The panel, button by button](#the-panel-button-by-button)
@@ -303,9 +304,11 @@ quits the program.
   longitude +90/-90, OM-5/OM-6 at 0/180). The view stays over the marker as
   the planet turns, until you drag it.
 - **Waypoints**: every waypoint in a table; rename, delete, and add a note.
-  Filter by system, body and type (all, POI or Survey).
+  Filter by system, body and type (all, POI or Survey). Copy, export and
+  import them, see [Sharing](#sharing-waypoints-and-reports).
 - **Reports**: every analysis result, with your own notes saved alongside it
   in `bodies.json`. A new ANALYSE run of the same place keeps the notes.
+  Copy, export and import them the same way.
 
 Sizes on the system map are not to scale (a planet would be smaller than a
 pixel); positions are.
@@ -314,6 +317,40 @@ The window's text follows the Windows scale (Settings > Display > Scale) of
 the screen it is on, so on a small second screen raise that screen's scale
 to make the text bigger. Drag the window to another screen and its text
 resizes within a second. The overlay keeps the size it starts with.
+
+### Sharing waypoints and reports
+
+In the **Waypoints** and **Reports** tabs, Ctrl-click or Shift-click to
+select several rows, then right-click one of them:
+
+- **Copy** puts them on the clipboard, ready to paste into Discord. A
+  waypoint becomes a few readable lines (name, type, system and body,
+  latitude/longitude, height, note); a report is pasted in a code block so its
+  columns stay lined up, with your notes below it.
+- **Export...** saves them to a file you choose, in the same format as
+  `waypoints.json` or `bodies.json`. Send that file to a friend.
+
+**IMPORT** (next to SHOW ON MAP in the Waypoints tab, top right in the
+Reports tab) reads a file someone sent you. Each record is checked first:
+
+- Records missing a field they need, or with a field that makes no sense,
+  are skipped. The rest are imported, and a summary at the end lists what was
+  added, replaced, left out, and skipped with the reason.
+- Imported records get the import date and time, and their note starts with
+  `Imported on : <date>`, followed by the sender's own note.
+- A **waypoint** with the same name as one of yours, or within 1,000 m of one
+  of yours on the same body (in the same system for deep space), shows both
+  in full and asks: **Yes** adds it as well (with the same name, you are asked
+  for a new one), **No** leaves it out, **Replace** puts it in place of yours.
+- A **report** for a body you already have a report for offers only **No**
+  (keep yours) or **Replace** (take theirs): one report is kept per body. A
+  place in space within 20 km of one of yours (the distance at which the app
+  treats two places as the same) asks Yes / No / Replace.
+- Tick **apply to all remaining conflicts** to use the same answer for the
+  rest of that file.
+
+Replacing a body's report changes the sun times and where the star map
+places that body, as they come from it.
 
 ### Survey mode: your own height map
 
@@ -473,9 +510,11 @@ All next to the `.exe`:
 | `survey.json` | the last survey square, to resume it |
 | `bak/` | automatic backups of the files above |
 
-To move to a new PC, copy the whole folder. To share waypoints with a friend,
-send them `waypoints.json` (it replaces theirs, so they should merge by hand
-if they have their own).
+To move to a new PC, copy the whole folder. To share waypoints or reports with
+a friend, use **Export...** and **IMPORT** (see
+[Sharing](#sharing-waypoints-and-reports)) rather than sending the whole file:
+an import checks each record and asks before replacing anything they
+already have.
 
 ---
 
@@ -526,8 +565,8 @@ command prompt, reproduce it, and attach `session.log`.
 
 - `HDG` is your direction of **travel**, not the way the ship is facing. It is
   wrong while hovering, strafing or reversing.
-- The built-in radius table covers **Stanton and Pyro**. Other systems (Nyx)
-  use the radius the HUD prints, which OCR reads less reliably.
+- The built-in radius table covers **Stanton, Pyro and Nyx I**. Other Nyx
+  bodies use the radius the HUD prints, which OCR reads less reliably.
 - Distance and bearing to a waypoint only work while you are on the same body.
 - The analysis assumes every body spins the same way as the ones measured so
   far. The report's `Check` line warns if a result disagrees.
