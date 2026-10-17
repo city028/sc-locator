@@ -2200,6 +2200,37 @@ def filter_waypoints(wps, system, body, wtype="all"):
     return shown, systems, bodies
 
 
+TYPE_NAMES = {"poi": "point of interest", "survey": "survey"}
+
+
+def waypoint_text(w, around=None):
+    """A waypoint as a few lines to paste into a chat such as Discord.
+
+    `around` is the body a deep-space waypoint is shown around, if any: out
+    there it is the only place a reader can find on their own map.
+    """
+    kind = TYPE_NAMES.get(w.get("type", "poi"))
+    lines = [f"**{w['name']}**" + (f" — {kind}" if kind else "")]
+    system = w.get("system", "unknown").title()
+    if w.get("frame") == "system":
+        lines.append(f"{system} › deep space"
+                     + (f", near {around.title()}" if around else ""))
+    else:
+        lat, lon, _ = to_latlon(w["x"], w["y"], w["z"])
+        lines.append(f"{system} › {w['planet'].title()}")
+        lines.append(f"lat {lat:+.3f}  lon {lon:+.3f}  · "
+                     + " ".join(describe_height(w).split()))
+    note = (w.get("note") or "").strip()
+    if note:
+        lines.append(f"Note: {note}")
+    return "\n".join(lines)
+
+
+def export_waypoints(path, wps):
+    """Write waypoints to `path` as a list, the same format as waypoints.json."""
+    Path(path).write_text(json.dumps(wps, indent=2), encoding="utf-8")
+
+
 def set_report_notes(bodies, key, notes):
     """Set the notes on an analysis report in place. Empty removes them."""
     rec = bodies.get(key)

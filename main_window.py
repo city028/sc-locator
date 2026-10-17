@@ -14,7 +14,7 @@ import os
 import time
 import tkinter as tk
 import tkinter.font as tkfont
-from tkinter import messagebox, ttk
+from tkinter import filedialog, messagebox, ttk
 
 from PIL import Image, ImageTk
 
@@ -1353,11 +1353,16 @@ class WaypointEditor:
         self.body_pick.bind("<<ComboboxSelected>>", lambda e: self.refresh())
         type_pick.bind("<<ComboboxSelected>>", lambda e: self.refresh())
 
-        self.tree = ttk.Treeview(self.frame, show="headings", selectmode="browse",
+        self.tree = ttk.Treeview(self.frame, show="headings",
+                                 selectmode="extended",
                                  columns=[n for n, _ in self.COLUMNS])
         for name, width in self.COLUMNS:
             self.tree.heading(name, text=name.upper())
             set_column(self.tree, name, width, stretch=name == "note")
+        self.menu = tk.Menu(self.tree, tearoff=False, font=mono(), bg=PANEL,
+                            fg=FG, activebackground="#1d4f3a")
+        self.menu.add_command(label="Copy", command=self.copy)
+        self.menu.add_command(label="Export...", command=self.export)
         scroll = ttk.Scrollbar(self.frame, orient="vertical",
                                command=self.tree.yview)
         self.tree.configure(yscrollcommand=scroll.set)
@@ -1366,6 +1371,7 @@ class WaypointEditor:
         scroll.pack(side="right", fill="y")
         self.tree.pack(fill="both", expand=True)
         self.tree.bind("<<TreeviewSelect>>", self.on_select)
+        self.tree.bind("<Button-3>", self.popup)
 
         row = tk.Frame(edit, bg=BG)
         row.pack(fill="x")
@@ -1398,8 +1404,60 @@ class WaypointEditor:
             anchor="e", pady=(4, 0))
 
     def selected(self):
+        """The one selected waypoint; None when none or several are."""
         sel = self.tree.selection()
-        return sel[0] if sel else None
+        return sel[0] if len(sel) == 1 else None
+
+    def chosen(self):
+        """The selected waypoint records, in list order."""
+        names = self.tree.selection()
+        wps, _ = snapshot(self.state)
+        by_name = {w["name"]: w for w in wps}
+        return [by_name[n] for n in names if n in by_name]
+
+    def popup(self, event):
+        row = self.tree.identify_row(event.y)
+        if not row:
+            return
+        if row not in self.tree.selection():
+            self.tree.selection_set(row)
+        self.menu.tk_popup(event.x_root, event.y_root)
+
+    def copy(self):
+        _, bodies = snapshot(self.state)
+        placed = {sys: starmap.placed_bodies(bodies, sys)
+                  for sys in starmap.SYSTEMS}
+        texts = []
+        for w in self.chosen():
+            around = starmap.attached_body(w, placed.get(w.get("system"), {}))
+            texts.append(self.scl.waypoint_text(w, around))
+        if not texts:
+            return
+        self.frame.clipboard_clear()
+        self.frame.clipboard_append("\n\n".join(texts))
+        with self.state.lock:
+            self.state.flash(f"copied {len(texts)} waypoint"
+                             + ("s" if len(texts) > 1 else ""))
+
+    def export(self):
+        wps = self.chosen()
+        if not wps:
+            return
+        path = filedialog.asksaveasfilename(
+            parent=self.frame, title="Export waypoints",
+            defaultextension=".json", filetypes=[("Waypoints", "*.json")],
+            initialfile=(wps[0]["name"] if len(wps) == 1 else "waypoints")
+            + ".json")
+        if not path:
+            return
+        try:
+            self.scl.export_waypoints(path, wps)
+        except OSError as exc:
+            messagebox.showerror("Export waypoints", str(exc),
+                                 parent=self.frame)
+            return
+        with self.state.lock:
+            self.state.flash(f"exported {len(wps)} to {os.path.basename(path)}")
 
     def select(self, name):
         """Select a waypoint and scroll to it, clearing a filter that hides
@@ -1449,13 +1507,14 @@ class WaypointEditor:
         self.seen = seen
         self.sys_pick.config(values=["all"] + systems)
         self.body_pick.config(values=["all"] + bodies)
-        chosen = self.selected()
+        chosen = self.tree.selection()
         self.tree.delete(*self.tree.get_children())
         for w in sorted(shown, key=lambda q: (q.get("system", ""), q["planet"],
                                             q["name"].lower())):
             self.tree.insert("", "end", iid=w["name"],
                              values=self.row_values(w, placed))
-        if chosen and self.tree.exists(chosen):
+        chosen = [n for n in chosen if self.tree.exists(n)]
+        if chosen:
             self.tree.selection_set(chosen)
         else:
             self.on_select()
@@ -1506,7 +1565,7 @@ class WaypointEditor:
         name = self.selected()
         if name is None:
             with self.state.lock:
-                self.state.flash("select a waypoint first")
+                self.state.flash("select one waypoint first")
             return
         self.on_show(name)
 
@@ -1515,7 +1574,7 @@ class WaypointEditor:
         st, scl = self.state, self.scl
         with st.lock:
             if old is None:
-                st.flash("select a waypoint first")
+                st.flash("select one waypoint first")
                 return
             try:
                 scl.rename_waypoint(st.waypoints, old, new)
@@ -1553,7 +1612,7 @@ class WaypointEditor:
         st, scl = self.state, self.scl
         with st.lock:
             if name is None:
-                st.flash("select a waypoint first")
+                st.flash("select one waypoint first")
                 return
             try:
                 scl.set_waypoint_note(st.waypoints, name,
