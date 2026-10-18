@@ -48,6 +48,7 @@ if str(HERE) not in sys.path:            # the maths lives beside this file
 import heightmap                         # noqa: E402
 import spin_analysis as spin             # noqa: E402
 import stations                          # noqa: E402
+import subtypes                          # noqa: E402
 import survey                            # noqa: E402
 import traces                            # noqa: E402
 
@@ -78,6 +79,13 @@ SURVEY_MAX_SPEED = 3000.0                # m/s
 # Fastest a trace point may climb or drop since the last one. The metro
 # changed height at ~20 m/s; a misread digit, by kilometres in seconds.
 TRACE_MAX_CLIMB = 100.0                  # m/s
+# Fastest a trace point may have moved since the last one, by kind. A railway
+# is flown fast for an overview (railway-001: ~350 m/s, up to 650); a lake is
+# skimmed slowly (lake-002, microTech 2026-10-18: ~5 m/s, at most 51), where a
+# misread 600 m off the shore came in at 154 m/s. A sea is too big to skim
+# that slowly, so a misread like that one gets through there.
+TRACE_MAX_SPEED = {"railway": SURVEY_MAX_SPEED, "lake": 100.0,
+                   "sea": 1000.0, "waterway": 200.0}               # m/s
 # A survey starting this close to a survey waypoint does not add another.
 SURVEY_MARK_SPACING_M = 5000.0
 
@@ -139,6 +147,9 @@ DEFAULT_CONFIG = {
     # HUD cannot give it: over a microTech lake its ground read up to 73 m
     # above the water, neither the bed nor the surface (2026-10-17).
     "water_below_cam_m": 2.0,
+    # A waterway is drawn this wide (to scale) on the height map. Each one
+    # keeps the width it started with, as width_m in traces.json.
+    "waterway_width_m": 30.0,
     "stale_after": 3.0,                # seconds before a fix is flagged stale
     "default_radius": 1000000.0,         # used when the zone is not in BODY_RADII
     "min_move": 20.0,                    # metres moved before heading is updated
@@ -234,6 +245,9 @@ def backfill_systems(wps):
 # What a waypoint is for: a place you want to find again, or where a survey
 # started. Kept apart so the survey markers do not crowd the star map.
 WAYPOINT_TYPES = ("poi", "survey")
+# What kind of place it is: subtypes.SUBTYPES, stored as "" when not said and
+# shown in the pickers as this.
+NO_SUB = "none"
 
 
 def backfill_types(wps):
@@ -253,11 +267,35 @@ def backfill_types(wps):
     return changed
 
 
+def default_qt(frame):
+    """Whether a new waypoint can be jumped to, until it is set by hand.
+
+    Out in deep space what gets marked is a station or a jump point, and
+    those have quantum markers. On a body it is mostly your own spot, which
+    has none: you jump near it and fly the rest.
+    """
+    return frame == "system"
+
+
+def backfill_sub_qt(wps):
+    """Give older waypoints a SUB (empty) and a QT (see default_qt).
+    Returns True if any were changed."""
+    changed = False
+    for w in wps:
+        if "sub" not in w:
+            w["sub"] = ""
+            changed = True
+        if "qt" not in w:
+            w["qt"] = default_qt(w.get("frame", "planet"))
+            changed = True
+    return changed
+
+
 def load_waypoints():
-    """Waypoints from disk, with any missing system or type filled in and
-    saved back."""
+    """Waypoints from disk, with any missing system, type, SUB or QT filled
+    in and saved back."""
     wps = load_json(WAYPOINT_FILE, [])
-    if backfill_systems(wps) | backfill_types(wps):
+    if backfill_systems(wps) | backfill_types(wps) | backfill_sub_qt(wps):
         save_json(WAYPOINT_FILE, wps)
     return wps
 
@@ -1471,6 +1509,7 @@ class State:
         self.traces = []         # traced lines, see traces.py: TRACES_FILE
         self.trace = None        # the one being traced, also in self.traces
         self.trace_last = None   # (pos, time) of its last point
+        self.trace_held = None   # (planet, pos, time): first fix, unconfirmed
         self.trace_why = None    # why the last fix added no point, or None
         self.traces_dirty = False
         self.traces_saved = 0.0
@@ -2124,8 +2163,11 @@ def auto_name(wps, planet):
 
 
 def add_waypoint(wps, planet, pos, radius, name=None, elev=None, agl=None,
-                 system=None, frame="planet", wtype="poi"):
+                 system=None, frame="planet", wtype="poi", sub="", qt=None):
     """Append a waypoint in place and return its name. None auto-names it.
+
+    `sub` is what kind of place it is (subtypes.SUBTYPES, or "" for not
+    said) and `qt` whether it can be jumped to; None takes default_qt.
 
     `elev` is the terrain's height over the reference sphere at this spot and
     `agl` how far above that terrain you were. Both are recorded only when the
@@ -2150,6 +2192,8 @@ def add_waypoint(wps, planet, pos, radius, name=None, elev=None, agl=None,
         # which is the only one that exists with no body in range.
         "frame": frame,
         "type": wtype,
+        "sub": sub,
+        "qt": default_qt(frame) if qt is None else bool(qt),
         "x": x, "y": y, "z": z,
         "saved": time.strftime("%Y-%m-%d %H:%M:%S"),
     }
@@ -2196,6 +2240,35 @@ def set_waypoint_note(wps, name, note):
         target.pop("note", None)
 
 
+def set_waypoint_sub(wps, name, sub):
+    """Set what kind of place a waypoint is: one of subtypes.SUBTYPES, or ""
+    for not said."""
+    target = next((w for w in wps if w["name"] == name), None)
+    if target is None:
+        raise ValueError(f"no waypoint named '{name}'")
+    if sub and sub not in subtypes.SUBTYPES:
+        raise ValueError(f"'{sub}' is not a SUB")
+    target["sub"] = sub
+
+
+def set_waypoint_qt(wps, name, qt):
+    """Set whether a waypoint can be quantum travelled to."""
+    target = next((w for w in wps if w["name"] == name), None)
+    if target is None:
+        raise ValueError(f"no waypoint named '{name}'")
+    target["qt"] = bool(qt)
+
+
+def edit_waypoint(wps, old, new, sub, qt):
+    """Rename and set SUB and QT in one go, as the overlay's EDIT row does.
+    Everything is checked before anything changes."""
+    if sub and sub not in subtypes.SUBTYPES:
+        raise ValueError(f"'{sub}' is not a SUB")
+    rename_waypoint(wps, old, new)
+    set_waypoint_sub(wps, new.strip(), sub)
+    set_waypoint_qt(wps, new.strip(), qt)
+
+
 def set_waypoint_parent(wps, name, parent):
     """Which body a deep-space waypoint is shown around on the star map.
 
@@ -2232,6 +2305,13 @@ def filter_waypoints(wps, system, body, wtype="all"):
     return shown, systems, bodies
 
 
+def search_waypoints(wps, text):
+    """The waypoints whose name holds `text`, ignoring case. Blank text (or
+    only spaces) matches every one."""
+    text = text.strip().casefold()
+    return [w for w in wps if text in w["name"].casefold()]
+
+
 TYPE_NAMES = {"poi": "point of interest", "survey": "survey"}
 
 
@@ -2243,6 +2323,10 @@ def waypoint_text(w, around=None, bold=True):
     marks the name up as Discord bold.
     """
     kind = TYPE_NAMES.get(w.get("type", "poi"))
+    if kind and w.get("sub"):
+        kind += f", {w['sub']}"
+    if kind and "qt" in w:
+        kind += ", QT" if w["qt"] else ", no QT"
     name = f"**{w['name']}**" if bold else w["name"]
     lines = [name + (f" — {kind}" if kind else "")]
     system = w.get("system", "unknown").title()
@@ -2267,8 +2351,8 @@ def export_json(path, data):
 
 IMPORT_NEAR_M = 1000.0   # an imported waypoint this close to one of ours asks
 # What an imported waypoint may carry; anything else in the file is dropped.
-IMPORT_FIELDS = ("name", "planet", "system", "frame", "type", "x", "y", "z",
-                 "radius", "elev", "agl", "parent", "note")
+IMPORT_FIELDS = ("name", "planet", "system", "frame", "type", "sub", "qt",
+                 "x", "y", "z", "radius", "elev", "agl", "parent", "note")
 
 
 def _is_number(v):
@@ -2311,9 +2395,11 @@ def check_import_record(w):
     for key in ("elev", "agl"):
         if w.get(key) is not None and not _is_number(w[key]):
             problems.append(f"{key} is not a number")
-    for key in ("note", "parent"):
+    for key in ("note", "parent", "sub"):
         if key in w and not isinstance(w[key], str):
             problems.append(f"{key} is not text")
+    if "qt" in w and not isinstance(w["qt"], bool):
+        problems.append("qt is not yes or no")
     return problems
 
 
@@ -2346,6 +2432,7 @@ def prepare_import(w, now):
     out = {k: w[k] for k in IMPORT_FIELDS if k in w}
     out["name"] = out["name"].strip()
     out["frame"] = out.get("frame", "planet")
+    backfill_sub_qt([out])
     out["saved"] = now
     note = (w.get("note") or "").strip()
     out["note"] = f"Imported on : {now}" + (f"\n{note}" if note else "")
@@ -3022,8 +3109,10 @@ def start_trace(state, kind):
     with state.lock:
         name = traces.trace_name(state.traces, kind)
         state.trace = traces.new_trace(kind, name, time.time())
+        if kind == "waterway":
+            state.trace["width_m"] = state.cfg["waterway_width_m"]
         state.traces.append(state.trace)
-        state.trace_last = state.trace_why = None
+        state.trace_last = state.trace_why = state.trace_held = None
         state.flash(f"tracing {name}")
     state.log(f"trace on: {name}")
 
@@ -3031,8 +3120,9 @@ def start_trace(state, kind):
 def trace_fix(state, planet, radius, pos, now):
     """Add this fix to the trace being flown. Call with the lock held.
 
-    A lake's first point also sets its level: the camera's height over the
-    reference sphere less water_below_cam_m, as it starts skimming the water.
+    A lake's (or sea's) first point also sets its level: the camera's height
+    over the reference sphere less water_below_cam_m, as it starts skimming
+    the water.
 
     The HUD's heights are not asked to vouch for the position, as survey
     mode does: on foot they are often not shown, and on the metro they
@@ -3040,28 +3130,55 @@ def trace_fix(state, planet, radius, pos, now):
     The position is judged against the last point instead. One whose height
     over the centre changed faster than TRACE_MAX_CLIMB is a misread: a 0
     read as 6 moves the fix ~6 km and, at New Babbage, ~3 km up or down. One
-    that moved faster than SURVEY_MAX_SPEED is too (a dropped minus sign
-    keeps the height).
+    that moved faster than its kind's TRACE_MAX_SPEED is too (a dropped minus
+    sign keeps the height).
+
+    The first fix has no point before it to be judged against, so it is held
+    until the next one agrees with it, and replaced by that one if it does
+    not. sea-001 (microTech, 2026-10-18) started on y read with a minus sign,
+    858 km off at the right height: every fix for 13 minutes was dropped as
+    a jump from it, and the sea was lost.
     """
-    climb = None
-    if state.trace_last is not None:
-        last, then = state.trace_last
-        climb = abs(math.dist(pos, (0, 0, 0)) - math.dist(last, (0, 0, 0)))
-    if climb is not None and climb > TRACE_MAX_CLIMB * max(now - then, 1.0):
-        why = f"dropped: height jumped {climb:,.0f} m"
-    elif climb is not None and too_fast(last, then, pos, now):
-        why = "dropped: position jumped"
-    else:
-        why = traces.add_point(state.trace, planet, pos)
-        if why is None:
-            state.trace_last = (pos, now)
-            state.traces_dirty = True
-            if state.trace["kind"] == "lake" and "level" not in state.trace:
-                state.trace["level"] = round(
-                    math.dist(pos, (0, 0, 0)) - radius
-                    - state.cfg["water_below_cam_m"], 1)
+    limit = TRACE_MAX_SPEED[state.trace["kind"]]
+    if not state.trace["points"]:
+        held, state.trace_held = state.trace_held, (planet, pos, now)
+        if held is None or held[0] != planet or trace_jump(
+                held[1], held[2], pos, now, limit):
+            state.trace_why = "first fix held: the next one must agree"
+            state.log(f"trace {state.trace['name']}: {state.trace_why}")
+            return
+        state.trace_held = None
+        trace_add(state, *held, radius)
+    why = trace_jump(*state.trace_last, pos, now, limit)
+    if why is None:
+        why = trace_add(state, planet, pos, now, radius)
     state.trace_why = why
     state.log(f"trace {state.trace['name']}: {why or 'added'}")
+
+
+def trace_jump(last, then, pos, now, limit):
+    """Why a fix at `pos` cannot follow one at `last`, or None if it can."""
+    climb = abs(math.dist(pos, (0, 0, 0)) - math.dist(last, (0, 0, 0)))
+    if climb > TRACE_MAX_CLIMB * max(now - then, 1.0):
+        return f"dropped: height jumped {climb:,.0f} m"
+    if too_fast(last, then, pos, now, limit):
+        return "dropped: position jumped"
+    return None
+
+
+def trace_add(state, planet, pos, now, radius):
+    """Add a point to the trace; a lake's or sea's first sets its level.
+    Returns why it was not added, or None."""
+    why = traces.add_point(state.trace, planet, pos)
+    if why is None:
+        state.trace_last = (pos, now)
+        state.traces_dirty = True
+        if state.trace["kind"] in traces.WATER \
+                and "level" not in state.trace:
+            state.trace["level"] = round(
+                math.dist(pos, (0, 0, 0)) - radius
+                - state.cfg["water_below_cam_m"], 1)
+    return why
 
 
 def stop_trace(state):
@@ -3337,14 +3454,22 @@ def trace_parts(trace, why):
     n = len(trace["points"])
     top = (f" {trace['name']} - {fmt_dist(traces.length(trace))}, "
            f"{n:,} point{'' if n == 1 else 's'}")
-    if trace["kind"] == "lake":
+    if trace["kind"] in traces.WATER:
         level = trace.get("level")
-        return ("LAKE" + top,
+        kind = trace["kind"].upper()
+        return (kind + top,
                 "skim the water: the first fix sets its level"
                 if level is None else f"water level {level:,.0f} m\n"
                 "fly right along the waterline, all round",
                 f"{why or 'last fix added'}\n"
-                "END LAKE closes it back to the start",
+                f"END {kind} closes it back to the start",
+                None)
+    if trace["kind"] == "waterway":
+        return ("WATERWAY" + top,
+                f"fly along its middle, {trace['width_m']:g} m wide\n"
+                "about 30 m/s: a point every ~60 m",
+                f"{why or 'last fix added'}\n"
+                "END TRACE when you reach its end",
                 None)
     return ("TRACE" + top,
             "fly along it, right over it\n"
@@ -3394,6 +3519,86 @@ def course_lines(plan, g):
             f"  ({w * h / 1e6:.1f} km2)"]
 
 
+def latlon_point(lat, lon, r):
+    """(x, y, z) in the planet frame: the inverse of to_latlon."""
+    p, l = math.radians(lat), math.radians(lon)
+    return (r * math.cos(p) * math.cos(l), r * math.cos(p) * math.sin(l),
+            r * math.sin(p))
+
+
+def qt_hop(wps, wp):
+    """Where to jump to for `wp` when it has no quantum marker (QT no).
+
+    On a body: the nearest over the ground of the QT-yes waypoints on that
+    body and its six orbital markers, which can always be jumped to, so there
+    is always an answer. In deep space: the nearest QT-yes waypoint in the
+    same system, or None if it has none. None too when `wp` itself is QT yes.
+
+    Returns {"name", "point" (in wp's frame), "dist" (m from there to wp),
+    "bearing" (from there to wp, or None where it means nothing: deep space,
+    or setting out from a pole), "om" (True for an orbital marker)}.
+    """
+    frame = wp.get("frame", "planet")
+    if wp.get("qt", default_qt(frame)):
+        return None
+    if frame == "system":
+        best = None
+        for q in wps:
+            if (q is wp or q.get("frame") != "system" or not q.get("qt")
+                    or q.get("system") != wp.get("system")):
+                continue
+            gap = math.dist((q["x"], q["y"], q["z"]), (wp["x"], wp["y"], wp["z"]))
+            if best is None or gap < best["dist"]:
+                best = {"name": q["name"], "point": (q["x"], q["y"], q["z"]),
+                        "dist": gap, "bearing": None, "om": False}
+        return best
+    tlat, tlon, _ = to_latlon(wp["x"], wp["y"], wp["z"])
+    radius = wp.get("radius", 1e6)
+    om, _, gap = nearest_om(tlat, tlon, radius)
+    hlat, hlon = next((la, lo) for n, la, lo in OM_POINTS if n == om)
+    best = {"name": om, "point": latlon_point(hlat, hlon, radius),
+            "dist": gap, "om": True, "lat": hlat, "lon": hlon}
+    for q in wps:
+        if (q is wp or q.get("frame", "planet") != "planet" or not q.get("qt")
+                or q["planet"] != wp["planet"]
+                or q.get("system") != wp.get("system")):
+            continue
+        qlat, qlon, _ = to_latlon(q["x"], q["y"], q["z"])
+        gap = surface_distance(qlat, qlon, tlat, tlon, radius)
+        if gap < best["dist"]:
+            best = {"name": q["name"], "point": (q["x"], q["y"], q["z"]),
+                    "dist": gap, "om": False, "lat": qlat, "lon": qlon}
+    hlat, hlon = best.pop("lat"), best.pop("lon")
+    best["bearing"] = (None if abs(hlat) > 89.99
+                       else bearing(hlat, hlon, tlat, tlon))
+    return best
+
+
+def route_points(a, b, radius, n=64):
+    """`n` + 1 planet-frame points on the great circle from a to b, at
+    `radius`: the overland leg from a qt_hop to its target, to draw."""
+    ua = [v / math.sqrt(sum(c * c for c in a)) for v in a]
+    ub = [v / math.sqrt(sum(c * c for c in b)) for v in b]
+    angle = math.acos(max(-1.0, min(1.0, sum(p * q for p, q in zip(ua, ub)))))
+    if angle < 1e-12:
+        return [tuple(radius * v for v in ua)] * (n + 1)
+    out = []
+    for i in range(n + 1):
+        t = i / n
+        s1 = math.sin((1 - t) * angle) / math.sin(angle)
+        s2 = math.sin(t * angle) / math.sin(angle)
+        out.append(tuple(radius * (s1 * p + s2 * q) for p, q in zip(ua, ub)))
+    return out
+
+
+def hop_line(hop, over="over ground"):
+    """The target block's VIA line for a qt_hop result, cut to fit."""
+    tail = f"  then {fmt_dist(hop['dist'])} {over}"
+    if hop["bearing"] is not None:
+        tail += f" BRG {hop['bearing']:03.0f}"
+    return f"VIA  {hop['name'][:max(8, READOUT_COLS - 5 - len(tail))]}{tail}"
+
+
 def render_target(state):
     """Where you are going: the lower block of the readout.
 
@@ -3419,6 +3624,9 @@ def render_target(state):
             # north to bear from, so the straight-line distance is all there
             # is -- and all that is needed to fly back to it.
             lines.append(f"DEEP SPACE in {wp.get('system', 'unknown')}")
+            hop = qt_hop(state.waypoints, wp)
+            if hop is not None:
+                lines.append(hop_line(hop, "direct"))
             if state.sys_pos is None:
                 lines.append("no system position yet")
             else:
@@ -3431,8 +3639,10 @@ def render_target(state):
         # distance over the ground below it are legs nobody flies.
         in_orbit = above_space_line(tr, wp.get("radius", 1e6), state.cfg)
         if not in_orbit:
-            om, _, over_ground = nearest_om(tlat, tlon, wp.get("radius", 1e6))
-            lines.append(f"VIA  {om}   then {fmt_dist(over_ground)} over ground")
+            # QT no: jump to the nearest place that can be, and fly the rest.
+            hop = qt_hop(state.waypoints, wp)
+            lines.append("QT   straight to it" if hop is None
+                         else hop_line(hop))
 
         # Distances are planet-local, so they mean nothing without a fix on
         # the same body. The marker above still does.
@@ -4008,9 +4218,26 @@ def run_overlay(state, cfg):
 
     rule()
 
-    # Only shown while a waypoint is being renamed (RENAME opens it, OK or
+    # Only shown while a waypoint is being edited (EDIT opens it, OK or
     # Enter accepts, X or Escape cancels). SAVE auto-names, like the pin.
     name_row = tk.Frame(panel, bg=BG)
+    # Below the name: what kind of place it is, and whether it can be jumped to.
+    kind_row = tk.Frame(panel, bg=BG)
+    tk.Label(kind_row, text="sub ", font=("Consolas", 10), fg=DIM,
+             bg=BG).pack(side="left")
+    sub_var = tk.StringVar(value=NO_SUB)
+    sub_menu = tk.OptionMenu(kind_row, sub_var, NO_SUB, *subtypes.SUBTYPES)
+    sub_menu.config(font=("Consolas", 10), bg=FIELD, fg="#DCE6F0",
+                    activebackground="#1d4f3a", activeforeground="#FFFFFF",
+                    highlightthickness=0, relief="flat", width=15, anchor="w")
+    sub_menu["menu"].config(font=("Consolas", 10), bg=FIELD, fg="#DCE6F0",
+                            activebackground="#1d4f3a")
+    sub_menu.pack(side="left", padx=6)
+    qt_var = tk.BooleanVar(value=False)
+    tk.Checkbutton(kind_row, text="QT", variable=qt_var, font=("Consolas", 10),
+                   fg="#DCE6F0", bg=BG, selectcolor=FIELD,
+                   activebackground=BG, activeforeground="#DCE6F0",
+                   highlightthickness=0).pack(side="left")
     tk.Label(name_row, text="name", font=("Consolas", 10), fg=DIM,
              bg=BG).pack(side="left")
     name_var = tk.StringVar()
@@ -4172,6 +4399,7 @@ def run_overlay(state, cfg):
 
     def end_rename():
         name_row.pack_forget()
+        kind_row.pack_forget()
         editing["old"] = None
         name_var.set("")
         listbox.focus_set()
@@ -4179,13 +4407,17 @@ def run_overlay(state, cfg):
 
     def do_start_rename(st):
         chosen = selected_name()
-        if chosen is None:
-            with st.lock:
+        with st.lock:
+            if chosen is None:
                 st.flash("select a waypoint first")
-            return
+                return
+            w = next((q for q in st.waypoints if q["name"] == chosen), {})
+            sub_var.set(w.get("sub") or NO_SUB)
+            qt_var.set(w.get("qt", default_qt(w.get("frame", "planet"))))
         editing["old"] = chosen
         name_var.set(chosen)
-        name_row.pack(fill="x", padx=10, pady=(0, 6), before=btn_row)
+        name_row.pack(fill="x", padx=10, pady=(0, 2), before=btn_row)
+        kind_row.pack(fill="x", padx=10, pady=(0, 6), before=btn_row)
         # The only place anything is typed, so the only time the overlay
         # takes focus; end_rename gives the game its clicks back.
         set_no_activate(root, False)
@@ -4203,15 +4435,16 @@ def run_overlay(state, cfg):
             if not new:
                 st.flash("type the new name first")
                 return
+            sub = "" if sub_var.get() == NO_SUB else sub_var.get()
             try:
-                rename_waypoint(st.waypoints, chosen, new)
+                edit_waypoint(st.waypoints, chosen, new, sub, qt_var.get())
             except ValueError as exc:
                 st.flash(str(exc))
                 return
             if st.target == chosen:      # the target follows its waypoint
                 st.target = new
             save_json(WAYPOINT_FILE, st.waypoints)
-            st.flash(f"renamed to {new}")
+            st.flash(f"saved {new}")
         end_rename()
         refresh_list()
 
@@ -4340,7 +4573,7 @@ def run_overlay(state, cfg):
     # Wide enough for "UNTARGET" too, so swapping the label cannot resize it.
     target_btn = button(btn_row, "TARGET", fire("target", do_target), width=9)
     target_btn.pack(side="left", padx=(6, 0))
-    button(btn_row, "RENAME", fire("rename", do_start_rename)).pack(
+    button(btn_row, "EDIT", fire("rename", do_start_rename)).pack(
         side="left", padx=(6, 0))
     button(btn_row, "DELETE", fire("delete", do_delete),
            bg="#FF9B9B").pack(side="left", padx=(6, 0))
@@ -4416,7 +4649,7 @@ def run_overlay(state, cfg):
         refresh_list()
         reposition()
         # No focus_force here: the panel is often left open while playing, and
-        # taking focus would take it off the game. RENAME takes it when needed.
+        # taking focus would take it off the game. EDIT takes it when needed.
         listbox.focus_set()
         state.log("panel opened")
 
@@ -4550,7 +4783,8 @@ def run_overlay(state, cfg):
             analyse_btn.config(text="STOP" if analysing else "ANALYSE")
             tracing = state.trace       # once: END can clear it meanwhile
             survey_btn.config(
-                text=("END LAKE" if tracing["kind"] == "lake" else "END TRACE")
+                text=(f"END {tracing['kind'].upper()}"
+                      if tracing["kind"] in traces.WATER else "END TRACE")
                 if tracing is not None
                 else "END SURVEY" if state.survey else "SURVEY")
             # Toast: what a save or an edit just reported replaces the health

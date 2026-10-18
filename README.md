@@ -91,7 +91,7 @@ Below that, when a target is set, is where you are going:
 
 ```
 TARGET microtech-003
-VIA  OM-3   then 12.4 km over ground
+VIA  OM-3  then 12.4 km over ground BRG 091
 DIST 8.91 km surface / 8.93 km direct
 BRG  087 E   HDG 064   turn RIGHT 23
 ALT  -1.2 km vs you
@@ -166,6 +166,18 @@ A waypoint is a saved position on a body (or in deep space).
   **Survey** (the marker a survey leaves where it started, see below). The
   star map shows POI waypoints and the height map survey ones unless you
   tick the other type; the Waypoints tab shows both.
+- Every waypoint has a **SUB**: what kind of place it is. It sets the
+  waypoint's icon on the star map and the height map. The kinds are Space
+  Station, Spaceport, City, Village, Building, Tower, Turret, Landing Pad,
+  Wreck, Ruin, Summit, Jump Point, Town Hall, Radio Dish, Cargo Elevator,
+  Shop, Cave and Minable. A waypoint with no SUB (`none`) keeps the plain pin.
+  It is meant for POI waypoints, but survey ones can have it too.
+- Every waypoint has a **QT** yes/no: whether you can quantum travel to it.
+  New and older waypoints start as **yes** in deep space (stations, jump
+  points) and **no** on a planet or moon; set it by hand on cities and
+  outposts you can jump to. It changes the route, see below.
+- Set SUB and QT with **EDIT** in the panel (just after saving, in game) or in
+  the main window's Waypoints tab.
 
 ### Navigating to a waypoint
 
@@ -173,7 +185,8 @@ Select a waypoint and press **TARGET**. The target block then shows:
 
 | line | meaning |
 |---|---|
-| `VIA OM-x` | the nearest orbital marker to the target, and how far it is over the ground from there. Pick this OM when you quantum in. |
+| `VIA ...` | for a target with QT no: where to quantum to, how far it is over the ground from there, and the bearing to fly. It is the nearest of the QT yes waypoints on that body and its six orbital markers. No bearing is given from a polar OM. |
+| `QT straight to it` | the target has QT yes: jump to it directly. |
 | `DIST` | distance over the surface, and straight-line distance |
 | `BRG` | compass bearing to the target (000 = north) |
 | `HDG` / `turn` | your direction of travel and how far to turn LEFT or RIGHT. Appears once you have moved 20 m. |
@@ -181,9 +194,15 @@ Select a waypoint and press **TARGET**. The target block then shows:
 
 The compass arrow beside it shows the same turn: green on course, amber off it, red well off.
 
-The `VIA` line is shown even without a position fix, so you can plan the OM
+The `VIA` line is shown even without a position fix, so you can plan the
 jump from orbit. Distance and bearing only work while you are on the same body
-as the target.
+as the target. Once you have jumped, `DIST` and `BRG` guide you over the
+ground to the target. The height map draws that overland leg as a dashed
+magenta line from the `QT` point to the target.
+
+A deep-space target with QT no shows `VIA` the nearest QT yes deep-space
+waypoint in the same system and the straight-line distance from it.
+A target in orbit has no `VIA` line: you fly to it directly.
 
 If left and right feel reversed, set `"mirror": true` in the settings.
 
@@ -306,7 +325,10 @@ quits the program.
   longitude +90/-90, OM-5/OM-6 at 0/180). The view stays over the marker as
   the planet turns, until you drag it.
 - **Waypoints**: every waypoint in a table; rename, delete, and add a note.
-  Filter by system, body and type (all, POI or Survey). **SHOW ON MAP** opens
+  Pick its **SUB** and tick **QT** below the table; both save at once.
+  Filter by system, body and type (all, POI or Survey), and type in
+  **Search** to narrow the list to names holding that text (any case) as you
+  type. **SHOW ON MAP** opens
   the selected one on the star map, **SHOW ON HEIGHT MAP** centres the height
   map on it. Copy, export and import them, see
   [Sharing](#sharing-waypoints-and-reports).
@@ -452,6 +474,17 @@ the whole shore you will follow across the water: a headland the start
 cannot see past is counted as water. Lakes that overlap merge, so a big one
 can be done in parts, `lake-001`, `lake-002` and so on.
 
+#### Surveying a waterway
+
+**SURVEY** > **survey a waterway** maps a river or canal: fly to one end,
+pick it, fly along the middle of the water and press **END TRACE** at the
+other end. Keep under 200 m/s: a fix that moved faster is taken for a
+misread and dropped. The height map draws it as water, to scale,
+`waterway_width_m` wide (30 m unless you change it) and never thinner than
+2 px; one that runs into a lake joins it. Each waterway keeps the width it
+was started with, as `width_m` in `traces.json`, so one can be corrected
+there.
+
 ### Automatic backups
 
 Every time `waypoints.json`, `bodies.json`, `heightmap.json`, `traces.json` or
@@ -466,7 +499,7 @@ versions of each file are kept. If something goes wrong, copy one back.
 |---|---|
 | **SAVE** | save a waypoint where you are (same as left-clicking the pin) |
 | **TARGET** / **UNTARGET** | navigate to the selected waypoint, or stop |
-| **RENAME** | rename the selected waypoint; type the name and press **OK** or Enter; **X** or Escape cancels. |
+| **EDIT** | edit the selected waypoint: its name, its **sub** (what kind of place it is) and **QT** (can be jumped to). Press **OK** or Enter; **X** or Escape cancels. |
 | **DELETE** | delete the selected waypoint |
 | **ANALYSE** / **STOP** | start a body or place analysis |
 | **REPORT** / **HIDE** | show or hide the analysis for where you are |
@@ -527,6 +560,7 @@ program is closed. The ones you are most likely to change:
 | `space_line_m` | `100000` | height (m) above which it says "In Space near …" |
 | `survey_max_height_m` | `5000` | height (m) over the reference sphere above which survey records nothing |
 | `water_below_cam_m` | `2` | how far (m) below your camera the water is when a lake survey starts |
+| `waterway_width_m` | `30` | how wide (m) a new waterway is drawn on the height map |
 | `min_move` | `20.0` | metres you must move before your heading updates |
 | `game_process` | `["starcitizen.exe"]` | process names that count as the game running |
 | `tesseract_cmd` | `null` | path to your own `tesseract.exe`, to use instead of the packed one |

@@ -20,14 +20,25 @@ over the reference sphere, so the surface curves with the body. Everything
 between that first point and the route is water (see fan): flat blue on
 the height map, whose own heights inside it are ignored (the HUD's ground
 over a lake is neither the bed nor the surface).
+
+A sea is a lake too big to skim slowly: the same level and the same fan,
+only flown faster (see TRACE_MAX_SPEED in sc_locator.py).
+
+A waterway (a river or a canal) is flown along its middle from one end to
+the other. It is drawn as water, a line `width_m` wide to scale, set from
+waterway_width_m when it starts and kept on the trace, so it can be put
+right once a waterway's real width is known.
 """
 import math
 
 import numpy as np
 
 # What can be traced, and how the SURVEY menu offers it.
-KINDS = {"railway": "trace a railway", "lake": "survey a lake"}
-LEAST = {"railway": 2, "lake": 3}   # points it takes to be kept
+KINDS = {"railway": "trace a railway", "lake": "survey a lake",
+         "sea": "survey a sea", "waterway": "survey a waterway"}
+LEAST = {"railway": 2, "lake": 3, "sea": 3,   # points it takes to be kept
+         "waterway": 2}
+WATER = ("lake", "sea")     # kinds with a level, whose fan is water
 STEP_M = 25.0           # a fix closer than this to the last point adds nothing
 TICK_EVERY_PX = 40.0    # ticks this far apart along the drawn line
 TICK_HALF_PX = 6.0      # and reaching this far either side of it

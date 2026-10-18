@@ -21,6 +21,7 @@ from PIL import Image, ImageDraw, ImageTk
 
 import heightmap
 import starmap
+import subtypes
 import survey
 import traces
 
@@ -36,6 +37,9 @@ CONTOUR, CONTOUR_INDEX = "#C8925A", "#E0A868"   # brown, as on a paper map
 COURSE = ("#B8C6D4", "#5CC8FF", "#2F7FA8")
 # Railways: black lines, the paper's colour between them, as on a paper map.
 RAIL, RAIL_GAP = "#000000", "#FAF7F2"
+# The overland leg from a QT hop to its target: dashed magenta, apart from
+# everything else on the map.
+ROUTE = "#FF5CD6"
 # Lakes: light blue water and a darker blue shore line, as on a paper map.
 WATER, SHORE = (169, 212, 239), (42, 122, 184)
 
@@ -133,6 +137,31 @@ def of_types(wps, switches):
     """The waypoints whose type is ticked."""
     return [w for w in wps
             if switches.get(w.get("type", "poi"), switches["poi"]).get()]
+
+
+def draw_icon(c, sub, x, y, size, tags=()):
+    """A waypoint's SUB icon on canvas `c`: a dark badge `size` px in radius
+    centred on (x, y), the glyph in the pin's colour inside. Returns the ids."""
+    ids = [c.create_oval(x - size, y - size, x + size, y + size, fill=BG,
+                         outline=PIN, width=1.5, tags=tags)]
+    width = max(1.0, size * 0.14)
+    for kind, paint, xy in subtypes.icon_items(sub, x, y, size * 0.68):
+        colour = PIN if paint == "fg" else BG
+        if kind == "poly":
+            ids.append(c.create_polygon(*xy, fill=colour, outline="",
+                                        tags=tags))
+        elif kind == "rect":
+            ids.append(c.create_rectangle(*xy, fill=colour, outline="",
+                                          tags=tags))
+        elif kind == "oval":
+            ids.append(c.create_oval(*xy, fill=colour, outline="", tags=tags))
+        elif kind == "ring":
+            ids.append(c.create_oval(*xy, outline=colour, width=width,
+                                     tags=tags))
+        else:
+            ids.append(c.create_line(*xy, fill=colour, width=width,
+                                     capstyle="round", tags=tags))
+    return ids
 
 
 def snapshot(state):
@@ -302,6 +331,7 @@ class StarMap:
         # canvas item -> waypoint name. Not a tag: names have spaces in them,
         # and a canvas tag cannot.
         self.pins = {}
+        self.subs = {}          # waypoint name -> its SUB, for its icon
         self.marked = None      # waypoint ringed by SHOW ON MAP
         self.backdrops, self.ramp = {}, None
         self.frame = tk.Frame(parent, bg=BG)
@@ -589,6 +619,7 @@ class StarMap:
             return
         wps, bodies = snapshot(self.state)
         wps = of_types(wps, self.types)
+        self.subs = {wp["name"]: wp.get("sub", "") for wp in wps}
         self.me = self.where_am_i()
         objs = starmap.system_objects(bodies, wps, self.system)
         if self.body is None:
@@ -679,20 +710,24 @@ class StarMap:
         opens the waypoint in the table."""
         c = self.canvas
         ids = []
+        sub = self.subs.get(name, "")
         if name == self.marked:
             ids.append(c.create_oval(x - 15, y - 27, x + 15, y + 3,
                                      outline=ACCENT, width=2, tags="pin"))
-        ids += [
-            c.create_polygon(x, y, x - 5, y - 10, x + 5, y - 10, fill=PIN,
-                             outline="", tags="pin"),
-            c.create_oval(x - 6, y - 18, x + 6, y - 6, fill=PIN, outline="",
-                          tags="pin"),
-            c.create_oval(x - 2, y - 14, x + 2, y - 10, fill=BG, outline="",
-                          tags="pin"),
-            c.create_text(x + 9, y - 12, text=label or name, anchor="w",
-                          fill=FG,
-                          font=mono(9), tags=("pin", "label")),
-        ]
+        ids.append(c.create_polygon(x, y, x - 5, y - 10, x + 5, y - 10,
+                                    fill=PIN, outline="", tags="pin"))
+        if sub in subtypes.ICONS:       # its icon in place of the pin's head
+            ids += draw_icon(c, sub, x, y - 17, px(9), tags="pin")
+        else:
+            ids += [
+                c.create_oval(x - 6, y - 18, x + 6, y - 6, fill=PIN,
+                              outline="", tags="pin"),
+                c.create_oval(x - 2, y - 14, x + 2, y - 10, fill=BG,
+                              outline="", tags="pin")]
+        ids.append(c.create_text(x + (px(9) + 3 if sub in subtypes.ICONS
+                                      else 9), y - 12,
+                                 text=label or name, anchor="w", fill=FG,
+                                 font=mono(9), tags=("pin", "label")))
         for item in ids:
             self.pins[item] = name
 
@@ -951,7 +986,7 @@ class HeightMapTab:
     """The surveyed ground around you, flat and at full detail: one 100 m
     cell to a pixel at the start, grey where nothing has been measured."""
 
-    ZOOMS = (12.5, 25.0, 50.0, 100.0, 200.0, 400.0, 800.0)   # metres a pixel
+    ZOOMS = (6.25, 12.5, 25.0, 50.0, 100.0, 200.0, 400.0, 800.0)  # m a pixel
     RELIEF_BLOCK = 4        # px a side of the filled view's blocks
     SETTLE_MS = 250         # quiet this long after a drag or zoom: full draw
 
@@ -997,7 +1032,7 @@ class HeightMapTab:
                                ("samples", "Survey samples", False),
                                ("lines", "Height lines", True),
                                ("course", "Survey pattern", True),
-                               ("lake", "Lakes", True),
+                               ("lake", "Lakes, seas, rivers", True),
                                ("rail", "Railways", True)):
             self.show[name] = tk.BooleanVar(value=on)
             ttk.Checkbutton(side, text=text, variable=self.show[name],
@@ -1010,7 +1045,7 @@ class HeightMapTab:
                       "number by a pin: its\nground height\n"
                       "dashes: survey course\n"
                       "ticked line: railway\n"
-                      "blue: lake, its level\n"
+                      "blue: water, its level\n"
                       "+ : you are here\n"
                       "drag: move, wheel: zoom").pack(anchor="w", fill="x")
 
@@ -1187,8 +1222,8 @@ class HeightMapTab:
                      if self.centre is not None else None)
             rec = st.heightmap.get(self.body)
             lakes = [(list(t["points"]), t.get("level")) for t in st.traces
-                     if t["planet"] == self.body and t["kind"] == "lake"
-                     and len(t["points"]) >= traces.LEAST["lake"]]
+                     if t["planet"] == self.body and t["kind"] in traces.WATER
+                     and len(t["points"]) >= traces.LEAST[t["kind"]]]
             # Contours and relief are worked out for twice the map each way
             # and kept until the survey, a lake or the zoom changes or you
             # pan off them. Only what is switched on is worked out.
@@ -1225,6 +1260,23 @@ class HeightMapTab:
                     and st.survey_saved["origin"] is not None else None)
             rails = [list(t["points"]) for t in st.traces
                      if t["planet"] == self.body and t["kind"] == "railway"]
+            rivers = [(list(t["points"]), t["width_m"]) for t in st.traces
+                      if t["planet"] == self.body
+                      and t["kind"] == "waterway" and len(t["points"]) >= 2]
+            # A QT-no target here: the overland leg from where you jump to.
+            route = None
+            tgt = next((q for q in st.waypoints if q["name"] == st.target),
+                       None)
+            if (tgt is not None and tgt["planet"] == self.body
+                    and tgt.get("frame", "planet") == "planet"):
+                hop = self.scl.qt_hop(st.waypoints, tgt)
+                if hop is not None:
+                    # A point every 50 px, so a leg that only crosses the
+                    # view still has points in it to draw.
+                    n = max(16, min(2000, int(hop["dist"] / (50 * self.mpp))))
+                    route = (hop["name"], self.scl.route_points(
+                        hop["point"], (tgt["x"], tgt["y"], tgt["z"]), radius,
+                        n))
         # Over a lake the HUD's ground is neither the bed nor the surface
         # (NOTES.md): the cells there shape no contour, shade or colour.
         lake_xys = [(xys, level) for xys, level in (
@@ -1278,9 +1330,11 @@ class HeightMapTab:
             if plan and self.show["course"].get():
                 self.draw_course(plan, frame, radius, w, h)
             if self.show["lake"].get():
-                self.draw_lakes(lake_xys, w, h)
+                self.draw_lakes(lake_xys, rivers, frame, radius, w, h)
             if self.show["rail"].get():
                 self.draw_rails(rails, frame, radius, w, h)
+            if route:
+                self.draw_route(*route, frame, radius, w, h)
 
         def spot(p):
             xy = heightmap.to_map(p, frame, radius)
@@ -1291,16 +1345,22 @@ class HeightMapTab:
         if frame:
             elev = {wp["name"]: wp.get("elev") for wp in wps
                     if wp["planet"] == self.body}
+            subs = {wp["name"]: wp.get("sub", "") for wp in wps}
             for name, p in starmap.body_points(of_types(wps, self.types),
                                                self.body):
                 xy = spot(p)
                 if xy:
                     sx, sy = xy
-                    c.create_oval(sx - 4, sy - 4, sx + 4, sy + 4, fill=PIN,
-                                  outline=BG)
+                    gap = 7
+                    if subs.get(name) in subtypes.ICONS:
+                        draw_icon(c, subs[name], sx, sy, px(8))
+                        gap = px(8) + 3
+                    else:
+                        c.create_oval(sx - 4, sy - 4, sx + 4, sy + 4,
+                                      fill=PIN, outline=BG)
                     # A spot height, as BM 1570 on a paper map.
                     z = elev.get(name)
-                    c.create_text(sx + 7, sy, anchor="w", fill=FG,
+                    c.create_text(sx + gap, sy, anchor="w", fill=FG,
                                   font=mono(9),
                                   text=name if z is None else f"{name} {z:.0f}")
             xy = spot(pos) if here == self.body and pos else None
@@ -1398,8 +1458,8 @@ class HeightMapTab:
                       COURSE[1] if i == k else COURSE[0])
             c.create_line(w / 2 + p[0] / self.mpp, h / 2 - p[1] / self.mpp,
                           w / 2 + q[0] / self.mpp, h / 2 - q[1] / self.mpp,
-                          fill=colour, width=2 if i == k else 1,
-                          dash=(6, 4))
+                          fill=colour, width=4 if i == k else 3,
+                          dash=(10, 6))
 
     @staticmethod
     def on_map(points, frame, radius):
@@ -1419,14 +1479,25 @@ class HeightMapTab:
             wet |= traces.inside(xs, ys, xys)
         return [c for c, w in zip(cells, wet.tolist()) if not w]
 
-    def draw_lakes(self, lake_xys, w, h):
+    def draw_lakes(self, lake_xys, rivers, frame, radius, w, h):
         """Lakes as flat water: every lake painted into one mask as its fan
         of triangles (traces.fan), so lakes that overlap (one surveyed in
         parts) merge, and the shore line is the mask's edge. Drawn as an image over the relief and height lines;
-        the LAT/LON grid is raised back over it."""
+        the LAT/LON grid is raised back over it. Waterways go into the same
+        mask as lines width_m wide to scale (never under 2 px), so a river
+        running into a lake joins it."""
         c = self.canvas
         mask = Image.new("L", (w, h), 0)
         paint = ImageDraw.Draw(mask)
+        half_w, half_h = w / 2 * self.mpp, h / 2 * self.mpp
+        for points, width_m in rivers:
+            xys = [xy for xy in (heightmap.to_map(p, frame, radius)
+                                 for p in points) if xy]
+            for run in heightmap.in_view(xys, half_w, half_h):
+                paint.line([(w / 2 + x / self.mpp, h / 2 - y / self.mpp)
+                            for x, y in run], fill=255,
+                           width=max(2, round(width_m / self.mpp)),
+                           joint="curve")
         labels = []
         for xys, level in lake_xys:
             px = [(w / 2 + x / self.mpp, h / 2 - y / self.mpp) for x, y in xys]
@@ -1477,6 +1548,24 @@ class HeightMapTab:
                 for x0, y0, x1, y1 in traces.ticks(px):
                     c.create_line(x0, y0, x1, y1, fill=RAIL, width=2)
 
+    def draw_route(self, hop, points, frame, radius, w, h):
+        """The overland leg to a QT-no target: a dashed line from `hop`, the
+        place you jump to, along `points` to the target."""
+        c = self.canvas
+        half_w, half_h = w / 2 * self.mpp, h / 2 * self.mpp
+        xys = [heightmap.to_map(p, frame, radius) for p in points]
+        for run in heightmap.in_view([xy for xy in xys if xy], half_w, half_h):
+            flat = [v for x, y in run
+                    for v in (w / 2 + x / self.mpp, h / 2 - y / self.mpp)]
+            if len(flat) >= 4:
+                c.create_line(*flat, fill=BG, width=5)
+                c.create_line(*flat, fill=ROUTE, width=3, dash=(8, 5))
+        start = xys[0]
+        if start and abs(start[0]) <= half_w and abs(start[1]) <= half_h:
+            sx, sy = w / 2 + start[0] / self.mpp, h / 2 - start[1] / self.mpp
+            c.create_text(sx + 7, sy + 12, anchor="w", fill=ROUTE,
+                          font=mono(9, True), text=f"QT {hop}")
+
     def scale_bar(self, w, h):
         """A round length up to a fifth of the map wide, bottom left."""
         want = w / 5 * self.mpp
@@ -1521,7 +1610,8 @@ class HeightMapTab:
 
 
 class WaypointEditor:
-    COLUMNS = (("name", 220), ("type", 70), ("system", 80), ("body", 110),
+    COLUMNS = (("name", 220), ("type", 70), ("sub", 120), ("qt", 40),
+               ("system", 80), ("body", 110),
                ("around", 120),
                ("lat", 80), ("lon", 85), ("height", 280), ("saved", 170),
                ("note", 200))
@@ -1550,6 +1640,14 @@ class WaypointEditor:
         self.sys_pick.bind("<<ComboboxSelected>>", lambda e: self.pick_system())
         self.body_pick.bind("<<ComboboxSelected>>", lambda e: self.refresh())
         type_pick.bind("<<ComboboxSelected>>", lambda e: self.refresh())
+        # Narrows the list by name as you type.
+        tk.Label(bar, text="Search", font=mono(), fg=DIM, bg=BG).pack(
+            side="left", padx=(18, 6))
+        self.search_var = tk.StringVar()
+        tk.Entry(bar, textvariable=self.search_var, font=mono(), bg=PANEL,
+                 fg=FG, insertbackground=FG, relief="flat", width=24).pack(
+            side="left")
+        self.search_var.trace_add("write", lambda *_: self.refresh())
 
         self.tree = ttk.Treeview(self.frame, show="headings",
                                  selectmode="extended",
@@ -1599,6 +1697,23 @@ class WaypointEditor:
         self.parent_pick.pack(side="left")
         self.parent_pick.bind("<<ComboboxSelected>>",
                               lambda e: self.set_parent())
+        # What kind of place it is (its icon on the maps), and whether it
+        # can be jumped to. Both apply as soon as they are picked.
+        row = tk.Frame(edit, bg=BG)
+        row.pack(fill="x", pady=(6, 0))
+        tk.Label(row, text="SUB", font=mono(), fg=DIM, bg=BG).pack(side="left")
+        self.sub_var = tk.StringVar()
+        self.sub_pick = ttk.Combobox(row, textvariable=self.sub_var,
+                                     state="disabled", width=18,
+                                     values=[self.scl.NO_SUB]
+                                     + list(subtypes.SUBTYPES))
+        self.sub_pick.pack(side="left", padx=6)
+        self.sub_pick.bind("<<ComboboxSelected>>", lambda e: self.set_sub())
+        self.qt_var = tk.BooleanVar()
+        self.qt_box = ttk.Checkbutton(row, text="QT - can be jumped to",
+                                      variable=self.qt_var, state="disabled",
+                                      command=self.set_qt)
+        self.qt_box.pack(side="left", padx=(12, 0))
         tk.Label(edit, text="Note", font=mono(), fg=DIM, bg=BG).pack(anchor="w",
                                                                    pady=(6, 0))
         self.note = text_box(edit, 4)
@@ -1744,6 +1859,7 @@ class WaypointEditor:
         if not self.tree.exists(name):
             for var in (self.sys_var, self.body_var, self.type_var):
                 var.set("all")
+            self.search_var.set("")
             self.refresh()
         if self.tree.exists(name):
             self.tree.selection_set(name)
@@ -1760,6 +1876,7 @@ class WaypointEditor:
             lat, lon = f"{lat:+.3f}", f"{lon:+.3f}"
         note = (w.get("note") or "").splitlines()
         return (w["name"], TYPE_LABELS.get(w.get("type"), ""),
+                w.get("sub", ""), "yes" if w.get("qt") else "no",
                 w.get("system", "unknown"), w["planet"],
                 around or "", lat, lon,
                 self.scl.describe_height(w), w.get("saved", ""),
@@ -1773,13 +1890,16 @@ class WaypointEditor:
                                                            "all")
         shown, systems, bodies = self.scl.filter_waypoints(
             wps, self.sys_var.get(), self.body_var.get(), wtype)
+        shown = self.scl.search_waypoints(shown, self.search_var.get())
         for var, names in ((self.sys_var, systems), (self.body_var, bodies)):
             if var.get() not in names:
                 var.set("all")
         seen = (tuple((w["name"], w["planet"], w.get("note"), w.get("parent"),
-                       w.get("type")) for w in wps),
+                       w.get("type"), w.get("sub"), w.get("qt"))
+                      for w in wps),
                 tuple((sys, tuple(p)) for sys, p in placed.items()),
-                self.sys_var.get(), self.body_var.get(), wtype)
+                self.sys_var.get(), self.body_var.get(), wtype,
+                self.search_var.get())
         if seen == self.seen:
             return
         self.seen = seen
@@ -1813,6 +1933,10 @@ class WaypointEditor:
         w = next((q for q in wps if q["name"] == name), None)
         self.name_var.set(name or "")
         set_text(self.note, (w or {}).get("note", ""))
+        self.sub_var.set((w or {}).get("sub") or (self.scl.NO_SUB if w else ""))
+        self.qt_var.set(bool((w or {}).get("qt")))
+        self.sub_pick.config(state="disabled" if w is None else "readonly")
+        self.qt_box.config(state="disabled" if w is None else "normal")
         if w is None or w.get("frame") != "system":
             self.parent_var.set("")
             self.parent_pick.config(state="disabled", values=())
@@ -1837,6 +1961,37 @@ class WaypointEditor:
                 return
             scl.save_json(scl.WAYPOINT_FILE, st.waypoints)
             st.flash(f"{name}: shown around {pick}")
+        self.refresh()
+
+    def set_sub(self):
+        name, pick = self.selected(), self.sub_var.get()
+        st, scl = self.state, self.scl
+        with st.lock:
+            if name is None:
+                return
+            try:
+                scl.set_waypoint_sub(st.waypoints, name,
+                                     "" if pick == scl.NO_SUB else pick)
+            except ValueError as exc:
+                st.flash(str(exc))
+                return
+            scl.save_json(scl.WAYPOINT_FILE, st.waypoints)
+            st.flash(f"{name}: {pick}")
+        self.refresh()
+
+    def set_qt(self):
+        name, qt = self.selected(), self.qt_var.get()
+        st, scl = self.state, self.scl
+        with st.lock:
+            if name is None:
+                return
+            try:
+                scl.set_waypoint_qt(st.waypoints, name, qt)
+            except ValueError as exc:
+                st.flash(str(exc))
+                return
+            scl.save_json(scl.WAYPOINT_FILE, st.waypoints)
+            st.flash(f"{name}: QT {'yes' if qt else 'no'}")
         self.refresh()
 
     def show_on_map(self, show=None):

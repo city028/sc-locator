@@ -1449,6 +1449,56 @@ without. Not yet surveyed in game with the new mode. That replay was then
 added to `traces.json` as `lake-001` (169 logged positions, level 1,229.9 m)
 so the lake shows until it is surveyed with the new mode.
 
+**First lake survey in game (`lake-002`, 2026-10-18).** 85 points, level
+1,232.0 m (lake-001's replay: 1,229.9 m); about 98% of lake-001's water is
+inside it. Skimmed at ~5 m/s, at most 51 m/s. One misread got through: z
+129,051 read as 129,668, 617 m off the north shore in 4 s (154 m/s) but only
+78 m higher, under both TRACE_MAX_CLIMB and the 3,000 m/s limit. It drew a
+~29,000 m2 wedge of false water and was removed by hand (backup in bak/).
+Since then the speed limit is per kind, `TRACE_MAX_SPEED`: railways keep
+3,000 m/s (railway-001 was flown at ~350, up to 650), lakes 100 m/s. A
+replay of lake-002 drops only that point. A sea, too big to skim at under
+100 m/s, will need its own kind with its own limit.
+
+**Sea survey (built 2026-10-18).** A trace of kind `sea` (SURVEY > survey a
+sea), for water too big to skim at under 100 m/s. Asked, the user chose a
+lake in all but speed: any sea, not one place; the level from the first fix
+(not the HUD's heights, nor a fixed value); the water still the fan from the
+first point, accepting that over a big sea a headland the start cannot see
+past is covered; and `TRACE_MAX_SPEED` 1,000 m/s, with no other guard. So a
+misread like lake-002's (617 m in 4 s) gets through on a sea; only one over
+1,000 m/s or `TRACE_MAX_CLIMB` is dropped. `traces.WATER` ("lake", "sea")
+marks the kinds with a level and a fan; the overlay says SEA / END SEA, and
+the height map draws seas as lakes under one switch, "Lakes and seas".
+`STEP_M` (25 m) is left alone: flown fast, points are spaced by how often
+the HUD is read (a fix every ~2-6 s, so ~600 m+ at 300 m/s), not by it.
+First flown 2026-10-18 (`sea-001`, microTech, 13 minutes) and lost: the
+first fix had y read with a minus sign (-429,205.7 for 429,205.7), 858 km
+off at the right height, so it passed the climb check. Every fix after it
+was judged against it and dropped as a position jump (858 km needs 858 s
+at 1,000 m/s; the flight took 800 s), and END left one point: "too short".
+Every point after the first is checked against the one before it, but the
+first was checked against nothing. Since then `trace_fix` holds the first
+fix (`State.trace_held`) until the next one agrees with it (`trace_jump`:
+climb and speed), and replaces it with that one if not; a lake's level is
+set only then, so the overlay keeps saying "skim the water" until it is.
+Replaying sea-001's 110 logged positions (one every ~6 s) keeps 93 of
+them, level 407.7 m, a sea about 31 x 29 km.
+
+**Waterway survey (built 2026-10-18).** A trace of kind `waterway` (SURVEY >
+survey a waterway) for rivers and canals: start at one end, fly along the
+middle, END TRACE at the other. No level and no fan: a line, painted into
+the lakes' water mask with PIL `line(joint="curve")`, so it joins a lake it
+runs into and gets the same shore edge. Width chosen with the user: real
+metres, to scale, never under 2 px. Each waterway stores `width_m`, copied
+from `waterway_width_m` (default 30 m) when it starts, so the default can be
+tuned and one waterway corrected in `traces.json` without moving the
+others. At 30 m it is 5 px at 6.25 m a pixel, nearly all shore colour,
+and 2 px from 15 m a pixel out. `TRACE_MAX_SPEED` 200 m/s. Heights under a
+waterway are not left out of the relief as a lake's are: at 30 m it is
+narrower than a 100 m cell. The height map switch is now "Lakes, seas,
+rivers". Not yet flown in game.
+
 **Jumping to the height map (2026-10-17).** SHOW ON HEIGHT MAP in the
 Waypoints tab, and a right-click menu on star map pins (Show on height map,
 Show details), call `HeightMapTab.show_waypoint`: it opens the waypoint's
@@ -1524,6 +1574,69 @@ What an import checks, and why:
 
 Replacing a body report replaces what the sun times and the star map's
 placing of that body come from.
+
+## SUB and QT on waypoints (2026-10-18)
+
+Two fields on every waypoint, backfilled on load like `system` and `type`:
+
+- `sub`: what kind of place it is, one of `subtypes.SUBTYPES`, or `""` for
+  not said (shown as `none`). It picks the icon on the star map pin and the
+  height map spot. The list and the icons live together in `subtypes.py`;
+  adding a kind is a name and an icon there, nothing else. An icon is shapes
+  in a -1..1 box, drawn on a dark badge, so it reads over the globe and over
+  the height map's colours alike. A `sub` with no icon (an imported one from
+  a newer list, say) falls back to the plain pin.
+- `qt`: whether you can quantum to it. Defaults by frame: `true` in deep
+  space, where what gets marked is a station or a jump point, `false` on a
+  body, where it is mostly your own spot. Applied to the 55 existing
+  waypoints the same way, so the user sets `true` on cities and outposts by
+  hand.
+
+Routing (`qt_hop`): a QT-no target on a body is reached by jumping to the
+nearest, over the ground, of the QT-yes waypoints on that body and its six
+orbital markers. The OMs are always there, so there is always an answer, and
+with no QT-yes waypoints on the body this is exactly the old `VIA OM-x`. The
+VIA line now also gives the bearing from the hop to the target; from a polar
+OM there is no compass bearing, so none is given. A QT-no target in deep
+space hops via the nearest QT-yes deep-space waypoint in the same system,
+direct; with none, no VIA line. A target in orbit still gets no VIA line.
+
+The overlay's live DIST/BRG/turn and arrow still point at the target, not
+the hop: the jump is flown with the game's own marker, and from where it
+drops you the live guidance is the overland leg. The height map draws that
+leg as a dashed magenta great circle from the hop (labelled `QT <name>`) to
+the target; on its gnomonic projection a great circle is a straight line.
+
+The save itself stays one click with no dialog, so the game keeps focus.
+RENAME on the panel became EDIT: name, a SUB menu and a QT box, so both can
+be set in game right after saving. `edit_waypoint` checks the SUB before the
+rename, so a refused edit changes nothing.
+
+The Waypoints tab has a name search (`search_waypoints`): part of the name,
+any case, filtering as you type, on top of the system/body/type filters. It
+matches the name only, as asked; not SUB or note. Picking a pin on a map
+clears it along with the other filters if it would hide that waypoint.
+
+## Flown legs in the relief (microTech, 2026-10-18)
+
+The expanding square's legs show in the height map's colours and shading.
+In a 12 x 12 km view (910 cells, most with one reading), each cell against
+a sloping fit to its neighbours within 400 m: typically 11 m off, 5% more
+than 54 m, and a cell's error matches its nearest neighbour's (correlation
+0.51), so stretches of a leg read high or low together. The fill adds to
+it: `height_grid` is inverse-distance weighted and passes through every
+cell, so the ground comes out flattest on the track (median slope 0.19)
+and steeper between legs (0.28-0.33). Tried in a scratch script, numpy
+only: a Gaussian average (200 and 300 m) and a sloping (local plane) fit
+(200-400 m). They soften the legs without removing them, blur real
+detail, and the plane fit blows single bad cells up into dark pits.
+Dropping cells over 30 m off their neighbours took 144 of 901, real ridge
+included, leaving holes. The fill was left as it is. More readings per
+cell are the fix: a second square, offset half a line spacing.
+
+The closest height map zoom is now 6.25 m a pixel (grid 0.05 deg, ~870 m,
+on microTech and Hurston). The survey pattern is drawn 3 px wide, 4 on the
+current leg, dashes 10/6, for a small screen.
 
 ## Still open
 
