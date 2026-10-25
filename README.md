@@ -687,6 +687,7 @@ The result is `dist\sc-locator.exe`.
 | `sc_locator.spec` | PyInstaller build recipe |
 | `bodies.json` | measured analyses for the Stanton bodies |
 | `NOTES.md` | detailed development notes: how the HUD behaves, what OCR gets wrong, and why things work the way they do |
+| `OCR-PERFORMANCE.md` | the switch to tesserocr and reading only the needed HUD rows, with before/after measurements |
 
 ---
 

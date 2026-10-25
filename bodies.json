@@ -721,5 +721,36 @@
     "t_ref": 1792120184.4860075,
     "subsolar_lon_ref": -66.71403084007272,
     "label": "planet"
+  },
+  "space 20451006,-24368053,-294 km": {
+    "scope": "space",
+    "system": "stanton",
+    "analysed": "2026-10-25 09:12",
+    "site_sys": [
+      20451005762.5,
+      -24368052944.3,
+      -294081.7
+    ],
+    "samples": 52,
+    "duration_s": 60.06482481956482,
+    "kind": "fixed",
+    "label": "Lagrange station",
+    "station": {
+      "name": "ARC-L2 Lively Pathway Station",
+      "body": "ArcCorp Lagrange Point 2",
+      "faction": "United Empire of Earth",
+      "services": [
+        "refinery",
+        "repair",
+        "refuel",
+        "clinic",
+        "shops",
+        "trade",
+        "habs"
+      ],
+      "pads": null,
+      "armistice": true,
+      "source": "UEX 2026-10-24"
+    }
   }
 }
