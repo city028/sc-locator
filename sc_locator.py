@@ -53,7 +53,7 @@ import survey                            # noqa: E402
 import traces                            # noqa: E402
 
 # A one-file .exe unpacks to a temp folder that is deleted on exit, so data is
-# kept beside the .exe instead. BUNDLE is where the packed Tesseract lives.
+# kept beside the .exe instead. BUNDLE is where the packed language data lives.
 FROZEN = getattr(sys, "frozen", False)
 BUNDLE = Path(getattr(sys, "_MEIPASS", HERE))
 if FROZEN:
@@ -89,7 +89,7 @@ TRACE_MAX_SPEED = {"railway": SURVEY_MAX_SPEED, "lake": 100.0,
 # A survey starting this close to a survey waypoint does not add another.
 SURVEY_MARK_SPACING_M = 5000.0
 
-TESS_CONFIG = "--psm 6 -c preserve_interword_spaces=1"
+TESS_PSM = 6                             # one uniform block of text
 
 DEFAULT_CONFIG = {
     "monitor": 1,                        # mss monitor index (1 = primary)
@@ -112,10 +112,13 @@ DEFAULT_CONFIG = {
     "contrast_cuts": [28, 18, 40, 12],
     "interval": 1.0,                     # seconds between captures
     # With the game closed there is nothing to read, and each miss costs one
-    # Tesseract process per contrast cut in the ladder. Idle polling only looks
+    # Tesseract read per contrast cut in the ladder. Idle polling only looks
     # for the game, which is why it can be this slow without being noticed.
     "idle_interval": 5.0,                # seconds between checks while idle
     "game_process": ["starcitizen.exe"], # any match means the game is up
+    # Recognise only the HUD rows the parsers use once their layout is known,
+    # about twice as fast; false reads every row, every time.
+    "read_rows_only": True,
     # Above this height over the reference sphere you are called to be in
     # space rather than at the body, however far the body's zone reaches. A
     # zone extends Gm beyond its surface -- 55 Gm from Crusader is still
@@ -796,8 +799,9 @@ _ELEV_RE = re.compile(r"[li1]ev[a@]t[^\d]{0,16}?(-?\d[\d.]*)", re.I)
 _ALT_RE = re.compile(r"[li1]t[li1]tude[^\d]{0,8}(\d[\d.]*)", re.I)
 
 
-# Tesseract ships as a separate binary and its Windows installer does not put
-# it on PATH, so look in the usual install locations before giving up.
+# Tesseract runs in-process through tesserocr, which brings the engine but not
+# its language data. That comes from a Tesseract install, whose Windows
+# installer does not put itself on PATH, so look in the usual places too.
 _TESSERACT_GUESSES = [
     r"C:\Program Files\Tesseract-OCR\tesseract.exe",
     r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe",
@@ -808,36 +812,251 @@ _TESSERACT_GUESSES = [
 ]
 
 
-def find_tesseract(configured=None):
-    """Return a usable tesseract path, or None.
+def find_tessdata(configured=None):
+    """Return the folder holding eng.traineddata, or None.
 
-    Order: the configured path, then PATH, then the usual install locations.
+    Order: beside the configured tesseract.exe, the packed copy, then beside
+    tesseract on PATH and in the usual install locations. None leaves the
+    choice to Tesseract itself (TESSDATA_PREFIX, or where it was built for).
     """
-    if configured:
-        return configured
-    bundled = BUNDLE / "tesseract" / "tesseract.exe"
-    if FROZEN and bundled.is_file():
-        os.environ["TESSDATA_PREFIX"] = str(bundled.parent / "tessdata")
-        return str(bundled)
+    dirs = [Path(configured).parent / "tessdata"] if configured else []
+    if FROZEN:
+        dirs.append(BUNDLE / "tesseract" / "tessdata")
     found = shutil.which("tesseract")
-    if found:
-        return found
-    return next((p for p in _TESSERACT_GUESSES if os.path.isfile(p)), None)
+    dirs += [Path(p).parent / "tessdata"
+             for p in ([found] if found else []) + _TESSERACT_GUESSES]
+    return next((str(d) for d in dirs if (d / "eng.traineddata").is_file()),
+                None)
 
 
-def setup_tesseract(cfg):
-    """Point pytesseract at the binary; exit with advice if there isn't one."""
-    import pytesseract
+def open_ocr(cfg, psm=TESS_PSM):
+    """A Tesseract engine, kept for the life of one thread.
 
-    path = find_tesseract(cfg["tesseract_cmd"])
-    if path is None:
-        sys.exit(
-            "tesseract not found. Install it, then either add it to PATH or set\n"
-            '"tesseract_cmd" in locator_config.json, e.g.\n'
+    Loading the language data is most of what starting a tesseract.exe per
+    read used to cost, so it is loaded once here. An engine must not be shared
+    between threads. Raises RuntimeError with advice when there is no data.
+    """
+    import tesserocr
+
+    path = find_tessdata(cfg["tesseract_cmd"])
+    try:
+        api = tesserocr.PyTessBaseAPI(lang="eng", psm=psm,
+                                      **({"path": path} if path else {}))
+    except RuntimeError:
+        raise RuntimeError(
+            "Tesseract language data (eng.traineddata) not found. Install\n"
+            "Tesseract, or set \"tesseract_cmd\" in locator_config.json to the\n"
+            "tesseract.exe whose tessdata folder holds it, e.g.\n"
             r'  "tesseract_cmd": "C:\Program Files\Tesseract-OCR\tesseract.exe"'
-        )
-    pytesseract.pytesseract.tesseract_cmd = path
-    return path
+        ) from None
+    api.SetVariable("preserve_interword_spaces", "1")
+    return api
+
+
+def ocr_text(api, img):
+    """Text Tesseract reads in a preprocessed image."""
+    api.SetImage(img)
+    return api.GetUTF8Text()
+
+
+_TSV_COLUMNS = ("level", "page_num", "block_num", "par_num", "line_num",
+                "word_num", "left", "top", "width", "height", "conf", "text")
+
+
+def ocr_boxes(api, img):
+    """Words and their boxes, as columns keyed like Tesseract's TSV output."""
+    api.SetImage(img)
+    data = {k: [] for k in _TSV_COLUMNS}
+    for row in api.GetTSVText(0).splitlines():
+        cells = row.split("\t", len(_TSV_COLUMNS) - 1)
+        if len(cells) < len(_TSV_COLUMNS):
+            continue
+        for k, v in zip(_TSV_COLUMNS, cells):
+            data[k].append(v if k == "text" else int(float(v)))
+    return data
+
+
+# ----------------------------------------------------------------------------
+# Reading only the rows that matter
+#
+# Recognising text is nearly all of a read's cost, and the HUD prints some 35
+# rows of which the parsers use about ten. Finding where the rows are, without
+# recognising them, takes a fraction of the time (75 ms against ~980 ms for a
+# full read, game running). So once a full read has parsed, its row layout is
+# kept; a later frame whose rows sit in the same places has only the wanted
+# rows recognised. Anything else -- rows added, removed or moved, or a partial
+# read that yields less than the full read it learned from -- falls back to a
+# full read on the same frame.
+# ----------------------------------------------------------------------------
+
+# Rows the parsers read: the Zone rows, the player location, Planet, CamPos and
+# Radius (which also carries the heights), and the rows hud_visible looks for.
+_ROW_KEYS = ("zone", "location", "planet", "campos", "radius") + _HUD_MARKERS
+
+
+def _wanted_row(line):
+    """Is this a row the parsers read? As forgiving of misreads as they are.
+
+    "Current player tocation" was read once, and the parser still took it.
+    """
+    return bool(any(k in canon(line) for k in _ROW_KEYS)
+                or _LOCATION_RE.search(line) or _ZONE_KW_RE.search(line))
+
+
+def hud_fields(text, default_radius):
+    """The parts of the readout a HUD read yields, as a set of names."""
+    res = parse_readout(text, default_radius)
+    found = {
+        "fix": res is not None,
+        "radius": res is not None and res[3],
+        "heights": parse_heights(text) != (None, None),
+        "system_pos": parse_system_pos(text) is not None,
+        "system": parse_system(text) is not None,
+        "location": parse_location(text) is not None,
+        "hud": hud_visible(text),
+        "root": any("root" in canon(ln) for ln in text.splitlines()),
+    }
+    return frozenset(k for k, v in found.items() if v)
+
+
+def text_lines(api):
+    """Boxes (left, top, right, bottom) of the text lines in the current image.
+
+    Finds the lines without recognising them, which is what makes it cheap.
+    """
+    from tesserocr import RIL
+
+    return [(b["x"], b["y"], b["x"] + b["w"], b["y"] + b["h"])
+            for _, b, _, _ in api.GetComponentImages(RIL.TEXTLINE, True)]
+
+
+def _row_tolerance(lines):
+    """How far a row may drift between frames and still be the same row.
+
+    Half a row's height. Rows were seen to move up to 6 px (of 22) between
+    frames as letters below the line come and go; a row added above shifts
+    the rest by a whole pitch, 26 px.
+    """
+    heights = sorted(b - t for _, t, _, b in lines)
+    return heights[len(heights) // 2] / 2
+
+
+def same_rows(a, b):
+    """Do two sets of line boxes describe the same rows, give or take jitter?
+
+    Row centres move a pixel or two between frames. A row added or removed
+    changes the count; a row grown or shrunk vertically moves a centre.
+    """
+    if not a or len(a) != len(b):
+        return False
+    tol = _row_tolerance(a)
+    return all(abs((p[1] + p[3]) - (q[1] + q[3])) / 2 <= tol
+               for p, q in zip(a, b))
+
+
+def row_bands(lines, wanted, width):
+    """Boxes (left, top, right, bottom) covering the wanted rows.
+
+    Wanted rows at most one row apart share a band: reading the row between
+    them costs less than another recognition. Each band spans the full width,
+    since a row grows and shrinks with its numbers, and reaches halfway to
+    the rows either side so that none of them is cut through.
+    """
+    groups = []
+    for i in sorted(wanted):
+        if groups and i - groups[-1][-1] <= 2:
+            groups[-1].append(i)
+        else:
+            groups.append([i])
+    margin = int(_row_tolerance(lines))
+    bands = []
+    for g in groups:
+        rows = lines[g[0]:g[-1] + 1]
+        top = min(t for _, t, _, _ in rows)
+        bottom = max(b for _, _, _, b in rows)
+        above = lines[g[0] - 1][3] if g[0] > 0 else top - 2 * margin
+        below = lines[g[-1] + 1][1] if g[-1] + 1 < len(lines) else bottom + 2 * margin
+        top = max(0, top - margin, (top + above) // 2)
+        bottom = min(bottom + margin, (bottom + below) // 2)
+        bands.append((0, top, width, bottom))
+    return bands
+
+
+class RowReader:
+    """Full reads until the layout is known, then only the wanted rows.
+
+    `fields(text)` names what a read yields (see hud_fields), and a full read
+    that yields anything teaches the layout. A partial read that loses the fix
+    or the radius the full read had is redone in full on the same frame. One
+    that loses something else (a Zone row misread, say) is kept: full reads
+    drop those now and then too, and the State settles them over frames. But
+    SHORT_LIMIT such reads in a row mean a wanted row is being missed, not
+    misread, so the next frame relearns the rows. So does every REFRESH-th.
+    """
+
+    REFRESH = 60
+    SHORT_LIMIT = 3
+    CORE = frozenset({"fix", "radius"})
+
+    def __init__(self, api, fields):
+        self.api = api
+        self.fields = fields
+        self.lines = None       # line boxes at the last read that was trusted
+        self.wanted = None      # indices into lines of the rows to recognise
+        self.learned = None     # what the full read the layout came from yielded
+        self.partials = 0       # partial reads since the last full one
+        self.short = 0          # partial reads in a row that yielded less
+        self.partial = False    # whether the last read was partial
+
+    def read(self, img):
+        api = self.api
+        self.partial = False
+        api.SetImage(img)
+        if self.lines is not None and self.partials < self.REFRESH:
+            lines = text_lines(api)
+            if same_rows(lines, self.lines):
+                # Each band is cropped rather than set as a rectangle: a
+                # rectangle starting at x=0 and spanning the full width makes
+                # Tesseract 5.5 read the bottom of the image instead.
+                text = "".join(ocr_text(api, img.crop(band)) for band
+                               in row_bands(lines, self.wanted, img.width))
+                got = self.fields(text)
+                if got >= self.learned & self.CORE:
+                    self.short = 0 if got >= self.learned else self.short + 1
+                    # follow the rows' slow drift, or relearn next frame
+                    self.lines = lines if self.short < self.SHORT_LIMIT else None
+                    self.partials += 1
+                    self.partial = True
+                    return text
+                api.SetImage(img)           # back from the last band
+        self.lines = None
+        text = api.GetUTF8Text()
+        found = self.fields(text)
+        if found:
+            self._learn(found)
+        return text
+
+    def _learn(self, found):
+        """Note the layout of the full read just made, and its wanted rows."""
+        from tesserocr import RIL
+
+        centres = []
+        it = self.api.GetIterator()
+        while it is not None:
+            if _wanted_row(it.GetUTF8Text(RIL.TEXTLINE) or ""):
+                _, t, _, b = it.BoundingBox(RIL.TEXTLINE)
+                centres.append((t + b) / 2)
+            if not it.Next(RIL.TEXTLINE):
+                break
+        lines = text_lines(self.api)
+        if not centres or not lines:
+            return
+        tol = _row_tolerance(lines)
+        wanted = [i for i, (_, t, _, b) in enumerate(lines)
+                  if any(abs((t + b) / 2 - c) <= tol for c in centres)]
+        if wanted:
+            self.lines, self.wanted, self.learned = lines, wanted, found
+            self.partials = self.short = 0
 
 
 def open_capture():
@@ -985,7 +1204,7 @@ def planet_zone_position(zones, planet):
 # Automatic page segmentation for the find pass. Sparse mode (psm 11) finds the
 # words but does not group them into lines, and the find pass needs whole lines
 # so it can test each one for a parseable CamPos row.
-TESS_FIND_CONFIG = "--psm 3"
+TESS_FIND_PSM = 3
 
 
 def find_region(sct, cfg):
@@ -998,14 +1217,11 @@ def find_region(sct, cfg):
 
     Returns [left, top, right, bottom] as monitor fractions, or None.
     """
-    import pytesseract
-
     full = dict(cfg)
     full["region"] = [0.0, 0.0, 1.0, 1.0]
     raw = grab_region(sct, full)
-    data = pytesseract.image_to_data(preprocess(raw, full),
-                                     config=TESS_FIND_CONFIG,
-                                     output_type=pytesseract.Output.DICT)
+    with open_ocr(cfg, TESS_FIND_PSM) as api:
+        data = ocr_boxes(api, preprocess(raw, full))
 
     rows = {}
     for i, txt in enumerate(data["text"]):
@@ -1997,10 +2213,10 @@ class State:
 # Is the game running?
 #
 # With no game there is no HUD, and OCRing an empty desktop costs one Tesseract
-# process per contrast cut in the ladder, every interval -- some 9,500 of them
-# across one idle session, which is the likeliest cause of the heap corruption
-# Tesseract was reported to die of. So look for the process first and skip the
-# capture entirely when it is absent.
+# read per contrast cut in the ladder, every interval. When each read was its
+# own tesseract.exe that was some 9,500 processes across one idle session, the
+# likeliest cause of the heap corruption Tesseract was reported to die of. So
+# look for the process first and skip the capture entirely when it is absent.
 #
 # Fails soft: an unreadable process list returns None, meaning "cannot tell",
 # and None is treated as running so a detection problem can never stop the
@@ -3736,11 +3952,15 @@ def render(state, notes=True):
 
 def ocr_worker(state, cfg, stop):
     try:
-        import pytesseract
-        setup_tesseract(cfg)
+        api = open_ocr(cfg)
     except Exception as exc:
         state.set_error(f"missing dependency: {exc}")
         return
+    if cfg["read_rows_only"]:
+        read = RowReader(api, functools.partial(
+            hud_fields, default_radius=cfg["default_radius"])).read
+    else:
+        read = functools.partial(ocr_text, api)
     # The HUD is near-white, but so is bright terrain and sky. One fixed cut-off
     # cannot suit every background, so retry the same frame at other cut-offs
     # before giving up, and keep whichever worked at the front of the list.
@@ -3750,7 +3970,7 @@ def ocr_worker(state, cfg, stop):
     with open_capture() as sct:  # mss handles are per-thread, so create it here
         while not stop.is_set():
             t0 = time.time()
-            # No game means no HUD, and a miss costs one Tesseract process per
+            # No game means no HUD, and a miss costs one Tesseract read per
             # contrast cut in the ladder. Skip the capture entirely rather than
             # OCRing an empty desktop several times a second.
             state.set_game_up(game_running(cfg["game_process"]))
@@ -3761,8 +3981,7 @@ def ocr_worker(state, cfg, stop):
                 raw = grab_region(sct, cfg)
                 res = sys_pos = None
                 for i, thr in enumerate(ladder):
-                    text = pytesseract.image_to_string(
-                        preprocess(raw, cfg, thr), config=TESS_CONFIG)
+                    text = read(preprocess(raw, cfg, thr))
                     # From the first cut that reads it. With no body in range
                     # every cut is tried, and the last is the poorest.
                     sys_pos = sys_pos or parse_system_pos(text)
@@ -4883,9 +5102,11 @@ def cmd_calibrate(args):
         cfg["region"] = args.region
     if args.cut is not None:
         cfg["contrast_cut"] = args.cut
-    import pytesseract
-
-    print(f"tesseract: {setup_tesseract(cfg)}")
+    try:
+        api = open_ocr(cfg)
+    except RuntimeError as exc:
+        sys.exit(str(exc))
+    print(f"tesseract data: {api.GetDatapath()}")
     if args.delay:
         print("switch to the game - capturing in %ds" % args.delay, flush=True)
         time.sleep(args.delay)
@@ -4902,7 +5123,7 @@ def cmd_calibrate(args):
     processed = preprocess(raw, cfg)
     raw.save(HERE / "calib_raw.png")
     processed.save(HERE / "calib_processed.png")
-    text = pytesseract.image_to_string(processed, config=TESS_CONFIG)
+    text = ocr_text(api, processed)
     print("---- OCR text ----")
     print(text)
     print("---- parsed ----")

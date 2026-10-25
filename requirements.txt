@@ -2,10 +2,11 @@
 mss
 numpy
 pillow
-pytesseract
+tesserocr
 
-# pytesseract is only a wrapper -- the Tesseract OCR engine is a separate
-# install and its Windows installer does NOT add itself to PATH:
+# tesserocr runs the Tesseract OCR engine inside Python but does not include
+# its language data. Install Tesseract for that -- its Windows installer does
+# NOT add itself to PATH:
 #   winget install UB-Mannheim.TesseractOCR
 # sc_locator looks on PATH and in the usual install directories; if yours is
 # somewhere else, set "tesseract_cmd" in locator_config.json.

@@ -1638,6 +1638,72 @@ The closest height map zoom is now 6.25 m a pixel (grid 0.05 deg, ~870 m,
 on microTech and Hurston). The survey pattern is drawn 3 px wide, 4 on the
 current leg, dashes 10/6, for a small screen.
 
+## OCR engine: tesserocr instead of pytesseract (2026-10-25)
+
+pytesseract starts a `tesseract.exe` per read, which reloads the language data
+each time. tesserocr runs the engine inside Python and keeps one engine per
+thread. It releases the GIL while reading: the Tk thread's worst pause during
+three full reads was 18 ms.
+
+Measured on 20 frames of the real HUD near Crusader (788x403 crop, scale 2.0,
+cut 28), alternating engines frame by frame:
+
+| conditions | pytesseract | tesserocr |
+|---|---|---|
+| game in its menus | ~905 ms | ~780 ms |
+| logged in, in flight | ~1100-1400 ms | ~900-1150 ms |
+
+Both gave the same fix on 79 of 80 reads; the odd one out was pytesseract
+reading Crusader's radius as 7,450,910.
+
+Tried and not worth it:
+- `OMP_THREAD_LIMIT` 1, 2 or 4: no difference beyond run-to-run noise.
+- The fast English model: the UB Mannheim install already ships it (same file
+  as `tessdata_fast`, md5 `d1be414f...`).
+- Word lists off (`load_system_dawg`, `load_freq_dawg`): about 2%, noise.
+- Scale 1.0: about 45% faster but 0-1 of 20 frames right -- digits swap
+  (5/8, 0/9) into fixes that still look plausible. Scale 1.5 needs
+  `contrast_radius` 4.5 (in proportion) to stay 20/20, and saves about 10%;
+  left at 2.0 until it has been checked over more backgrounds.
+
+## Reading only the wanted rows (2026-10-25)
+
+Most of a read is recognising the ~31-35 HUD rows, of which the parsers use
+about ten. `RowReader` learns the row layout from a full read, then on later
+frames finds the lines without recognising them (75 ms) and, if they sit where
+they did, recognises only the wanted rows. `read_rows_only: false` turns it off.
+
+- Each read is checked against the fields (`hud_fields`) the full read it
+  learned from yielded. Losing the fix or the radius redoes the frame in full.
+  Losing anything else is kept -- full reads drop Zone-row fields now and then
+  too, and the State settles them over frames -- but three such reads in a row
+  relearn the rows. Without a check, the first layout, learned from a frame
+  that read "Current player tocation", dropped the location for 24 frames.
+  Redoing every short read in full cost ~2 s per frame and happened on 3 of 20
+  live frames, which is what made the check this lenient.
+- Rows may drift half a row height between layouts. They were seen moving up
+  to 6 px of 22 as letters below the line came and went; a quarter height
+  failed on that. A row added above moves the rest by 26 px.
+- Rows are picked with the parsers' own misread-tolerant patterns, and every
+  HUD marker row is kept (the synthetic test HUD has no CamDir row).
+- Bands are cropped in PIL, not set with `SetRectangle`: a rectangle starting
+  at x=0 and spanning the full width makes Tesseract 5.5.3 read the bottom of
+  the image, whatever its top.
+- A full read relearns the rows every 60 partial reads.
+
+On the 20 saved frames run twice, with the Vulture frame (a different layout)
+dropped in: 38 of 41 reads partial, 0.56x the time of full reads (630 against
+1228 ms per read, game running). Fix, heights, system, location and HUD-visible
+matched the full read on every read. The system position and the Root row
+read *more* consistently: 717.5 every time, matching the SolarSystem row,
+where the full read wavers between that and 747.5 or misses it.
+
+Live at ArcCorp (20 frames, then replayed with the final rules): 19 of 20
+partial, 0.55x the time. CamPos identical on every frame. Where the two
+disagreed, the row read had the altitude right 7 times to the full read's 1;
+it read the radius as 800000.9 three times (the State keeps the roundest) and
+the location once with a stray "{LZ ..." tail (settled over frames).
+
 ## Still open
 
 - `HDG` is course over ground, not facing — wrong whenever hovering, strafing

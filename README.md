@@ -563,7 +563,8 @@ program is closed. The ones you are most likely to change:
 | `waterway_width_m` | `30` | how wide (m) a new waterway is drawn on the height map |
 | `min_move` | `20.0` | metres you must move before your heading updates |
 | `game_process` | `["starcitizen.exe"]` | process names that count as the game running |
-| `tesseract_cmd` | `null` | path to your own `tesseract.exe`, to use instead of the packed one |
+| `read_rows_only` | `true` | read only the HUD rows the locator uses once their layout is known (about twice as fast); `false` reads every row every time |
+| `tesseract_cmd` | `null` | path to your own `tesseract.exe`; its `tessdata` folder is used instead of the packed one |
 
 The rest (`scale`, `contrast_*`, `far_line_m`, `default_radius`) tune the OCR
 and are best left alone.
@@ -658,7 +659,9 @@ command prompt, reproduce it, and attach `session.log`.
 
 ## Building from source
 
-Needs Windows, Python 3 (tested on 3.14) and Tesseract.
+Needs Windows, Python 3 (tested on 3.14) and Tesseract. The OCR runs inside
+Python through [tesserocr](https://github.com/sirfz/tesserocr); the Tesseract
+install supplies only its English language data.
 
 ```
 winget install UB-Mannheim.TesseractOCR
@@ -666,8 +669,8 @@ pip install -r requirements.txt
 python sc_locator.py run
 ```
 
-To build the `.exe` (Tesseract is copied in from its install folder; set
-`TESSERACT_DIR` if it is not in `C:\Program Files\Tesseract-OCR`):
+To build the `.exe` (the language data is copied in from the Tesseract install
+folder; set `TESSERACT_DIR` if it is not in `C:\Program Files\Tesseract-OCR`):
 
 ```
 pip install pyinstaller
@@ -691,9 +694,10 @@ The result is `dist\sc-locator.exe`.
 
 - SC Locator is released under the [MIT licence](LICENSE).
 - The `.exe` contains [Tesseract OCR](https://github.com/tesseract-ocr/tesseract)
-  (Apache License 2.0), from the
+  (Apache License 2.0) through [tesserocr](https://github.com/sirfz/tesserocr)
+  (MIT), with the English language data from the
   [UB Mannheim Windows build](https://github.com/UB-Mannheim/tesseract/wiki).
-  Its licence is packed in the `.exe` as `tesseract/LICENSE`.
+  Tesseract's licence is packed in the `.exe` as `tesseract/LICENSE`.
 - Station data comes from the [UEX Corp](https://uexcorp.space) community API.
 - This is a fan-made tool, not affiliated with or endorsed by Cloud Imperium
   Games. Star Citizen® is a trademark of Cloud Imperium Rights LLC. It only
