@@ -1561,6 +1561,16 @@ box fits inside the building's outline (`traces.inside_ring` on its four
 corners), at any zoom; otherwise the outline gets `<Enter>`/`<Leave>` tag
 bindings that show it by the pointer (canvas items tagged `name`).
 
+Renaming on the height map: a click that did not drag (`dragged`, set by
+any B1-Motion since the press) is resolved in `on_release` against
+`building_items` (outline item -> trace name, label) with
+`find_overlapping`, the topmost outline winning, and opens
+`ask_building_name`: a ttk.Combobox (the main window is ttk throughout,
+unlike the overlay) with the names given so far, OK / CLEAR / X. It saves
+through `label_trace`. Checked in a test window: a 20 px drag over a
+building opens nothing; a click opens it on the current name, and the new
+one is saved.
+
 **Walking on past the start (Pad 2, 2026-10-25).** building-004 "Pad 2 -
 Wrong": one full lap (back within 0.7 m of the start at point 35 of 51),
 then on up the west side and along the top. Joined back from the far

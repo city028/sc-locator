@@ -1006,6 +1006,8 @@ class HeightMapTab:
         self.contours = None    # (key, frame, (half_w, half_h), lines): draw
         self.relief = None      # (key, frame, (half_w, half_h), relief_grid)
         self.job, self.settle = None, None      # see schedule
+        self.dragged = False    # the press now held has moved the map
+        self.building_items = {}    # outline item -> (trace name, label)
 
         side = tk.Frame(self.frame, bg=BG)
         side.pack(side="left", fill="y", padx=(0, 8))
@@ -1043,13 +1045,15 @@ class HeightMapTab:
             ttk.Checkbutton(side, text=text, variable=self.show[name],
                             command=self.draw).pack(anchor="w")
         self.types = type_switches(side, ("poi", "survey"), self.draw)
+        self.show["poi_height"] = tk.BooleanVar(value=True)
+        ttk.Checkbutton(side, text="POI heights",
+                        variable=self.show["poi_height"],
+                        command=self.draw).pack(anchor="w")
         tk.Label(side, font=mono(9), fg=DIM, bg=BG, justify="left",
                  anchor="w",
-                 text="SURVEY records the ground.\n"
-                      "grey: not measured\nbrown: contour lines\n"
+                 text="grey: not measured\nbrown: contour lines\n"
                       "pin number: ground height\n"
                       "dashes: survey course\n"
-                      "ticked line: railway\n"
                       "blue: water, its level\n"
                       "+ : you are here\n"
                       "drag: move, wheel: zoom").pack(anchor="w", fill="x")
@@ -1117,15 +1121,32 @@ class HeightMapTab:
         self.draw()
 
     def on_press(self, e):
-        self.press = (e.x, e.y)
+        self.press, self.dragged = (e.x, e.y), False
 
-    def on_release(self, _e):
+    def on_release(self, e):
+        """A click that did not move the map, on a building: rename it."""
+        clicked = self.press is not None and not self.dragged
         self.press = None
+        if not clicked:
+            return
+        hit = [self.building_items[i] for i in self.canvas.find_overlapping(
+            e.x, e.y, e.x, e.y) if i in self.building_items]
+        if hit:
+            self.rename_building(*hit[-1], at=(e.x_root, e.y_root))   # on top
+
+    def rename_building(self, name, label, at=None):
+        with self.state.lock:
+            given = self.scl.building_labels(self.state.traces)
+        new = ask_building_name(self.frame, name, label or "", given, at)
+        if new is not None and new != (label or ""):
+            self.scl.label_trace(self.state, name, new)
+            self.draw()
 
     def on_drag(self, e):
         if self.press is None or self.centre is None:
             return
         dx, dy = e.x - self.press[0], e.y - self.press[1]
+        self.dragged = self.dragged or dx != 0 or dy != 0
         self.press = (e.x, e.y)
         self.goto_var.set("")
         with self.state.lock:
@@ -1280,8 +1301,8 @@ class HeightMapTab:
                       and t["kind"] == "waterway" and len(t["points"]) >= 2]
             # One walked before offset_m was kept takes today's setting.
             buildings = [(list(t["points"]), t.get(
-                "offset_m", st.cfg["building_wall_offset_m"]), t.get("label"))
-                for t in st.traces if t["planet"] == self.body
+                "offset_m", st.cfg["building_wall_offset_m"]), t.get("label"),
+                t["name"]) for t in st.traces if t["planet"] == self.body
                 and t["kind"] == "building"
                 and len(t["points"]) >= traces.LEAST["building"]]
             # A QT-no target here: the overland leg from where you jump to.
@@ -1366,8 +1387,11 @@ class HeightMapTab:
             return None
 
         if frame:
+            # POIs' heights can be switched off; survey waypoints' stay.
             elev = {wp["name"]: wp.get("elev") for wp in wps
-                    if wp["planet"] == self.body}
+                    if wp["planet"] == self.body
+                    and (self.show["poi_height"].get()
+                         or wp.get("type", "poi") != "poi")}
             subs = {wp["name"]: wp.get("sub", "") for wp in wps}
             for name, p in starmap.body_points(of_types(wps, self.types),
                                                self.body):
@@ -1576,9 +1600,11 @@ class HeightMapTab:
         dark outline, as on a large-scale paper map. A building's name is
         printed on it where it fits inside the walls; where it does not, it
         shows by the pointer while the pointer is over the building (names
-        printed past the walls piled up and buried the map)."""
+        printed past the walls piled up and buried the map). A click on one
+        renames it (see on_release)."""
         c = self.canvas
-        for points, offset, label in buildings:
+        self.building_items = {}
+        for points, offset, label, name in buildings:
             xys = self.on_map(points, frame, radius)
             if not xys:
                 continue
@@ -1590,6 +1616,7 @@ class HeightMapTab:
             outline = c.create_polygon(*[v for p in px for v in p],
                                        fill=BUILDING, outline=BUILDING_EDGE,
                                        width=1)
+            self.building_items[outline] = (name, label)
             if not label:
                 continue
             t = c.create_text(sum(xs) / len(xs), sum(ys) / len(ys),
@@ -2157,6 +2184,57 @@ def ask_conflict(parent, text, can_keep=True):
     win.grab_set()
     win.wait_window()
     return answer["action"], to_all.get()
+
+
+def ask_building_name(parent, name, current, given, at=None):
+    """A building's name (its label), from a box that can be typed in or
+    picked from the names `given` before, opened by the screen point `at`
+    (the click) if given. Returns the name, "" to clear it, or None if
+    cancelled (closing the window, X or Escape)."""
+    win = tk.Toplevel(parent, bg=BG)
+    win.withdraw()                  # placed before it is seen
+    win.title("Building name")
+    win.transient(parent.winfo_toplevel())
+    answer = {"name": None}
+    tk.Label(win, text=name, font=mono(), fg=DIM, bg=BG).pack(
+        anchor="w", padx=10, pady=(10, 4))
+    var = tk.StringVar(value=current)
+    # Typed into, on the dark field: light text. TCombobox's dark text is
+    # for the read-only boxes elsewhere.
+    ttk.Style(win).configure("Name.TCombobox", foreground=FG, insertcolor=FG)
+    box = ttk.Combobox(win, textvariable=var, values=given, width=28,
+                       style="Name.TCombobox")
+    box.pack(fill="x", padx=10)
+    row = tk.Frame(win, bg=BG)
+    row.pack(anchor="e", padx=10, pady=10)
+
+    def choose(value):
+        answer["name"] = value
+        win.destroy()
+
+    ttk.Button(row, text="OK", command=lambda: choose(var.get().strip())).pack(
+        side="left")
+    ttk.Button(row, text="CLEAR", command=lambda: choose("")).pack(
+        side="left", padx=(6, 0))
+    ttk.Button(row, text="X", width=3, command=win.destroy).pack(
+        side="left", padx=(6, 0))
+    box.bind("<Return>", lambda e: choose(var.get().strip()))
+    win.bind("<Escape>", lambda e: win.destroy())
+    if at is not None:
+        # Just below and right of the pointer, kept inside the main window
+        # so it cannot run off the edge of whichever screen that is on.
+        win.update_idletasks()
+        top = parent.winfo_toplevel()
+        right = top.winfo_rootx() + top.winfo_width() - win.winfo_reqwidth()
+        bottom = top.winfo_rooty() + top.winfo_height() - win.winfo_reqheight()
+        win.geometry(f"+{max(top.winfo_rootx(), min(at[0] + 12, right))}"
+                     f"+{max(top.winfo_rooty(), min(at[1] + 12, bottom))}")
+    win.deiconify()
+    box.focus_set()
+    box.select_range(0, "end")
+    win.grab_set()
+    win.wait_window()
+    return answer["name"]
 
 
 # ----------------------------------------------------------------------------

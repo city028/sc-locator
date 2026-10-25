@@ -424,6 +424,8 @@ height map shows them, the star map only when you tick **Survey waypoints**.
   - **POI waypoints** / **Survey waypoints**: your waypoints on that body of
     each type, each with the ground height where it was saved. Both are on
     at first.
+  - **POI heights**: the ground height after each POI's name; untick it
+    to show POI names only. Survey waypoints keep theirs.
 
   A **Go to** list centres the map on a waypoint of the types shown.
 
@@ -505,7 +507,10 @@ Names need not be unique (there is a Mining Control at every mining area);
 `building-001` stays its own. **X** or Escape leaves it unnamed. The name is
 kept as `label` in `traces.json`. On the height map it is printed on the
 building where it fits inside the walls; where it does not, it shows next
-to the pointer while the pointer is over the building.
+to the pointer while the pointer is over the building. Click a building on
+the height map (without dragging) to change its name: type one or pick one
+given before, **OK** or Enter; **CLEAR** removes it; **X** or Escape leaves
+it as it was.
 
 The height map draws it squared off, tan with a dark outline as on a paper
 map (switch **Buildings**; zoom right in, down to 0.4 m a pixel, to see the
