@@ -23,7 +23,7 @@ def system_objects(bodies, waypoints, system):
     Returns {"bodies": [...], "points": [...], "unplaced": [...]}:
     - bodies: analysed bodies with a known centre, as dicts with key, centre,
       radius and label (label "moon" for moons, else whatever was set)
-    - points: deep-space waypoints, as (name, (x, y, z)) in the system frame
+    - points: deep-space waypoints, as (id, (x, y, z)) in the system frame
     - unplaced: names of bodies that carry waypoints but have no centre yet,
       sorted, so they can still be listed and opened
     """
@@ -43,15 +43,16 @@ def system_objects(bodies, waypoints, system):
         if w.get("system") != system:
             continue
         if w.get("frame") == "system":
-            points.append((w["name"], (w["x"], w["y"], w["z"])))
+            points.append((w["id"], (w["x"], w["y"], w["z"])))
         elif w["planet"] not in keys:
             unplaced.add(w["planet"])
     return {"bodies": placed, "points": points, "unplaced": sorted(unplaced)}
 
 
 def body_points(waypoints, body):
-    """Waypoints on `body`, as (name, (x, y, z)) in the planet frame."""
-    return [(w["name"], (w["x"], w["y"], w["z"])) for w in waypoints
+    """Waypoints on `body`, as (id, (x, y, z)) in the planet frame. By id:
+    names repeat (many places are a Cave)."""
+    return [(w["id"], (w["x"], w["y"], w["z"])) for w in waypoints
             if w["planet"] == body and w.get("frame", "planet") == "planet"]
 
 
@@ -289,7 +290,7 @@ def surroundings(body, bodies, waypoints, system):
     orientation, metres, not yet compressed).
 
     {"moons": [(key, offset)], "unplaced_moons": [key],
-     "points": [(name, offset)]}
+     "points": [(id, offset)]}
     Without a known centre for the body nothing can be placed around it, and
     all its moons are unplaced.
     """
@@ -306,7 +307,7 @@ def surroundings(body, bodies, waypoints, system):
         return out
     for w in waypoints:
         if w.get("system") == system and attached_body(w, placed) == body:
-            out["points"].append((w["name"], (w["x"] - centre[0],
+            out["points"].append((w["id"], (w["x"] - centre[0],
                                               w["y"] - centre[1],
                                               w["z"] - centre[2])))
     return out

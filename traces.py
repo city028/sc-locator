@@ -239,6 +239,25 @@ def square(route, offset=0.0, min_m=BUILDING_MIN_M):
             for (a0, p0), (_, p1) in zip(lines, lines[1:] + lines[:1])]
 
 
+def building_facts(route, offset=0.0):
+    """What Show details says about a building walked round as `route`,
+    (x, y) map points: its squared outline's corners, area (m2), size
+    (longer, shorter side of the box round it, along its walls, m) and the
+    walls' direction (degrees east of north, 0..90)."""
+    corners = square(route, offset)
+    area = abs(sum(a[0] * b[1] - b[0] * a[1]
+                   for a, b in zip(corners, corners[1:] + corners[:1]))) / 2
+    (ax, ay), (bx, by) = corners[0], corners[1]
+    th = math.atan2(by - ay, bx - ax)
+    co, si = math.cos(th), math.sin(th)
+    us = [x * co + y * si for x, y in corners]
+    vs = [-x * si + y * co for x, y in corners]
+    a, b = max(us) - min(us), max(vs) - min(vs)
+    return {"corners": len(corners), "area": area, "size": (max(a, b),
+                                                              min(a, b)),
+            "angle": (90.0 - math.degrees(th)) % 90.0}
+
+
 def ticks(line, every=TICK_EVERY_PX, half=TICK_HALF_PX):
     """The cross ticks of the railroad symbol along a line of screen points:
     [(x0, y0, x1, y1)], one every `every` px starting half that in, each

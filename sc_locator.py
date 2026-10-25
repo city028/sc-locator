@@ -39,6 +39,7 @@ import shutil
 import sys
 import threading
 import time
+import uuid
 from difflib import SequenceMatcher
 from pathlib import Path
 
@@ -310,11 +311,39 @@ def backfill_sub_qt(wps):
     return changed
 
 
+def new_id(wps):
+    """A waypoint id nobody in `wps` has. Ids are how the program finds a
+    waypoint; names are only shown, and many places share one (Cave)."""
+    taken = {w.get("id") for w in wps}
+    while True:
+        wid = uuid.uuid4().hex[:12]
+        if wid not in taken:
+            return wid
+
+
+def backfill_ids(wps):
+    """Give waypoints saved before ids existed (and any two that share one)
+    an id of their own. Returns True if any were changed."""
+    changed, seen = False, set()
+    for w in wps:
+        if not isinstance(w.get("id"), str) or w["id"] in seen:
+            w["id"] = new_id(wps)
+            changed = True
+        seen.add(w["id"])
+    return changed
+
+
+def find_waypoint(wps, wid):
+    """The waypoint with id `wid`, or None."""
+    return next((w for w in wps if w.get("id") == wid), None)
+
+
 def load_waypoints():
-    """Waypoints from disk, with any missing system, type, SUB or QT filled
-    in and saved back."""
+    """Waypoints from disk, with any missing id, system, type, SUB or QT
+    filled in and saved back."""
     wps = load_json(WAYPOINT_FILE, [])
-    if backfill_systems(wps) | backfill_types(wps) | backfill_sub_qt(wps):
+    if (backfill_ids(wps) | backfill_systems(wps) | backfill_types(wps)
+            | backfill_sub_qt(wps)):
         save_json(WAYPOINT_FILE, wps)
     return wps
 
@@ -1693,7 +1722,7 @@ class State:
         self.ref = None
         self.heading = None
         self.heading_time = 0.0
-        self.target = None
+        self.target = None       # the id of the waypoint navigated to
         self.status = "starting..."
         self.note = ""
         self.note_time = 0.0
@@ -2414,10 +2443,9 @@ def add_waypoint(wps, planet, pos, radius, name=None, elev=None, agl=None,
         name = name.strip()
         if not name:
             raise ValueError("name cannot be empty")
-        if any(w["name"] == name for w in wps):
-            raise ValueError(f"'{name}' already exists")
     x, y, z = pos
     entry = {
+        "id": new_id(wps),
         "name": name, "planet": planet,
         "system": system or BODY_SYSTEM.get(planet, "unknown"),
         # Which frame x, y and z are in. "planet" is planet-local metres, as
@@ -2439,33 +2467,30 @@ def add_waypoint(wps, planet, pos, radius, name=None, elev=None, agl=None,
     return name
 
 
-def rename_waypoint(wps, old, new):
-    """Rename in place. Renaming to the current name is allowed and is a no-op."""
+def _waypoint(wps, wid):
+    """The waypoint with id `wid`; ValueError if there is none."""
+    target = find_waypoint(wps, wid)
+    if target is None:
+        raise ValueError("that waypoint is gone")
+    return target
+
+
+def rename_waypoint(wps, wid, new):
+    """Rename in place. Names need not be unique: many places are a Cave."""
     new = new.strip()
     if not new:
         raise ValueError("name cannot be empty")
-    target = next((w for w in wps if w["name"] == old), None)
-    if target is None:
-        raise ValueError(f"no waypoint named '{old}'")
-    if new != old and any(w["name"] == new for w in wps):
-        raise ValueError(f"'{new}' already exists")
-    target["name"] = new
+    _waypoint(wps, wid)["name"] = new
 
 
-def delete_waypoint(wps, name):
+def delete_waypoint(wps, wid):
     """Remove a waypoint in place."""
-    for i, w in enumerate(wps):
-        if w["name"] == name:
-            del wps[i]
-            return
-    raise ValueError(f"no waypoint named '{name}'")
+    wps.remove(_waypoint(wps, wid))
 
 
-def set_waypoint_note(wps, name, note):
+def set_waypoint_note(wps, wid, note):
     """Set a waypoint's note in place. An empty note removes it."""
-    target = next((w for w in wps if w["name"] == name), None)
-    if target is None:
-        raise ValueError(f"no waypoint named '{name}'")
+    target = _waypoint(wps, wid)
     note = note.strip()
     if note:
         target["note"] = note
@@ -2473,46 +2498,40 @@ def set_waypoint_note(wps, name, note):
         target.pop("note", None)
 
 
-def set_waypoint_sub(wps, name, sub):
+def set_waypoint_sub(wps, wid, sub):
     """Set what kind of place a waypoint is: one of subtypes.SUBTYPES, or ""
     for not said."""
-    target = next((w for w in wps if w["name"] == name), None)
-    if target is None:
-        raise ValueError(f"no waypoint named '{name}'")
+    target = _waypoint(wps, wid)
     if sub and sub not in subtypes.SUBTYPES:
         raise ValueError(f"'{sub}' is not a SUB")
     target["sub"] = sub
 
 
-def set_waypoint_qt(wps, name, qt):
+def set_waypoint_qt(wps, wid, qt):
     """Set whether a waypoint can be quantum travelled to."""
-    target = next((w for w in wps if w["name"] == name), None)
-    if target is None:
-        raise ValueError(f"no waypoint named '{name}'")
-    target["qt"] = bool(qt)
+    _waypoint(wps, wid)["qt"] = bool(qt)
 
 
-def edit_waypoint(wps, old, new, sub, qt):
+def edit_waypoint(wps, wid, new, sub, qt):
     """Rename and set SUB and QT in one go, as the overlay's EDIT row does.
     Everything is checked before anything changes."""
+    _waypoint(wps, wid)
     if sub and sub not in subtypes.SUBTYPES:
         raise ValueError(f"'{sub}' is not a SUB")
-    rename_waypoint(wps, old, new)
-    set_waypoint_sub(wps, new.strip(), sub)
-    set_waypoint_qt(wps, new.strip(), qt)
+    rename_waypoint(wps, wid, new)
+    set_waypoint_sub(wps, wid, sub)
+    set_waypoint_qt(wps, wid, qt)
 
 
-def set_waypoint_parent(wps, name, parent):
+def set_waypoint_parent(wps, wid, parent):
     """Which body a deep-space waypoint is shown around on the star map.
 
     A body key attaches it there, "none" keeps it off every body, and None
     hands it back to distance (see starmap.attached_body).
     """
-    target = next((w for w in wps if w["name"] == name), None)
-    if target is None:
-        raise ValueError(f"no waypoint named '{name}'")
+    target = _waypoint(wps, wid)
     if target.get("frame") != "system":
-        raise ValueError(f"'{name}' is on a body already")
+        raise ValueError(f"'{target['name']}' is on a body already")
     if parent is None:
         target.pop("parent", None)
     else:
@@ -2574,6 +2593,82 @@ def waypoint_text(w, around=None, bold=True):
     note = (w.get("note") or "").strip()
     if note:
         lines.append(f"Note: {note}")
+    return "\n".join(lines)
+
+
+def waypoint_details_text(w, around=None, here=None):
+    """Show details for a waypoint: what Copy gives, then the orbital
+    marker to drop from, how far it is from you, and when it was saved.
+
+    `here` is {"system", "planet", "latlon", "radius", "sys_pos"} from the
+    current fix (any of them None), or None with no fix: the distance is
+    only given where it means something (see waypoint_groups).
+    """
+    lines = waypoint_text(w, around, bold=False).splitlines()
+    here = here or {}
+    if w.get("frame", "planet") == "planet":
+        tlat, tlon, _ = to_latlon(w["x"], w["y"], w["z"])
+        om, _, gap = nearest_om(tlat, tlon, w.get("radius", 1e6))
+        lines.append(f"Nearest orbital marker {om}, {fmt_dist(gap)} over the "
+                     "ground")
+        if here.get("planet") == w["planet"] and here.get("latlon"):
+            lat, lon = here["latlon"]
+            dist = surface_distance(lat, lon, tlat, tlon,
+                                    here.get("radius") or w.get("radius", 1e6))
+            lines.append(f"From you {fmt_dist(dist)}, bearing "
+                         f"{bearing(lat, lon, tlat, tlon):03.0f}")
+    elif (here.get("sys_pos") is not None
+          and here.get("system") == w.get("system")):
+        lines.append("From you " + fmt_dist(math.dist(
+            here["sys_pos"], (w["x"], w["y"], w["z"]))) + " direct")
+    if w.get("saved"):
+        lines.append(f"Saved {w['saved']}")
+    return "\n".join(lines)
+
+
+def body_details_text(body, system, report, wps, cells, all_traces,
+                      radius=None):
+    """Show details for a planet or moon: its analysis report lines if it
+    has one (`report`, else None), then what has been gathered there."""
+    lines = [f"{body.upper()} - {(system or 'unknown').title()}"]
+    if report:
+        lines += [""] + list(report) + [""]
+    else:
+        lines.append("Not analysed yet: ANALYSE in the overlay measures it.")
+        if radius:
+            lines.append(f"Radius {fmt_dist(radius)}")
+    on = [w for w in wps if w.get("planet") == body]
+    poi = sum(1 for w in on if w.get("type", "poi") == "poi")
+    lines.append(f"Waypoints: {poi} POI, {len(on) - poi} survey")
+    if cells:
+        lines.append(f"Surveyed: {cells:,} height cells")
+    traced = [t for t in all_traces if t["planet"] == body]
+    if traced:
+        counts = {k: sum(1 for t in traced if t["kind"] == k)
+                  for k in traces.KINDS}
+        lines.append("Traced: " + ", ".join(
+            f"{n} {k}{'' if n == 1 else 's'}" for k, n in counts.items() if n))
+    return "\n".join(lines)
+
+
+def building_details_text(t, facts):
+    """Show details for a building: its names, the squared outline
+    (traces.building_facts) and the walk it came from."""
+    head = t.get("label") or t["name"]
+    lines = [head + (f" ({t['name']})" if t.get("label") else ""),
+             f"{(t.get('planet') or 'unknown').title()}",
+             f"{facts['size'][0]:.0f} x {facts['size'][1]:.0f} m, "
+             f"{facts['area']:,.0f} m2, {facts['corners']} corners",
+             # Walls run both ways: the nearer to north reads best.
+             f"Walls {facts['angle']:.0f} deg east of north"
+             if facts["angle"] <= 45.0 else
+             f"Walls {90.0 - facts['angle']:.0f} deg west of north",
+             f"Walked {fmt_dist(traces.length(t))} round, "
+             f"{len(t['points'])} points, outline "
+             f"{t.get('offset_m', 0.0):g} m in from the walk"]
+    if t.get("started") is not None:
+        lines.append("Walked on " + time.strftime(
+            "%Y-%m-%d %H:%M", time.localtime(t["started"])))
     return "\n".join(lines)
 
 
@@ -2687,24 +2782,19 @@ def waypoint_gap(a, b):
 
 
 def import_conflicts(w, wps, near_m=IMPORT_NEAR_M):
-    """(same_name, nearby) for an imported waypoint against ours.
-
-    `same_name` is our waypoint with its name, or None. `nearby` is
-    [(metres, waypoint)] for our others within near_m, nearest first.
-    """
-    same = next((q for q in wps if q["name"] == w["name"]), None)
+    """[(metres, waypoint)] for our waypoints within near_m of an imported
+    one, nearest first. A name of ours it shares is no clash: names repeat
+    (many places are a Cave), and two Caves far apart are two Caves."""
     nearby = []
     for q in wps:
-        if q is same:
-            continue
         gap = waypoint_gap(w, q)
         if gap is not None and gap <= near_m:
             nearby.append((gap, q))
     nearby.sort(key=lambda p: p[0])
-    return same, nearby
+    return nearby
 
 
-def conflict_text(w, same, nearby):
+def conflict_text(w, nearby):
     """The warning shown before an imported waypoint that clashes is added."""
     def block(q):
         lines = waypoint_text(q, bold=False).splitlines()
@@ -2713,41 +2803,25 @@ def conflict_text(w, same, nearby):
         return "\n".join("    " + line for line in lines)
 
     out = [f"'{w['name']}' in the file clashes with your waypoints.", "",
-           "Imported:", block(w)]
-    if same is not None:
-        gap = waypoint_gap(w, same)
-        out += ["", "Has the same name as yours"
-                + (f" ({fmt_dist(gap)} away):" if gap is not None else ":"),
-                block(same)]
-    if nearby:
-        out += ["", f"Is within {IMPORT_NEAR_M:,.0f} m of yours:"]
-        for gap, q in nearby:
-            out += [f"  {fmt_dist(gap)} away:", block(q)]
-    target = (same or nearby[0][1])["name"]
-    out += ["", "Yes adds it as well"
-            + (" under a new name" if same is not None else "")
-            + f", No leaves it out, Replace puts it in place of '{target}'."]
+           "Imported:", block(w), "",
+           f"Is within {IMPORT_NEAR_M:,.0f} m of yours:"]
+    for gap, q in nearby:
+        out += [f"  {fmt_dist(gap)} away:", block(q)]
+    out += ["", "Yes adds it as well, No leaves it out, Replace puts it in "
+            f"place of '{nearby[0][1]['name']}' ({fmt_dist(nearby[0][0])} "
+            "away)."]
     return "\n".join(out)
 
 
-def free_name(wps, name):
-    """`name`, or the first of 'name (2)', 'name (3)', ... nobody has."""
-    taken = {w["name"] for w in wps}
-    n, out = 2, name
-    while out in taken:
-        out, n = f"{name} ({n})", n + 1
-    return out
-
-
 def import_waypoint(wps, w, replace=None):
-    """Add an imported waypoint in place, in place of the one named `replace`.
+    """Add an imported waypoint in place, with an id of our own, in place of
+    the one whose id is `replace`.
 
     Checked before anything is removed, so a refused import loses nothing.
     """
-    if replace is not None and not any(q["name"] == replace for q in wps):
-        raise ValueError(f"no waypoint named '{replace}'")
-    if any(q["name"] == w["name"] and q["name"] != replace for q in wps):
-        raise ValueError(f"'{w['name']}' already exists")
+    if replace is not None:
+        _waypoint(wps, replace)
+    w["id"] = new_id(wps)
     if replace is not None:
         delete_waypoint(wps, replace)
     wps.append(w)
@@ -2776,6 +2850,22 @@ def set_report_notes(bodies, key, notes):
         rec["notes"] = notes
     else:
         rec.pop("notes", None)
+
+
+def place_report_lines(state, key):
+    """The report lines for one place, None if it has no report: live (sun
+    figures as of now) where you are, stored anywhere else.
+
+    The lock is let go before body_report, which takes it itself: holding
+    it there deadlocked the program -- the Reports tab asks every second,
+    so it froze as soon as the report of the body you were on was selected.
+    """
+    with state.lock:
+        rec = state.bodies.get(key)
+        live = rec is not None and current_place(state)[0] == key
+    if live:
+        return body_report(state)
+    return None if rec is None else stored_report_lines(rec)
 
 
 def stored_report_lines(rec):
@@ -3274,8 +3364,7 @@ def start_survey(state, pattern):
     its middle; with nothing targeted, where you are at the next fix.
     """
     with state.lock:
-        wp = next((w for w in state.waypoints if w["name"] == state.target),
-                  None)
+        wp = find_waypoint(state.waypoints, state.target)
         if wp is not None and wp.get("frame", "planet") != "planet":
             wp = None                   # deep space: no ground to start on
         state.survey, state.survey_marked = True, set()
@@ -3916,8 +4005,7 @@ def render_target(state):
     """
     now = time.time()
     with state.lock:
-        wp = next((w for w in state.waypoints if w["name"] == state.target),
-                  None)
+        wp = find_waypoint(state.waypoints, state.target)
         if wp is None:
             return "no target - select one and press TARGET"
 
@@ -3987,8 +4075,7 @@ def target_turn(state, now=None):
     """
     now = time.time() if now is None else now
     with state.lock:
-        wp = next((w for w in state.waypoints if w["name"] == state.target),
-                  None)
+        wp = find_waypoint(state.waypoints, state.target)
         if (wp is None or wp.get("frame") == "system" or state.pos is None
                 or wp.get("planet") != state.planet
                 or state.heading is None or now - state.heading_time >= 15):
@@ -4200,6 +4287,7 @@ def waypoint_rows(state):
 
 def waypoint_groups(state):
     """[(system, body, rows), ...] over every waypoint, nearest context first.
+    Each row is (id, name, distance, bearing, (lat, lon)).
 
     Distance and bearing only mean anything within one body: coordinates are
     planet-local, so a waypoint on another moon has no computable distance from
@@ -4227,7 +4315,7 @@ def waypoint_groups(state):
                 # Measured from the system position, which exists wherever you
                 # are, so a parked ship stays reachable from a planet too.
                 # No LAT/LON: there is no body to take them on.
-                rows.append((w["name"],
+                rows.append((w["id"], w["name"],
                              None if sys_pos is None
                              else math.dist(sys_pos, (w["x"], w["y"], w["z"])),
                              None, None))
@@ -4235,13 +4323,13 @@ def waypoint_groups(state):
             # LAT/LON are the waypoint's own, so every body has them, fix or not.
             tlat, tlon, _ = to_latlon(w["x"], w["y"], w["z"])
             if body == here_body and pos is not None and latlon is not None:
-                rows.append((w["name"],
+                rows.append((w["id"], w["name"],
                              surface_distance(latlon[0], latlon[1], tlat, tlon,
                                               radius),
                              bearing(latlon[0], latlon[1], tlat, tlon),
                              (tlat, tlon)))
             else:
-                rows.append((w["name"], None, None, (tlat, tlon)))
+                rows.append((w["id"], w["name"], None, None, (tlat, tlon)))
         out.append((system, body, rows))
     out.sort(key=lambda g: (g[1] != here_body, g[0] != here_system, g[0], g[1]))
     return out
@@ -4715,9 +4803,9 @@ def run_overlay(state, cfg):
     btn_row2 = tk.Frame(panel, bg=BG)
     btn_row2.pack(fill="x", padx=10, pady=(0, 8))
 
-    shown = []            # (kind, name) per visible line; kind is row or head
+    shown = []            # (kind, id) per visible line; kind is row or head
 
-    def selected_name():
+    def selected_id():
         """The waypoint on the selected line, or None on a heading or nothing."""
         sel = listbox.curselection()
         if sel and sel[0] < len(shown) and shown[sel[0]][0] == "row":
@@ -4740,7 +4828,7 @@ def run_overlay(state, cfg):
         save_waypoint(st)
         refresh_list()
 
-    editing = {"old": None}     # the waypoint whose name the field is editing
+    editing = {"old": None}     # the id of the waypoint the field is editing
 
     def end_rename():
         name_row.pack_forget()
@@ -4774,16 +4862,16 @@ def run_overlay(state, cfg):
         end_bname()
 
     def do_start_rename(st):
-        chosen = selected_name()
+        chosen = selected_id()
         with st.lock:
             if chosen is None:
                 st.flash("select a waypoint first")
                 return
-            w = next((q for q in st.waypoints if q["name"] == chosen), {})
+            w = find_waypoint(st.waypoints, chosen) or {}
             sub_var.set(w.get("sub") or NO_SUB)
             qt_var.set(w.get("qt", default_qt(w.get("frame", "planet"))))
         editing["old"] = chosen
-        name_var.set(chosen)
+        name_var.set(w.get("name", ""))
         name_row.pack(fill="x", padx=10, pady=(0, 2), before=btn_row)
         kind_row.pack(fill="x", padx=10, pady=(0, 6), before=btn_row)
         # The only place anything is typed, so the only time the overlay
@@ -4809,19 +4897,18 @@ def run_overlay(state, cfg):
             except ValueError as exc:
                 st.flash(str(exc))
                 return
-            if st.target == chosen:      # the target follows its waypoint
-                st.target = new
             save_json(WAYPOINT_FILE, st.waypoints)
             st.flash(f"saved {new}")
         end_rename()
         refresh_list()
 
     def do_delete(st):
-        chosen = selected_name()
+        chosen = selected_id()
         with st.lock:
             if chosen is None:
                 st.flash("select a waypoint first")
                 return
+            name = (find_waypoint(st.waypoints, chosen) or {}).get("name")
             try:
                 delete_waypoint(st.waypoints, chosen)
             except ValueError as exc:
@@ -4830,7 +4917,7 @@ def run_overlay(state, cfg):
             if st.target == chosen:
                 st.target = None
             save_json(WAYPOINT_FILE, st.waypoints)
-            st.flash(f"deleted {chosen}")
+            st.flash(f"deleted {name}")
         refresh_list()
 
     def do_target(st):
@@ -4840,7 +4927,7 @@ def run_overlay(state, cfg):
         as targeting, and the panel has enough controls. The label says which
         it will do, so nothing is hidden behind the gesture.
         """
-        chosen = selected_name()
+        chosen = selected_id()
         with st.lock:
             if chosen is None:
                 st.flash("select a waypoint first")
@@ -4850,7 +4937,7 @@ def run_overlay(state, cfg):
                 st.flash(f"target cleared")
             else:
                 st.target = chosen
-                st.flash(f"target: {chosen}")
+                st.flash(f"target: {find_waypoint(st.waypoints, chosen)['name']}")
 
     view = {"report": False, "was_analysing": False}
 
@@ -5076,10 +5163,10 @@ def run_overlay(state, cfg):
         """Rebuild the list, keeping the selection on the same waypoint.
 
         Distances move every second, so the rows are rewritten rather than
-        patched; restoring the selection by name is what stops that rewrite
+        patched; restoring the selection by id is what stops that rewrite
         from stealing it out from under an edit.
         """
-        chosen = selected_name()
+        chosen = selected_id()
         top = listbox.yview()[0]      # delete() resets the scroll to the top
         groups = waypoint_groups(state)
         shown[:] = []
@@ -5095,10 +5182,10 @@ def run_overlay(state, cfg):
             listbox.itemconfig("end", foreground=DIM)
             for row in rows:
                 shown.append(("row", row[0]))
-                listbox.insert("end", "  " + format_row(*row))
+                listbox.insert("end", "  " + format_row(*row[1:]))
         if chosen is not None:
-            for i, (kind, name) in enumerate(shown):
-                if kind == "row" and name == chosen:
+            for i, (kind, wid) in enumerate(shown):
+                if kind == "row" and wid == chosen:
                     listbox.selection_set(i)
                     break
         listbox.yview_moveto(top)
@@ -5153,7 +5240,7 @@ def run_overlay(state, cfg):
                     target_block.pack_forget()
             target_lbl.config(text=render_target(state), fg=colour)
             draw_compass(target_turn(state))
-            chosen = selected_name()
+            chosen = selected_id()
             with state.lock:
                 targeted = chosen is not None and chosen == state.target
             target_btn.config(text="UNTARGET" if targeted else "TARGET")
@@ -5366,10 +5453,25 @@ def cmd_list(_args):
               f"{describe_height(w):<32} {w.get('saved', '')}")
 
 
+def one_named(wps, name):
+    """The id of the one waypoint called `name`, for the command line, which
+    has only names to go by. ValueError if there is none, or if several share
+    it (saying where each is), so nothing is changed by guesswork."""
+    found = [w for w in wps if w["name"] == name]
+    if not found:
+        raise ValueError(f"no waypoint named '{name}'")
+    if len(found) > 1:
+        where = "; ".join(f"{w['planet']} {w.get('saved', '')}".strip()
+                          for w in found)
+        raise ValueError(f"{len(found)} waypoints are named '{name}' ({where})"
+                         " - rename or delete one in the app")
+    return found[0]["id"]
+
+
 def cmd_rename(args):
     wps = load_waypoints()
     try:
-        rename_waypoint(wps, args.old, args.new)
+        rename_waypoint(wps, one_named(wps, args.old), args.new)
     except ValueError as exc:
         sys.exit(str(exc))
     save_json(WAYPOINT_FILE, wps)
@@ -5379,7 +5481,7 @@ def cmd_rename(args):
 def cmd_delete(args):
     wps = load_waypoints()
     try:
-        delete_waypoint(wps, args.name)
+        delete_waypoint(wps, one_named(wps, args.name))
     except ValueError as exc:
         sys.exit(str(exc))
     save_json(WAYPOINT_FILE, wps)

@@ -1561,15 +1561,19 @@ box fits inside the building's outline (`traces.inside_ring` on its four
 corners), at any zoom; otherwise the outline gets `<Enter>`/`<Leave>` tag
 bindings that show it by the pointer (canvas items tagged `name`).
 
-Renaming on the height map: a click that did not drag (`dragged`, set by
-any B1-Motion since the press) is resolved in `on_release` against
-`building_items` (outline item -> trace name, label) with
-`find_overlapping`, the topmost outline winning, and opens
-`ask_building_name`: a ttk.Combobox (the main window is ttk throughout,
-unlike the overlay) with the names given so far, OK / CLEAR / X. It saves
-through `label_trace`. Checked in a test window: a 20 px drag over a
-building opens nothing; a click opens it on the current name, and the new
-one is saved.
+Renaming on the height map: first a left click that did not drag; the user
+then asked for a right-click menu instead, for buildings and waypoint pins
+alike. `context_menu` looks under the pointer (`find_overlapping`, 2 px
+round it) in `pin_items` (every drawn item of a pin -> waypoint id) and
+`building_items` (outline -> trace name, label); a pin wins, as pins are
+drawn over buildings; nothing under it, no menu. **Rename...** opens
+`ask_name`: a ttk.Combobox (the main window is ttk throughout, unlike the
+overlay) with the names given so far, OK / CLEAR / X, beside the pointer;
+for a waypoint without CLEAR, as a waypoint needs a name, saved through
+`rename_waypoint` by id (a name in use is fine). Checked in a test window: a
+left click on a building opens nothing; right-click on a building, on a pin
+and on empty ground gave Rename..., Rename... and no menu, and both renames
+were saved.
 
 **Walking on past the start (Pad 2, 2026-10-25).** building-004 "Pad 2 -
 Wrong": one full lap (back within 0.7 m of the start at point 35 of 51),
@@ -1801,6 +1805,58 @@ partial, 0.55x the time. CamPos identical on every frame. Where the two
 disagreed, the row read had the altitude right 7 times to the full read's 1;
 it read the radius as 800000.9 three times (the State keeps the roundest) and
 the location once with a stray "{LZ ..." tail (settled over frames).
+
+## Waypoint ids: names can repeat (2026-10-25)
+
+The user wanted many waypoints called Cave. Names had been the key: ~50
+places found a waypoint by name, the Waypoints table used it as the Treeview
+iid (a second "Cave" row raises TclError, which would also stop the main
+window's once-a-second tick), and target, EDIT, DELETE, notes, SUB, QT, pins
+and Go to all took the first match. Now each waypoint has `id` (12 hex from
+uuid4, `new_id`), filled in by `backfill_ids` on load (also mending two that
+share one) and saved once; the user's 65 got ids with nothing else changed.
+`find_waypoint(wps, id)` is the one lookup; the edit functions take an id;
+`state.target` is an id; overlay list rows lead with it; `starmap`'s point
+lists are `(id, xyz)` and each map keeps `names` for labels; Go to's
+Combobox shows names and maps its index to `goto_ids`. Uniqueness checks are
+gone (empty names still refused). Import: a shared name is no clash, only
+nearness (1 km) is; Replace takes the nearest by id; ids in a file are
+dropped (`IMPORT_FIELDS`) and a new one given; the name-taken dialog and
+`free_name` went. Export keeps `id`; older versions ignore it on import.
+The CLI has only names, so `one_named` refuses a name several share, listing
+where each is. Checked in test windows with two Caves: the overlay's TARGET,
+EDIT and DELETE hit only the one selected; the table has a row each; Go to
+reaches each; the star map pins each.
+
+## One right-click menu per kind of thing (2026-10-25)
+
+The menus had grown one by one: the star map's pin menu offered Show on
+height map greyed out for a deep-space pin, bodies had none, the height map
+only Rename, the tables only Copy/Export. Asked for a consistent way between
+star map, planet view, height map, the waypoint data and the reports, the
+`Navigator` (created in `open_main`, handed to every tab) holds the moves
+between tabs and builds three menus -- waypoint, body, building -- used
+wherever the thing is right-clicked: `here` names the tab, whose own entry
+is left out; anything that does not apply is left out, not greyed. On the
+star map a pin wins over a body under it, a moon or planet gets the body
+menu, and in a body's own view the rest of the canvas is that body; the list
+of unplaced bodies has the body menu too. On the height map a pin wins over
+a building, and bare ground is the body. Waypoints and Reports put the menu
+above Copy/Export (a place in space gets only those). Show details is one
+`details_window`, placed by `place_near` (also used by `ask_name`); its text
+comes from `waypoint_details_text`, `body_details_text` and
+`building_details_text` with `traces.building_facts`, all testable.
+
+**A deadlock found on the way.** `ReportViewer.lines_for` (since the commit
+that added report copy/export) held `state.lock` and, for the place you
+were at, called `body_report`, which takes it again; `threading.Lock` is
+not re-entrant. The Reports tab asks every tick, visible or not, so the
+whole program froze once the report of the body you stood on was selected
+with a fix. Show details for that body hit it at once (a test window froze
+and had to be killed). Now `place_report_lines` lets go of the lock first;
+a test runs it on a thread and fails, rather than hangs, if it comes back.
+Test windows now use a watchdog thread: a Tk timer cannot fire while the
+main thread is stuck.
 
 ## Still open
 

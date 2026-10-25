@@ -14,7 +14,7 @@ import os
 import time
 import tkinter as tk
 import tkinter.font as tkfont
-from tkinter import filedialog, messagebox, simpledialog, ttk
+from tkinter import filedialog, messagebox, ttk
 
 import numpy as np
 from PIL import Image, ImageDraw, ImageTk
@@ -226,26 +226,13 @@ def open_main(root, state, scl, set_hud):
 
     nb = ttk.Notebook(win)
     nb.pack(fill="both", expand=True, padx=8, pady=8)
-    def show_waypoint(name):
-        """SHOW ON MAP in the table: open the star map on that waypoint."""
-        nb.select(star.frame)
-        star.show_waypoint(name)
-
-    def show_on_height_map(name):
-        """SHOW ON HEIGHT MAP in the table: open the height map on it."""
-        nb.select(height.frame)
-        height.show_waypoint(name)
-
-    editor = WaypointEditor(nb, state, scl, show_waypoint, show_on_height_map)
-
-    def pick_waypoint(name):
-        """A pin clicked on the map: show that waypoint in the table."""
-        nb.select(editor.frame)
-        editor.select(name)
-
-    star = StarMap(nb, state, scl, pick_waypoint, follow, show_on_height_map)
-    height = HeightMapTab(nb, state, scl, follow)
-    tabs = [star, height, editor, ReportViewer(nb, state, scl)]
+    nav = Navigator(nb, state, scl)
+    editor = WaypointEditor(nb, state, scl, nav)
+    star = StarMap(nb, state, scl, nav, follow)
+    height = HeightMapTab(nb, state, scl, follow, nav)
+    reports = ReportViewer(nb, state, scl, nav)
+    nav.star, nav.height, nav.editor, nav.reports = star, height, editor, reports
+    tabs = [star, height, editor, reports]
     for tab, title in zip(tabs, ("Star map", "Height map", "Waypoints",
                                  "Reports")):
         nb.add(tab.frame, text=title)
@@ -276,30 +263,233 @@ def blend(colours, t):
     return "#" + "".join(f"{round(u + (v - u) * t):02x}" for u, v in zip(ca, cb))
 
 
-def waypoint_details(parent, state, scl, name):
-    """Show details on a star map pin: the waypoint in a window of its own,
-    as Copy puts it on the clipboard, with when it was saved."""
-    wps, bodies = snapshot(state)
-    w = next((q for q in wps if q["name"] == name), None)
-    if w is None:
+def place_near(win, at):
+    """Put a window just below and right of the screen point `at` (where it
+    was asked for), kept inside the main window so it cannot run off the
+    edge of whichever screen that is on. Nothing if `at` is None."""
+    if at is None:
         return
-    system = w.get("system")
-    placed = (starmap.placed_bodies(bodies, system)
-              if system in starmap.SYSTEMS else {})
-    text = scl.waypoint_text(w, starmap.attached_body(w, placed), bold=False)
-    if w.get("saved"):
-        text += f"\nSaved {w['saved']}"
-    win = tk.Toplevel(parent)
-    win.title(name)
-    win.configure(bg=BG)
+    win.update_idletasks()
+    top = win.master.winfo_toplevel()
+    right = top.winfo_rootx() + top.winfo_width() - win.winfo_reqwidth()
+    bottom = top.winfo_rooty() + top.winfo_height() - win.winfo_reqheight()
+    win.geometry(f"+{max(top.winfo_rootx(), min(at[0] + 12, right))}"
+                 f"+{max(top.winfo_rooty(), min(at[1] + 12, bottom))}")
+
+
+def details_window(parent, title, text, at=None):
+    """Show details: `text` in a window of its own by the pointer (`at`),
+    the same for a waypoint, a body or a building. CLOSE or Escape."""
+    win = tk.Toplevel(parent, bg=BG)
+    win.withdraw()                  # placed before it is seen
+    win.title(title)
     win.transient(parent.winfo_toplevel())
-    box = text_box(win, text.count("\n") + 2, readonly=True)
-    box.config(width=64)
+    lines = text.splitlines() or [""]
+    box = text_box(win, min(30, len(lines) + 1), readonly=True)
+    box.config(width=max(40, min(90, max(len(ln) for ln in lines) + 2)),
+               wrap="none")
     set_text(box, text)
     box.pack(fill="both", expand=True, padx=10, pady=(10, 6))
     ttk.Button(win, text="CLOSE", command=win.destroy).pack(pady=(0, 10))
     win.bind("<Escape>", lambda e: win.destroy())
+    place_near(win, at)
+    win.deiconify()
+    win.focus_set()
     return win
+
+
+class Navigator:
+    """The way between the tabs, and the right-click menus they share.
+
+    One menu per kind of thing -- a waypoint, a body (planet or moon), a
+    building -- the same wherever it is right-clicked. An entry that does
+    not apply is left out rather than greyed out, and so is the one for the
+    tab the menu is opened from (`here`: "star", "height", "list" or
+    "reports"). open_main sets the tabs once they exist.
+    """
+
+    def __init__(self, nb, state, scl):
+        self.nb, self.state, self.scl = nb, state, scl
+        self.star = self.height = self.editor = self.reports = None
+
+    # --- going to a tab -------------------------------------------------
+
+    def to_star(self, wid):
+        self.nb.select(self.star.frame)
+        self.star.show_waypoint(wid)
+
+    def to_height(self, wid):
+        self.nb.select(self.height.frame)
+        self.height.show_waypoint(wid)
+
+    def to_list(self, wid):
+        self.nb.select(self.editor.frame)
+        self.editor.select(wid)
+
+    def body_system(self, body):
+        with self.state.lock:
+            rec = self.state.bodies.get(body) or {}
+        return self.scl.BODY_SYSTEM.get(body) or rec.get("system")
+
+    def body_to_star(self, body):
+        self.nb.select(self.star.frame)
+        self.star.show(self.body_system(body), body)
+
+    def body_to_height(self, body):
+        self.nb.select(self.height.frame)
+        self.height.body_var.set(body)
+        self.height.open(body)
+
+    def body_to_report(self, body):
+        self.nb.select(self.reports.frame)
+        self.reports.select(body)
+
+    def body_to_list(self, body):
+        self.nb.select(self.editor.frame)
+        self.editor.show_body(self.body_system(body), body)
+
+    def refresh_tabs(self):
+        """After a rename: every tab shows it now, not at the next tick."""
+        for tab in (self.star, self.height, self.editor):
+            tab.refresh()
+
+    # --- Show details ---------------------------------------------------
+
+    def here(self):
+        """Where you are, for a waypoint's distance from you."""
+        st = self.state
+        with st.lock:
+            return {"system": st.system, "planet": st.planet,
+                    "latlon": st.latlon if st.pos else None,
+                    "radius": st.radius, "sys_pos": st.sys_pos}
+
+    def waypoint_details(self, wid, at=None):
+        wps, bodies = snapshot(self.state)
+        w = self.scl.find_waypoint(wps, wid)
+        if w is None:
+            return
+        system = w.get("system")
+        placed = (starmap.placed_bodies(bodies, system)
+                  if system in starmap.SYSTEMS else {})
+        text = self.scl.waypoint_details_text(
+            w, starmap.attached_body(w, placed), self.here())
+        details_window(self.nb, w["name"], text, at)
+
+    def body_details(self, body, at=None):
+        st = self.state
+        wps, bodies = snapshot(st)
+        rec = bodies.get(body)
+        report = self.reports.lines_for(body) if rec else None
+        with st.lock:
+            cells = heightmap.cell_count(st.heightmap, body)
+            trs = list(st.traces)
+            radius = ((rec or {}).get("radius_m")
+                      or self.scl.BODY_RADII.get(body))
+        text = self.scl.body_details_text(body, self.body_system(body), report,
+                                          wps, cells, trs, radius)
+        details_window(self.nb, body.upper(), text, at)
+
+    def building_details(self, name, at=None):
+        st = self.state
+        with st.lock:
+            t = next((dict(t) for t in st.traces if t["name"] == name), None)
+            if t is None:
+                return
+            rec = st.heightmap.get(t["planet"])
+            radius = ((rec or {}).get("radius")
+                      or self.scl.BODY_RADII.get(t["planet"], 1e6))
+            # One walked before offset_m was kept takes today's setting.
+            offset = t.setdefault("offset_m", st.cfg["building_wall_offset_m"])
+        frame = heightmap.local_frame(t["points"][0])
+        xys = [heightmap.to_map(q, frame, radius) for q in t["points"]]
+        text = self.scl.building_details_text(
+            t, traces.building_facts(xys, offset))
+        details_window(self.nb, t.get("label") or name, text, at)
+
+    # --- renaming -------------------------------------------------------
+
+    def rename_waypoint(self, wid, at=None):
+        """A waypoint's new name; it can be one in use (many are a Cave)."""
+        st, scl = self.state, self.scl
+        with st.lock:
+            w = scl.find_waypoint(st.waypoints, wid)
+            if w is None:
+                return
+            old = w["name"]
+            given = sorted({q["name"] for q in st.waypoints}, key=str.lower)
+        new = ask_name(self.nb, "Waypoint name", f"{old} ({w['planet']})",
+                       old, given, at, can_clear=False)
+        if new is None or new == old:
+            return
+        with st.lock:
+            try:
+                scl.rename_waypoint(st.waypoints, wid, new)
+            except ValueError as exc:
+                st.flash(str(exc))
+                return
+            scl.save_json(scl.WAYPOINT_FILE, st.waypoints)
+            st.flash(f"renamed to {new}")
+        self.refresh_tabs()
+
+    def rename_building(self, name, label, at=None):
+        with self.state.lock:
+            given = self.scl.building_labels(self.state.traces)
+        new = ask_name(self.nb, "Building name", name, label or "", given, at)
+        if new is not None and new != (label or ""):
+            self.scl.label_trace(self.state, name, new)
+            self.height.draw()
+
+    # --- the menus ------------------------------------------------------
+    # Each fills `menu` (already emptied) and returns whether it added any.
+
+    def waypoint_menu(self, menu, wid, here, at):
+        wps, _ = snapshot(self.state)
+        w = self.scl.find_waypoint(wps, wid)
+        if w is None:
+            return False
+        add = menu.add_command
+        add(label="Show details", command=lambda: self.waypoint_details(wid,
+                                                                        at))
+        if here != "star" and w.get("system") in starmap.SYSTEMS:
+            add(label="Show on star map", command=lambda: self.to_star(wid))
+        if here != "height" and w.get("frame", "planet") == "planet":
+            add(label="Show on height map", command=lambda: self.to_height(wid))
+        if here != "list":
+            add(label="Show in Waypoints", command=lambda: self.to_list(wid))
+        add(label="Rename...", command=lambda: self.rename_waypoint(wid, at))
+        return True
+
+    def body_menu(self, menu, body, here, at, opened=False):
+        """A planet's or moon's menu. `opened`: the star map is already
+        showing this body, so it has no Open on star map."""
+        st = self.state
+        with st.lock:
+            analysed = body in st.bodies
+            mapped = (body in st.heightmap
+                      or any(t["planet"] == body for t in st.traces))
+            marked = any(w.get("planet") == body for w in st.waypoints)
+        add = menu.add_command
+        add(label="Show details", command=lambda: self.body_details(body, at))
+        if (self.body_system(body) in starmap.SYSTEMS
+                and not (here == "star" and opened)):
+            add(label="Open on star map",
+                command=lambda: self.body_to_star(body))
+        if mapped and here != "height":
+            add(label="Show on height map",
+                command=lambda: self.body_to_height(body))
+        if analysed and here != "reports":
+            add(label="Show report", command=lambda: self.body_to_report(body))
+        if marked and here != "list":
+            add(label="Show waypoints", command=lambda: self.body_to_list(body))
+        return True
+
+    def building_menu(self, menu, name, label, at):
+        add = menu.add_command
+        add(label="Show details", command=lambda: self.building_details(name,
+                                                                        at))
+        add(label="Rename...", command=lambda: self.rename_building(name,
+                                                                    label, at))
+        return True
 
 
 def text_box(parent, height, readonly=False):
@@ -327,14 +517,15 @@ def set_text(widget, text):
 class StarMap:
     """One system at a time; click a body to zoom in on it and its waypoints."""
 
-    def __init__(self, parent, state, scl, on_pick, follow, on_height):
-        self.state, self.scl, self.on_pick = state, scl, on_pick
-        self.follow, self.on_height = follow, on_height
-        # canvas item -> waypoint name. Not a tag: names have spaces in them,
-        # and a canvas tag cannot.
+    def __init__(self, parent, state, scl, nav, follow):
+        self.state, self.scl, self.nav = state, scl, nav
+        self.follow = follow
+        # canvas item -> waypoint id. Not a tag: one per waypoint, kept with
+        # the items it covers.
         self.pins = {}
-        self.subs = {}          # waypoint name -> its SUB, for its icon
-        self.marked = None      # waypoint ringed by SHOW ON MAP
+        self.subs = {}          # waypoint id -> its SUB, for its icon
+        self.names = {}         # waypoint id -> its name, for its label
+        self.marked = None      # id of the waypoint ringed by SHOW ON MAP
         self.backdrops, self.ramp = {}, None
         self.frame = tk.Frame(parent, bg=BG)
         self.system, self.body = starmap.SYSTEMS[0], None
@@ -379,6 +570,7 @@ class StarMap:
                                    selectbackground="#1F3A52")
         self.unplaced.pack(fill="both", expand=True)
         self.unplaced.bind("<<ListboxSelect>>", self.open_unplaced)
+        self.unplaced.bind("<Button-3>", self.unplaced_menu)
 
         self.canvas = tk.Canvas(self.frame, bg=BG, highlightthickness=0)
         self.canvas.pack(side="left", fill="both", expand=True)
@@ -387,8 +579,8 @@ class StarMap:
         self.canvas.bind("<B1-Motion>", self.on_drag)
         self.canvas.bind("<ButtonRelease-1>", self.on_release)
         self.canvas.bind("<MouseWheel>", self.on_wheel)
-        self.canvas.bind("<Button-3>", self.pin_menu)
-        # Right-click on a pin: what to do with that waypoint.
+        self.canvas.bind("<Button-3>", self.context_menu)
+        # Right-click on a pin or a body: the menus every tab shares.
         self.menu = tk.Menu(self.canvas, tearoff=False, font=mono(), bg=PANEL,
                             fg=FG, activebackground="#1d4f3a")
         # View from an orbital marker. Over the canvas, top right; only shown
@@ -512,19 +704,20 @@ class StarMap:
             self.show(system, body, keep_follow=True)
         self.om = starmap.facing(pos)
 
-    def show_waypoint(self, name):
+    def show_waypoint(self, wid):
         """Open the view a waypoint is on, turned so it faces you."""
         wps, bodies = snapshot(self.state)
-        w = next((q for q in wps if q["name"] == name), None)
+        w = self.scl.find_waypoint(wps, wid)
         if w is not None:                   # of a type not shown: show it
             self.types.get(w.get("type"), self.types["poi"]).set(True)
         where = starmap.waypoint_view(w, bodies) if w else None
         if where is None:
+            name = (w or {}).get("name", "that waypoint")
             with self.state.lock:
                 self.state.flash(f"{name}: system unknown, not on the star map")
             return
         system, body, om = where
-        self.show(system, body, name)
+        self.show(system, body, wid)
         if om is not None:
             self.view_om(*om)
 
@@ -558,33 +751,46 @@ class StarMap:
     def on_release(self, _e):
         if not self.dragged:
             current = self.canvas.find_withtag("current")
-            name = self.pins.get(current[0]) if current else None
-            if name is not None:
-                self.on_pick(name)
+            wid = self.pins.get(current[0]) if current else None
+            if wid is not None:
+                self.nav.to_list(wid)
             for tag in self.canvas.gettags("current"):
                 if tag.startswith("body:"):
                     self.show(self.system, tag[5:])
                     break
         self.press = None
 
-    def pin_menu(self, e):
-        """Right-click on a pin: show it on the height map (a waypoint on a
-        body only) or its details in a window of its own."""
-        current = self.canvas.find_withtag("current")
-        name = self.pins.get(current[0]) if current else None
-        if name is None:
-            return
-        wps, _ = snapshot(self.state)
-        w = next((q for q in wps if q["name"] == name), None)
-        on_body = w is not None and w.get("frame", "planet") == "planet"
+    def context_menu(self, e):
+        """Right-click: the waypoint menu on a pin, the body menu on a planet
+        or moon -- or, in a body's own view, anywhere else on it."""
+        c = self.canvas
+        under = c.find_overlapping(e.x - 2, e.y - 2, e.x + 2, e.y + 2)
+        pins = [self.pins[i] for i in under if i in self.pins]
+        bodies = [tag[5:] for i in under for tag in c.gettags(i)
+                  if tag.startswith("body:")]
+        at = (e.x_root, e.y_root)
         self.menu.delete(0, "end")
-        self.menu.add_command(label="Show on height map",
-                              command=lambda: self.on_height(name),
-                              state="normal" if on_body else "disabled")
-        self.menu.add_command(
-            label="Show details",
-            command=lambda: waypoint_details(self.frame, self.state, self.scl,
-                                             name))
+        if pins:
+            shown = self.nav.waypoint_menu(self.menu, pins[-1], "star", at)
+        elif bodies:
+            shown = self.nav.body_menu(self.menu, bodies[-1], "star", at,
+                                       opened=bodies[-1] == self.body)
+        elif self.body is not None:
+            shown = self.nav.body_menu(self.menu, self.body, "star", at,
+                                       opened=True)
+        else:
+            shown = False
+        if shown:
+            self.menu.tk_popup(e.x_root, e.y_root)
+
+    def unplaced_menu(self, e):
+        """Right-click in the list of bodies not yet placed: the body menu."""
+        i = self.unplaced.nearest(e.y)
+        if i < 0 or i >= self.unplaced.size():
+            return
+        self.menu.delete(0, "end")
+        self.nav.body_menu(self.menu, self.unplaced.get(i), "star",
+                           (e.x_root, e.y_root))
         self.menu.tk_popup(e.x_root, e.y_root)
 
     def on_wheel(self, e):
@@ -600,7 +806,7 @@ class StarMap:
             self.follow_me(me)
         with self.state.lock:
             cells = heightmap.cell_count(self.state.heightmap, self.body)
-        seen = (tuple((w["name"], w["planet"]) for w in wps),
+        seen = (tuple((w["id"], w["name"], w["planet"]) for w in wps),
                 tuple((k, tuple(v.get("centre") or ())) for k, v in bodies.items()),
                 cells, me)
         self.ticks += 1
@@ -621,7 +827,8 @@ class StarMap:
             return
         wps, bodies = snapshot(self.state)
         wps = of_types(wps, self.types)
-        self.subs = {wp["name"]: wp.get("sub", "") for wp in wps}
+        self.subs = {wp["id"]: wp.get("sub", "") for wp in wps}
+        self.names = {wp["id"]: wp["name"] for wp in wps}
         self.me = self.where_am_i()
         objs = starmap.system_objects(bodies, wps, self.system)
         if self.body is None:
@@ -706,14 +913,14 @@ class StarMap:
             self.canvas.create_polygon(*flat, fill=col, outline=col)
         return self.mesh_key[3]
 
-    def pin(self, x, y, name, label=None):
-        """A location marker standing on (x, y), with its name (or `label`)
-        beside it, ringed if SHOW ON MAP picked it. Clicking any part of it
-        opens the waypoint in the table."""
+    def pin(self, x, y, wid, label=None):
+        """A location marker standing on (x, y) for waypoint `wid`, with its
+        name (or `label`) beside it, ringed if SHOW ON MAP picked it. Clicking
+        any part of it opens the waypoint in the table."""
         c = self.canvas
         ids = []
-        sub = self.subs.get(name, "")
-        if name == self.marked:
+        sub = self.subs.get(wid, "")
+        if wid == self.marked:
             ids.append(c.create_oval(x - 15, y - 27, x + 15, y + 3,
                                      outline=ACCENT, width=2, tags="pin"))
         ids.append(c.create_polygon(x, y, x - 5, y - 10, x + 5, y - 10,
@@ -728,10 +935,11 @@ class StarMap:
                               outline="", tags="pin")]
         ids.append(c.create_text(x + (px(9) + 3 if sub in subtypes.ICONS
                                       else 9), y - 12,
-                                 text=label or name, anchor="w", fill=FG,
+                                 text=label or self.names.get(wid, ""),
+                                 anchor="w", fill=FG,
                                  font=mono(9), tags=("pin", "label")))
         for item in ids:
-            self.pins[item] = name
+            self.pins[item] = wid
 
     def you(self, x, y, label=False):
         """Where you are: the height map's cross, named when `label` is set."""
@@ -789,7 +997,9 @@ class StarMap:
         name_h, pad = mono(9).metrics("linespace"), px(6)
         # How far each drawing reaches past its spot: see pin and sphere.
         spots = [(p, (15 + pad, max(15, 9 + mono(9).measure(n)) + pad,
-                      27 + pad, 3 + pad)) for n, p in objs["points"]]
+                      27 + pad, 3 + pad))
+                 for n, p in ((self.names.get(i, ""), p)
+                              for i, p in objs["points"])]
         on = {wp["planet"] for wp in wps}
         for b in objs["bodies"]:
             if b["key"] in on:
@@ -898,15 +1108,15 @@ class StarMap:
                     flat += [sx, sy]
                 c.create_line(*flat, fill=ORBIT, dash=(3, 4))
 
-        items = [(starmap.project(p, own, pitch, scale, cx, cy), "pin", n, n)
-                 for n, p in pts]
+        items = [(starmap.project(p, own, pitch, scale, cx, cy), "pin", n,
+                  None) for n, p in pts]
         _, body, pos, _ = self.me
         if body == self.body:
             items.append((starmap.project(pos, own, pitch, scale, cx, cy),
                           "you", None, None))
         for kind, key, d, q in outer:
             far = self.scl.fmt_dist(math.sqrt(sum(v * v for v in d)))
-            name = key.upper() if kind == "moon" else key
+            name = key.upper() if kind == "moon" else self.names.get(key, "")
             items.append((starmap.project(q, yaw, pitch, scale, cx, cy),
                           "moon" if kind == "moon" else "pin", key,
                           f"{name}  {far}"))
@@ -994,8 +1204,8 @@ class HeightMapTab:
     RELIEF_BLOCK = 4        # px a side of the filled view's blocks
     SETTLE_MS = 250         # quiet this long after a drag or zoom: full draw
 
-    def __init__(self, parent, state, scl, follow):
-        self.state, self.scl, self.follow = state, scl, follow
+    def __init__(self, parent, state, scl, follow, nav):
+        self.state, self.scl, self.follow, self.nav = state, scl, follow, nav
         self.frame = tk.Frame(parent, bg=BG)
         self.body, self.centre = None, None
         self.offset = (0.0, 0.0)    # (east m, north m) dragged from you
@@ -1006,8 +1216,9 @@ class HeightMapTab:
         self.contours = None    # (key, frame, (half_w, half_h), lines): draw
         self.relief = None      # (key, frame, (half_w, half_h), relief_grid)
         self.job, self.settle = None, None      # see schedule
-        self.dragged = False    # the press now held has moved the map
         self.building_items = {}    # outline item -> (trace name, label)
+        self.pin_items = {}         # a waypoint's drawn items -> its id
+        self.goto_ids = []          # the waypoint ids of Go to's lines
 
         side = tk.Frame(self.frame, bg=BG)
         side.pack(side="left", fill="y", padx=(0, 8))
@@ -1067,6 +1278,11 @@ class HeightMapTab:
         self.canvas.bind("<B1-Motion>", self.on_drag)
         self.canvas.bind("<ButtonRelease-1>", self.on_release)
         self.canvas.bind("<MouseWheel>", self.on_wheel)
+        # Right-click on a waypoint, a building or the ground: the menus
+        # every tab shares.
+        self.canvas.bind("<Button-3>", self.context_menu)
+        self.menu = tk.Menu(self.canvas, tearoff=False, font=mono(), bg=PANEL,
+                            fg=FG, activebackground="#1d4f3a")
 
     def open(self, body):
         """Show `body`, around the busiest area surveyed on it."""
@@ -1083,18 +1299,23 @@ class HeightMapTab:
         self.draw()
 
     def goto_choices(self):
-        """The open body's waypoints, for Go to."""
-        names = [n for n, _ in starmap.body_points(
-            of_types(snapshot(self.state)[0], self.types), self.body)]
-        if list(self.goto.cget("values")) != names:
-            self.goto.config(values=names)
+        """The open body's waypoints, for Go to. The list shows names, which
+        repeat (many places are a Cave), so goto_ids says which waypoint each
+        line is, by its place in the list."""
+        wps = of_types(snapshot(self.state)[0], self.types)
+        names = {w["id"]: w["name"] for w in wps}
+        self.goto_ids = [i for i, _ in starmap.body_points(wps, self.body)]
+        values = [names[i] for i in self.goto_ids]
+        if list(self.goto.cget("values")) != values:
+            self.goto.config(values=values)
 
-    def show_waypoint(self, name):
+    def show_waypoint(self, wid):
         """SHOW ON HEIGHT MAP in the Waypoints tab: open the waypoint's body
         and centre on it, as Go to does."""
         wps, _ = snapshot(self.state)
-        w = next((q for q in wps if q["name"] == name), None)
+        w = self.scl.find_waypoint(wps, wid)
         if w is None or w.get("frame", "planet") != "planet":
+            name = (w or {}).get("name", "that waypoint")
             with self.state.lock:
                 self.state.flash(f"{name}: not on a body, not on the height map")
             return
@@ -1104,15 +1325,18 @@ class HeightMapTab:
             self.open(w["planet"])
         self.offset = (0.0, 0.0)
         self.goto_choices()
-        self.goto_var.set(name)
+        if wid in self.goto_ids:
+            self.goto.current(self.goto_ids.index(wid))
         self.go_to()
 
     def go_to(self):
         """Centre on the waypoint picked in Go to. Following you would pull
         the map straight back, so it waits until you move on."""
-        name = self.goto_var.get()
+        i = self.goto.current()
+        if not 0 <= i < len(self.goto_ids):
+            return
         wps, _ = snapshot(self.state)
-        p = dict(starmap.body_points(wps, self.body)).get(name)
+        p = dict(starmap.body_points(wps, self.body)).get(self.goto_ids[i])
         if p is None:
             return
         with self.state.lock:
@@ -1121,32 +1345,36 @@ class HeightMapTab:
         self.draw()
 
     def on_press(self, e):
-        self.press, self.dragged = (e.x, e.y), False
+        self.press = (e.x, e.y)
 
-    def on_release(self, e):
-        """A click that did not move the map, on a building: rename it."""
-        clicked = self.press is not None and not self.dragged
+    def on_release(self, _e):
         self.press = None
-        if not clicked:
-            return
-        hit = [self.building_items[i] for i in self.canvas.find_overlapping(
-            e.x, e.y, e.x, e.y) if i in self.building_items]
-        if hit:
-            self.rename_building(*hit[-1], at=(e.x_root, e.y_root))   # on top
 
-    def rename_building(self, name, label, at=None):
-        with self.state.lock:
-            given = self.scl.building_labels(self.state.traces)
-        new = ask_building_name(self.frame, name, label or "", given, at)
-        if new is not None and new != (label or ""):
-            self.scl.label_trace(self.state, name, new)
-            self.draw()
+    def context_menu(self, e):
+        """Right-click: the waypoint menu on a pin (pins are drawn over
+        buildings, so one wins), the building menu on a building, else the
+        menu of the body the map shows."""
+        under = self.canvas.find_overlapping(e.x - 2, e.y - 2, e.x + 2, e.y + 2)
+        pins = [self.pin_items[i] for i in under if i in self.pin_items]
+        builds = [self.building_items[i] for i in under
+                  if i in self.building_items]
+        at = (e.x_root, e.y_root)
+        self.menu.delete(0, "end")
+        if pins:
+            shown = self.nav.waypoint_menu(self.menu, pins[-1], "height", at)
+        elif builds:
+            shown = self.nav.building_menu(self.menu, *builds[-1], at)
+        elif self.body is not None:
+            shown = self.nav.body_menu(self.menu, self.body, "height", at)
+        else:
+            shown = False
+        if shown:
+            self.menu.tk_popup(e.x_root, e.y_root)
 
     def on_drag(self, e):
         if self.press is None or self.centre is None:
             return
         dx, dy = e.x - self.press[0], e.y - self.press[1]
-        self.dragged = self.dragged or dx != 0 or dy != 0
         self.press = (e.x, e.y)
         self.goto_var.set("")
         with self.state.lock:
@@ -1217,7 +1445,8 @@ class HeightMapTab:
                 tuple((len(t["points"]), t.get("label")) for t in st.traces
                       if t["planet"] == self.body),
                 tuple(st.pos) if here else None,
-                tuple((w["name"], w.get("type"), w.get("x"), w.get("y"))
+                tuple((w["id"], w["name"], w.get("type"), w.get("x"),
+                       w.get("y"))
                       for w in st.waypoints if w.get("planet") == self.body))
 
     def refresh(self):
@@ -1307,8 +1536,7 @@ class HeightMapTab:
                 and len(t["points"]) >= traces.LEAST["building"]]
             # A QT-no target here: the overland leg from where you jump to.
             route = None
-            tgt = next((q for q in st.waypoints if q["name"] == st.target),
-                       None)
+            tgt = self.scl.find_waypoint(st.waypoints, st.target)
             if (tgt is not None and tgt["planet"] == self.body
                     and tgt.get("frame", "planet") == "planet"):
                 hop = self.scl.qt_hop(st.waypoints, tgt)
@@ -1388,28 +1616,33 @@ class HeightMapTab:
 
         if frame:
             # POIs' heights can be switched off; survey waypoints' stay.
-            elev = {wp["name"]: wp.get("elev") for wp in wps
+            elev = {wp["id"]: wp.get("elev") for wp in wps
                     if wp["planet"] == self.body
                     and (self.show["poi_height"].get()
                          or wp.get("type", "poi") != "poi")}
-            subs = {wp["name"]: wp.get("sub", "") for wp in wps}
-            for name, p in starmap.body_points(of_types(wps, self.types),
-                                               self.body):
+            subs = {wp["id"]: wp.get("sub", "") for wp in wps}
+            names = {wp["id"]: wp["name"] for wp in wps}
+            self.pin_items = {}
+            for wid, p in starmap.body_points(of_types(wps, self.types),
+                                              self.body):
                 xy = spot(p)
                 if xy:
                     sx, sy = xy
+                    name = names[wid]
                     gap = 7
-                    if subs.get(name) in subtypes.ICONS:
-                        draw_icon(c, subs[name], sx, sy, px(8))
+                    if subs.get(wid) in subtypes.ICONS:
+                        items = draw_icon(c, subs[wid], sx, sy, px(8))
                         gap = px(8) + 3
                     else:
-                        c.create_oval(sx - 4, sy - 4, sx + 4, sy + 4,
-                                      fill=PIN, outline=BG)
+                        items = [c.create_oval(sx - 4, sy - 4, sx + 4, sy + 4,
+                                               fill=PIN, outline=BG)]
                     # A spot height, as BM 1570 on a paper map.
-                    z = elev.get(name)
-                    c.create_text(sx + gap, sy, anchor="w", fill=FG,
-                                  font=mono(9),
-                                  text=name if z is None else f"{name} {z:.0f}")
+                    z = elev.get(wid)
+                    items.append(c.create_text(
+                        sx + gap, sy, anchor="w", fill=FG, font=mono(9),
+                        text=name if z is None else f"{name} {z:.0f}"))
+                    for item in items:      # right-click any part of it
+                        self.pin_items[item] = wid
             xy = spot(pos) if here == self.body and pos else None
             if xy:
                 sx, sy = xy
@@ -1600,8 +1833,8 @@ class HeightMapTab:
         dark outline, as on a large-scale paper map. A building's name is
         printed on it where it fits inside the walls; where it does not, it
         shows by the pointer while the pointer is over the building (names
-        printed past the walls piled up and buried the map). A click on one
-        renames it (see on_release)."""
+        printed past the walls piled up and buried the map). Right-click
+        one for its menu (see context_menu)."""
         c = self.canvas
         self.building_items = {}
         for points, offset, label, name in buildings:
@@ -1710,9 +1943,8 @@ class WaypointEditor:
                ("note", 200))
     AUTO = "auto (by distance)"
 
-    def __init__(self, parent, state, scl, on_show, on_height):
-        self.state, self.scl, self.on_show = state, scl, on_show
-        self.on_height = on_height
+    def __init__(self, parent, state, scl, nav):
+        self.state, self.scl, self.nav = state, scl, nav
         self.frame = tk.Frame(parent, bg=BG)
         self.seen, self.loaded = None, False
 
@@ -1748,10 +1980,9 @@ class WaypointEditor:
         for name, width in self.COLUMNS:
             self.tree.heading(name, text=name.upper())
             set_column(self.tree, name, width, stretch=name == "note")
+        # Rebuilt on each right-click: the waypoint menu, then Copy/Export.
         self.menu = tk.Menu(self.tree, tearoff=False, font=mono(), bg=PANEL,
                             fg=FG, activebackground="#1d4f3a")
-        self.menu.add_command(label="Copy", command=self.copy)
-        self.menu.add_command(label="Export...", command=self.export)
         scroll = ttk.Scrollbar(self.frame, orient="vertical",
                                command=self.tree.yview)
         self.tree.configure(yscrollcommand=scroll.set)
@@ -1777,7 +2008,7 @@ class WaypointEditor:
         ttk.Button(row, text="SHOW ON MAP", command=self.show_on_map).pack(
             side="left")
         ttk.Button(row, text="SHOW ON HEIGHT MAP",
-                   command=lambda: self.show_on_map(self.on_height)).pack(
+                   command=lambda: self.show_on_map(self.nav.to_height)).pack(
             side="left", padx=(6, 0))
         ttk.Button(row, text="IMPORT", command=self.import_file).pack(
             side="left", padx=6)
@@ -1815,16 +2046,22 @@ class WaypointEditor:
             anchor="e", pady=(4, 0))
 
     def selected(self):
-        """The one selected waypoint; None when none or several are."""
+        """The id of the one selected waypoint (rows are keyed by id, as
+        names repeat); None when none or several are."""
         sel = self.tree.selection()
         return sel[0] if len(sel) == 1 else None
 
+    def name_of(self, wid):
+        """A waypoint's name, for messages; "" if it is gone."""
+        wps, _ = snapshot(self.state)
+        return (self.scl.find_waypoint(wps, wid) or {}).get("name", "")
+
     def chosen(self):
         """The selected waypoint records, in list order."""
-        names = self.tree.selection()
+        ids = self.tree.selection()
         wps, _ = snapshot(self.state)
-        by_name = {w["name"]: w for w in wps}
-        return [by_name[n] for n in names if n in by_name]
+        by_id = {w["id"]: w for w in wps}
+        return [by_id[i] for i in ids if i in by_id]
 
     def popup(self, event):
         row = self.tree.identify_row(event.y)
@@ -1832,7 +2069,25 @@ class WaypointEditor:
             return
         if row not in self.tree.selection():
             self.tree.selection_set(row)
+        self.tree.update_idletasks()
+        self.menu.delete(0, "end")
+        wid = self.selected()           # one waypoint: its menu first
+        if wid is not None and self.nav.waypoint_menu(
+                self.menu, wid, "list", (event.x_root, event.y_root)):
+            self.menu.add_separator()
+        self.menu.add_command(label="Copy", command=self.copy)
+        self.menu.add_command(label="Export...", command=self.export)
         self.menu.tk_popup(event.x_root, event.y_root)
+
+    def show_body(self, system, body):
+        """Show a body's waypoints only: its system and body picked, every
+        type, no search."""
+        self.sys_var.set(system or "all")
+        self.type_var.set("all")
+        self.search_var.set("")
+        self.refresh()
+        self.body_var.set(body)
+        self.refresh()
 
     def copy(self):
         _, bodies = snapshot(self.state)
@@ -1889,26 +2144,21 @@ class WaypointEditor:
         for w in good:
             w = scl.prepare_import(w, now)
             wps, _ = snapshot(st)
-            same, nearby = scl.import_conflicts(w, wps)
+            # Only nearness clashes: names repeat (many places are a Cave).
+            nearby = scl.import_conflicts(w, wps)
             replace = None
-            if same is not None or nearby:
+            if nearby:
                 action = always
                 if action is None:
                     action, to_all = ask_conflict(
-                        self.frame, scl.conflict_text(w, same, nearby))
+                        self.frame, scl.conflict_text(w, nearby))
                     if to_all:
                         always = action
                 if action == "no":
                     declined.append(w["name"])
                     continue
                 if action == "replace":
-                    replace = (same or nearby[0][1])["name"]
-                elif same is not None:
-                    name = self.ask_new_name(w["name"], wps)
-                    if name is None:
-                        declined.append(w["name"])
-                        continue
-                    w["name"] = name
+                    replace = nearby[0][1]["id"]
             with st.lock:
                 try:
                     scl.import_waypoint(st.waypoints, w, replace)
@@ -1916,7 +2166,7 @@ class WaypointEditor:
                     bad.append((f"'{w['name']}'", [str(exc)]))
                     continue
                 if replace is not None and st.target == replace:
-                    st.target = w["name"]
+                    st.target = w["id"]
             (replaced if replace else added).append(w["name"])
         with st.lock:
             if added or replaced:
@@ -1927,36 +2177,18 @@ class WaypointEditor:
             os.path.basename(path), added, replaced, declined, bad),
             parent=self.frame)
 
-    def ask_new_name(self, name, wps):
-        """A free name for an imported waypoint whose own is taken, or None."""
-        taken = {w["name"] for w in wps}
-        new = self.scl.free_name(wps, name)
-        while True:
-            new = simpledialog.askstring(
-                "Name taken", f"You already have a waypoint called '{name}'.\n"
-                "Name for the imported one:", initialvalue=new,
-                parent=self.frame)
-            if new is None:
-                return None
-            new = new.strip()
-            if new and new not in taken:
-                return new
-            messagebox.showerror("Name taken", f"'{new}' is taken too."
-                                 if new else "The name cannot be empty.",
-                                 parent=self.frame)
-
-    def select(self, name):
-        """Select a waypoint and scroll to it, clearing a filter that hides
-        it."""
+    def select(self, wid):
+        """Select a waypoint by id and scroll to it, clearing a filter that
+        hides it."""
         self.refresh()
-        if not self.tree.exists(name):
+        if not self.tree.exists(wid):
             for var in (self.sys_var, self.body_var, self.type_var):
                 var.set("all")
             self.search_var.set("")
             self.refresh()
-        if self.tree.exists(name):
-            self.tree.selection_set(name)
-            self.tree.see(name)
+        if self.tree.exists(wid):
+            self.tree.selection_set(wid)
+            self.tree.see(wid)
 
     def row_values(self, w, placed):
         around = starmap.attached_body(w, placed.get(w.get("system"), {}))
@@ -1987,7 +2219,8 @@ class WaypointEditor:
         for var, names in ((self.sys_var, systems), (self.body_var, bodies)):
             if var.get() not in names:
                 var.set("all")
-        seen = (tuple((w["name"], w["planet"], w.get("note"), w.get("parent"),
+        seen = (tuple((w["id"], w["name"], w["planet"], w.get("note"),
+                       w.get("parent"),
                        w.get("type"), w.get("sub"), w.get("qt"))
                       for w in wps),
                 tuple((sys, tuple(p)) for sys, p in placed.items()),
@@ -2002,7 +2235,7 @@ class WaypointEditor:
         self.tree.delete(*self.tree.get_children())
         for w in sorted(shown, key=lambda q: (q.get("system", ""), q["planet"],
                                             q["name"].lower())):
-            self.tree.insert("", "end", iid=w["name"],
+            self.tree.insert("", "end", iid=w["id"],
                              values=self.row_values(w, placed))
         chosen = [n for n in chosen if self.tree.exists(n)]
         if chosen:
@@ -2016,15 +2249,15 @@ class WaypointEditor:
         self.refresh()
 
     def on_select(self, _event=None):
-        name = self.selected()
+        wid = self.selected()
         # A rebuild reselects the same row; reloading then would throw away a
         # note being typed when the overlay saves a waypoint.
-        if name == self.loaded:
+        if wid == self.loaded:
             return
-        self.loaded = name
+        self.loaded = wid
         wps, _ = snapshot(self.state)
-        w = next((q for q in wps if q["name"] == name), None)
-        self.name_var.set(name or "")
+        w = self.scl.find_waypoint(wps, wid)
+        self.name_var.set((w or {}).get("name", ""))
         set_text(self.note, (w or {}).get("note", ""))
         self.sub_var.set((w or {}).get("sub") or (self.scl.NO_SUB if w else ""))
         self.qt_var.set(bool((w or {}).get("qt")))
@@ -2041,13 +2274,14 @@ class WaypointEditor:
         self.parent_var.set(w.get("parent", self.AUTO))
 
     def set_parent(self):
-        name, pick = self.selected(), self.parent_var.get()
+        wid, pick = self.selected(), self.parent_var.get()
         st, scl = self.state, self.scl
+        name = self.name_of(wid)
         with st.lock:
-            if name is None:
+            if wid is None:
                 return
             try:
-                scl.set_waypoint_parent(st.waypoints, name,
+                scl.set_waypoint_parent(st.waypoints, wid,
                                         None if pick == self.AUTO else pick)
             except ValueError as exc:
                 st.flash(str(exc))
@@ -2057,13 +2291,14 @@ class WaypointEditor:
         self.refresh()
 
     def set_sub(self):
-        name, pick = self.selected(), self.sub_var.get()
+        wid, pick = self.selected(), self.sub_var.get()
         st, scl = self.state, self.scl
+        name = self.name_of(wid)
         with st.lock:
-            if name is None:
+            if wid is None:
                 return
             try:
-                scl.set_waypoint_sub(st.waypoints, name,
+                scl.set_waypoint_sub(st.waypoints, wid,
                                      "" if pick == scl.NO_SUB else pick)
             except ValueError as exc:
                 st.flash(str(exc))
@@ -2073,13 +2308,14 @@ class WaypointEditor:
         self.refresh()
 
     def set_qt(self):
-        name, qt = self.selected(), self.qt_var.get()
+        wid, qt = self.selected(), self.qt_var.get()
         st, scl = self.state, self.scl
+        name = self.name_of(wid)
         with st.lock:
-            if name is None:
+            if wid is None:
                 return
             try:
-                scl.set_waypoint_qt(st.waypoints, name, qt)
+                scl.set_waypoint_qt(st.waypoints, wid, qt)
             except ValueError as exc:
                 st.flash(str(exc))
                 return
@@ -2089,12 +2325,12 @@ class WaypointEditor:
 
     def show_on_map(self, show=None):
         """SHOW ON MAP, or with `show` SHOW ON HEIGHT MAP."""
-        name = self.selected()
-        if name is None:
+        wid = self.selected()
+        if wid is None:
             with self.state.lock:
                 self.state.flash("select one waypoint first")
             return
-        (show or self.on_show)(name)
+        (show or self.nav.to_star)(wid)
 
     def rename(self):
         old, new = self.selected(), self.name_var.get().strip()
@@ -2108,41 +2344,41 @@ class WaypointEditor:
             except ValueError as exc:
                 st.flash(str(exc))
                 return
-            if st.target == old:         # the target follows its waypoint
-                st.target = new
             scl.save_json(scl.WAYPOINT_FILE, st.waypoints)
             st.flash(f"renamed to {new}")
         self.refresh()
-        if self.tree.exists(new):
-            self.tree.selection_set(new)
+        if self.tree.exists(old):
+            self.tree.selection_set(old)
 
     def delete(self):
-        name = self.selected()
-        if name is None or not messagebox.askyesno(
+        wid = self.selected()
+        name = self.name_of(wid)
+        if wid is None or not messagebox.askyesno(
                 "Delete waypoint", f"Delete '{name}'?", parent=self.frame):
             return
         st, scl = self.state, self.scl
         with st.lock:
             try:
-                scl.delete_waypoint(st.waypoints, name)
+                scl.delete_waypoint(st.waypoints, wid)
             except ValueError as exc:
                 st.flash(str(exc))
                 return
-            if st.target == name:
+            if st.target == wid:
                 st.target = None
             scl.save_json(scl.WAYPOINT_FILE, st.waypoints)
             st.flash(f"deleted {name}")
         self.refresh()
 
     def save_note(self):
-        name = self.selected()
+        wid = self.selected()
         st, scl = self.state, self.scl
+        name = self.name_of(wid)
         with st.lock:
-            if name is None:
+            if wid is None:
                 st.flash("select one waypoint first")
                 return
             try:
-                scl.set_waypoint_note(st.waypoints, name,
+                scl.set_waypoint_note(st.waypoints, wid,
                                       self.note.get("1.0", "end"))
             except ValueError as exc:
                 st.flash(str(exc))
@@ -2186,17 +2422,19 @@ def ask_conflict(parent, text, can_keep=True):
     return answer["action"], to_all.get()
 
 
-def ask_building_name(parent, name, current, given, at=None):
-    """A building's name (its label), from a box that can be typed in or
-    picked from the names `given` before, opened by the screen point `at`
-    (the click) if given. Returns the name, "" to clear it, or None if
+def ask_name(parent, title, heading, current, given, at=None,
+             can_clear=True):
+    """A building's or waypoint's name, from a box that can be typed in or
+    picked from the names `given` before, under `heading` (what is being
+    named), opened by the screen point `at` (the click) if given. Returns
+    the name, "" to clear it (CLEAR, only if `can_clear`), or None if
     cancelled (closing the window, X or Escape)."""
     win = tk.Toplevel(parent, bg=BG)
     win.withdraw()                  # placed before it is seen
-    win.title("Building name")
+    win.title(title)
     win.transient(parent.winfo_toplevel())
     answer = {"name": None}
-    tk.Label(win, text=name, font=mono(), fg=DIM, bg=BG).pack(
+    tk.Label(win, text=heading, font=mono(), fg=DIM, bg=BG).pack(
         anchor="w", padx=10, pady=(10, 4))
     var = tk.StringVar(value=current)
     # Typed into, on the dark field: light text. TCombobox's dark text is
@@ -2214,21 +2452,14 @@ def ask_building_name(parent, name, current, given, at=None):
 
     ttk.Button(row, text="OK", command=lambda: choose(var.get().strip())).pack(
         side="left")
-    ttk.Button(row, text="CLEAR", command=lambda: choose("")).pack(
-        side="left", padx=(6, 0))
+    if can_clear:
+        ttk.Button(row, text="CLEAR", command=lambda: choose("")).pack(
+            side="left", padx=(6, 0))
     ttk.Button(row, text="X", width=3, command=win.destroy).pack(
         side="left", padx=(6, 0))
     box.bind("<Return>", lambda e: choose(var.get().strip()))
     win.bind("<Escape>", lambda e: win.destroy())
-    if at is not None:
-        # Just below and right of the pointer, kept inside the main window
-        # so it cannot run off the edge of whichever screen that is on.
-        win.update_idletasks()
-        top = parent.winfo_toplevel()
-        right = top.winfo_rootx() + top.winfo_width() - win.winfo_reqwidth()
-        bottom = top.winfo_rooty() + top.winfo_height() - win.winfo_reqheight()
-        win.geometry(f"+{max(top.winfo_rootx(), min(at[0] + 12, right))}"
-                     f"+{max(top.winfo_rooty(), min(at[1] + 12, bottom))}")
+    place_near(win, at)
     win.deiconify()
     box.focus_set()
     box.select_range(0, "end")
@@ -2250,8 +2481,8 @@ def place_title(key, rec):
 
 
 class ReportViewer:
-    def __init__(self, parent, state, scl):
-        self.state, self.scl = state, scl
+    def __init__(self, parent, state, scl, nav):
+        self.state, self.scl, self.nav = state, scl, nav
         self.frame = tk.Frame(parent, bg=BG)
         self.seen, self.shown = None, None
 
@@ -2277,10 +2508,9 @@ class ReportViewer:
         self.tree.pack(side="left", fill="y")
         self.tree.bind("<<TreeviewSelect>>", lambda e: self.show_selected())
         self.tree.bind("<Button-3>", self.popup)
+        # Rebuilt on each right-click: the body menu, then Copy/Export.
         self.menu = tk.Menu(self.tree, tearoff=False, font=mono(), bg=PANEL,
                             fg=FG, activebackground="#1d4f3a")
-        self.menu.add_command(label="Copy", command=self.copy)
-        self.menu.add_command(label="Export...", command=self.export)
 
         right = tk.Frame(self.frame, bg=BG)
         right.pack(side="left", fill="both", expand=True, padx=(8, 0))
@@ -2310,16 +2540,29 @@ class ReportViewer:
             return
         if row not in self.tree.selection():
             self.tree.selection_set(row)
+        self.menu.delete(0, "end")
+        key = self.selected()           # one body: its menu first
+        _, bodies = snapshot(self.state)
+        if (key is not None and (bodies.get(key) or {}).get("scope") != "space"
+                and self.nav.body_menu(self.menu, key, "reports",
+                                       (event.x_root, event.y_root))):
+            self.menu.add_separator()
+        self.menu.add_command(label="Copy", command=self.copy)
+        self.menu.add_command(label="Export...", command=self.export)
         self.menu.tk_popup(event.x_root, event.y_root)
+
+    def select(self, key):
+        """Select a place's report and scroll to it, showing every system."""
+        self.sys_var.set("all")
+        self.refresh()
+        if self.tree.exists(key):
+            self.tree.selection_set(key)
+            self.tree.see(key)
+            self.show_selected()
 
     def lines_for(self, key):
         """The report lines for one place: live where you are now."""
-        st, scl = self.state, self.scl
-        with st.lock:
-            rec = st.bodies.get(key)
-            if rec is not None and scl.current_place(st)[0] == key:
-                return scl.body_report(st)   # live sun where you are now
-        return None if rec is None else scl.stored_report_lines(rec)
+        return self.scl.place_report_lines(self.state, key)
 
     def copy(self):
         texts = [self.scl.report_text(place_title(k, rec), rec,

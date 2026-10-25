@@ -316,15 +316,17 @@ quits the program.
   analysed are listed on the left. A deep-space waypoint is shown around the
   nearest body within 1,000 Mm; to choose by hand, use **Shown around** in the
   Waypoints tab (e.g. a Lagrange station that sits far from its planet).
-  Clicking a pin opens it in the Waypoints tab. Right-click a pin for
-  **Show on height map** (a waypoint on a planet or moon) or **Show details**,
-  which opens the waypoint in a small window of its own.
+  Clicking a pin opens it in the Waypoints tab; right-click it, or a planet
+  or moon, for its menu (see [Right-click menus](#right-click-menus)).
 - **View from an orbital marker**: with a planet or moon open, the **OM-1** to
   **OM-6** buttons at the top right look down on it from above that marker, at
   the zoom you have set (OM-1 north pole, OM-2 south pole, OM-3/OM-4 equator at
   longitude +90/-90, OM-5/OM-6 at 0/180). The view stays over the marker as
   the planet turns, until you drag it.
 - **Waypoints**: every waypoint in a table; rename, delete, and add a note.
+  Names need not be unique: any number of waypoints can be called Cave.
+  The app tells them apart by a hidden `id` each one carries in
+  `waypoints.json`, given to older waypoints the first time it loads.
   Pick its **SUB** and tick **QT** below the table; both save at once.
   Filter by system, body and type (all, POI or Survey), and type in
   **Search** to narrow the list to names holding that text (any case) as you
@@ -343,6 +345,26 @@ The window's text follows the Windows scale (Settings > Display > Scale) of
 the screen it is on, so on a small second screen raise that screen's scale
 to make the text bigger. Drag the window to another screen and its text
 resizes within a second. The overlay keeps the size it starts with.
+
+### Right-click menus
+
+Each kind of thing has one menu, the same wherever you right-click it. An
+entry that does not apply is left out, and so is the one for the tab you
+are already on.
+
+| Right-click | Where | Menu |
+|---|---|---|
+| a **waypoint** (POI, survey, deep space) | its pin on the star map or height map, its row in Waypoints | **Show details**, **Show on star map**, **Show on height map** (on a planet or moon only), **Show in Waypoints**, **Rename...** |
+| a **planet or moon** | its globe on the star map (in its own view, anywhere on it), a body in the list on the left, the ground of the height map, its row in Reports | **Show details**, **Open on star map**, **Show on height map** (if surveyed or traced), **Show report** (if analysed), **Show waypoints** |
+| a **building** | the height map | **Show details**, **Rename...** |
+
+**Show details** opens a small window by the pointer: for a waypoint what
+Copy gives plus the nearest orbital marker, how far it is from you (on the
+same body, or in the same system for deep space) and when it was saved; for
+a planet or moon its analysis report, or what is known if it has none, with
+its waypoints, surveyed cells and traces; for a building its size, area,
+corners, wall direction and the walk it came from. **CLOSE** or Escape
+closes it. In Waypoints and Reports, Copy and Export... follow the menu.
 
 ### Sharing waypoints and reports
 
@@ -364,10 +386,10 @@ Reports tab) reads a file someone sent you. Each record is checked first:
   added, replaced, left out, and skipped with the reason.
 - Imported records get the import date and time, and their note starts with
   `Imported on : <date>`, followed by the sender's own note.
-- A **waypoint** with the same name as one of yours, or within 1,000 m of one
-  of yours on the same body (in the same system for deep space), shows both
-  in full and asks: **Yes** adds it as well (with the same name, you are asked
-  for a new one), **No** leaves it out, **Replace** puts it in place of yours.
+- A **waypoint** within 1,000 m of one of yours on the same body (in the
+  same system for deep space) shows both in full and asks: **Yes** adds it
+  as well, **No** leaves it out, **Replace** puts it in place of the nearest
+  of yours. Sharing a name with one of yours is no clash: names repeat.
 - A **report** for a body you already have a report for offers only **No**
   (keep yours) or **Replace** (take theirs): one report is kept per body. A
   place in space within 20 km of one of yours (the distance at which the app
@@ -507,10 +529,11 @@ Names need not be unique (there is a Mining Control at every mining area);
 `building-001` stays its own. **X** or Escape leaves it unnamed. The name is
 kept as `label` in `traces.json`. On the height map it is printed on the
 building where it fits inside the walls; where it does not, it shows next
-to the pointer while the pointer is over the building. Click a building on
-the height map (without dragging) to change its name: type one or pick one
-given before, **OK** or Enter; **CLEAR** removes it; **X** or Escape leaves
-it as it was.
+to the pointer while the pointer is over the building. Right-click a
+building on the height map and pick **Rename...** to change its name: type
+one or pick one given before, **OK** or Enter; **CLEAR** removes it; **X**
+or Escape leaves it as it was. Right-clicking a waypoint's pin there renames
+the waypoint the same way (a waypoint always keeps a name, so no CLEAR).
 
 The height map draws it squared off, tan with a dark outline as on a paper
 map (switch **Buildings**; zoom right in, down to 0.4 m a pixel, to see the
@@ -566,8 +589,8 @@ prompt in the `.exe`'s folder you can also use:
 | `sc-locator.exe run --log session.log` | write a diagnostic log (useful for bug reports) |
 | `sc-locator.exe run --allow-multiple` | start even if another copy is running (normally refused, as two overlays draw on top of each other) |
 | `sc-locator.exe list` | print every waypoint: system, body, nearest OM, lat/lon, height, time saved |
-| `sc-locator.exe rename OLD NEW` | rename a waypoint |
-| `sc-locator.exe delete NAME` | delete a waypoint |
+| `sc-locator.exe rename OLD NEW` | rename a waypoint (refused, listing where each is, when several share the name) |
+| `sc-locator.exe delete NAME` | delete a waypoint (refused the same way when several share the name) |
 | `sc-locator.exe convert X Y Z [--radius R]` | turn planet coordinates (metres) into lat/lon and height |
 | `sc-locator.exe calibrate --find --delay 5 --save` | find the HUD text on your screen and save the capture area (see Troubleshooting) |
 
