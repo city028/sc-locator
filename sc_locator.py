@@ -67,6 +67,7 @@ STATIONS_FILE = HERE / "stations.json"   # UEX's station list, re-fetched weekly
 HEIGHTMAP_FILE = HERE / "heightmap.json" # ground heights from survey mode
 SURVEY_FILE = HERE / "survey.json"       # the last survey square, to resume
 TRACES_FILE = HERE / "traces.json"       # railways traced, see traces.py
+SUBTYPES_FILE = HERE / "subtypes.json"   # the SUBs in use, see subtypes.py
 BACKUP_DIR = HERE / "bak"
 BACKUP_KEEP = 30                         # versions of each file kept in bak/
 # How often a running survey is written out. Each write also keeps a backup,
@@ -265,7 +266,7 @@ def backfill_systems(wps):
 # What a waypoint is for: a place you want to find again, or where a survey
 # started. Kept apart so the survey markers do not crowd the star map.
 WAYPOINT_TYPES = ("poi", "survey")
-# What kind of place it is: subtypes.SUBTYPES, stored as "" when not said and
+# What kind of place it is: subtypes.names(), stored as "" when not said and
 # shown in the pickers as this.
 NO_SUB = "none"
 
@@ -346,6 +347,90 @@ def load_waypoints():
             | backfill_sub_qt(wps)):
         save_json(WAYPOINT_FILE, wps)
     return wps
+
+
+def sync_subs(wps):
+    """Add to the SUBs in use (no icon) any SUB a waypoint carries that the
+    list lacks -- from an import, or a hand-edited file -- so the Edit
+    window never meets a SUB it would refuse. Returns the names added."""
+    have = {n for n, _ in subtypes.current()}
+    missing = sorted({w.get("sub") for w in wps if w.get("sub")} - have,
+                     key=str.lower)
+    if missing:
+        subtypes.use(subtypes.current() + [[n, ""] for n in missing])
+    return missing
+
+
+def load_subtypes(wps):
+    """Put the SUBs in use in place from SUBTYPES_FILE, or the built-ins
+    where there is none (or it is not a list of [name, icon]); then
+    sync_subs, saving the list if that added any."""
+    data = load_json(SUBTYPES_FILE, None)
+    good = isinstance(data, list) and all(
+        isinstance(p, list) and len(p) == 2
+        and all(isinstance(v, str) for v in p) for p in data)
+    subtypes.use(data if good else subtypes.defaults())
+    if sync_subs(wps):
+        save_json(SUBTYPES_FILE, subtypes.current())
+
+
+def _sub_change(state, subs, renamed=None, cleared=None):
+    """Put `subs` in place and save it, carrying a rename (old, new) or a
+    clear (name) onto the waypoints. Lock held. Returns how many waypoints
+    changed."""
+    changed = 0
+    for w in state.waypoints:
+        if renamed and w.get("sub") == renamed[0]:
+            w["sub"], changed = renamed[1], changed + 1
+        elif cleared and w.get("sub") == cleared:
+            w["sub"], changed = "", changed + 1
+    subtypes.use(subs)
+    save_json(SUBTYPES_FILE, subtypes.current())
+    if changed:
+        save_json(WAYPOINT_FILE, state.waypoints)
+    return changed
+
+
+def sub_users(state, name):
+    """How many waypoints have SUB `name`."""
+    with state.lock:
+        return sum(1 for w in state.waypoints if w.get("sub") == name)
+
+
+def add_sub(state, name, icon=""):
+    """Add a SUB (Settings tab). ValueError if the name is empty or taken."""
+    with state.lock:
+        subs = subtypes.added(subtypes.current(), name, icon)
+        _sub_change(state, subs)
+        state.flash(f"SUB {subs[-1][0]} added")
+
+
+def edit_sub(state, old, name, icon):
+    """Rename a SUB and set its icon; the waypoints with it follow."""
+    with state.lock:
+        cur = subtypes.current()
+        subs = subtypes.edited(cur, old, name, icon)
+        new = subs[[n for n, _ in cur].index(old)][0]
+        n = _sub_change(state, subs, renamed=(old, new) if new != old else None)
+        state.flash(f"SUB {new} saved" + (f", {n} waypoints" if n else ""))
+
+
+def delete_sub(state, name):
+    """Delete a SUB; the waypoints with it are left with none."""
+    with state.lock:
+        n = _sub_change(state, subtypes.removed(subtypes.current(), name),
+                        cleared=name)
+        state.flash(f"SUB {name} deleted" + (f", {n} waypoints cleared"
+                                             if n else ""))
+
+
+def restore_subs(state):
+    """Add back any built-in SUB missing from the list."""
+    with state.lock:
+        before = len(subtypes.current())
+        subs = subtypes.restored(subtypes.current())
+        _sub_change(state, subs)
+        state.flash(f"{len(subs) - before} built-in SUBs restored")
 
 
 def load_bodies():
@@ -1404,6 +1489,16 @@ def above_space_line(r, radius, cfg):
     return (r - radius) > cfg["space_line_m"]
 
 
+def in_orbit(w, cfg):
+    """Is waypoint `w` up in orbit over its body -- a station such as Port
+    Thresler, 124 km up -- rather than on or near the ground? Then it has
+    no ground under it for the height map to show."""
+    if w.get("frame", "planet") != "planet":
+        return False
+    r = math.dist((w["x"], w["y"], w["z"]), (0.0, 0.0, 0.0))
+    return above_space_line(r, w.get("radius", cfg["default_radius"]), cfg)
+
+
 def far_from_body(r, radius, cfg):
     """Too far for "near <body>" to mean anything?
 
@@ -2428,7 +2523,7 @@ def add_waypoint(wps, planet, pos, radius, name=None, elev=None, agl=None,
                  system=None, frame="planet", wtype="poi", sub="", qt=None):
     """Append a waypoint in place and return its name. None auto-names it.
 
-    `sub` is what kind of place it is (subtypes.SUBTYPES, or "" for not
+    `sub` is what kind of place it is (subtypes.names(), or "" for not
     said) and `qt` whether it can be jumped to; None takes default_qt.
 
     `elev` is the terrain's height over the reference sphere at this spot and
@@ -2499,10 +2594,10 @@ def set_waypoint_note(wps, wid, note):
 
 
 def set_waypoint_sub(wps, wid, sub):
-    """Set what kind of place a waypoint is: one of subtypes.SUBTYPES, or ""
+    """Set what kind of place a waypoint is: one of subtypes.names(), or ""
     for not said."""
     target = _waypoint(wps, wid)
-    if sub and sub not in subtypes.SUBTYPES:
+    if sub and sub not in subtypes.names():
         raise ValueError(f"'{sub}' is not a SUB")
     target["sub"] = sub
 
@@ -2516,11 +2611,27 @@ def edit_waypoint(wps, wid, new, sub, qt):
     """Rename and set SUB and QT in one go, as the overlay's EDIT row does.
     Everything is checked before anything changes."""
     _waypoint(wps, wid)
-    if sub and sub not in subtypes.SUBTYPES:
+    if sub and sub not in subtypes.names():
         raise ValueError(f"'{sub}' is not a SUB")
     rename_waypoint(wps, wid, new)
     set_waypoint_sub(wps, wid, sub)
     set_waypoint_qt(wps, wid, qt)
+
+
+def update_waypoint(wps, wid, name, sub, qt, note, parent=None):
+    """Everything the Edit window sets, all checked before anything changes:
+    the name (need not be unique), SUB, QT, the note (empty removes it) and,
+    for a deep-space waypoint only, the body it is shown around (`parent`,
+    as set_waypoint_parent takes it; None hands it back to distance)."""
+    w = _waypoint(wps, wid)
+    if not name.strip():
+        raise ValueError("name cannot be empty")
+    if sub and sub not in subtypes.names():
+        raise ValueError(f"'{sub}' is not a SUB")
+    edit_waypoint(wps, wid, name, sub, qt)
+    set_waypoint_note(wps, wid, note)
+    if w.get("frame") == "system":
+        set_waypoint_parent(wps, wid, parent)
 
 
 def set_waypoint_parent(wps, wid, parent):
@@ -4626,7 +4737,9 @@ def run_overlay(state, cfg):
     tk.Label(kind_row, text="sub ", font=("Consolas", 10), fg=DIM,
              bg=BG).pack(side="left")
     sub_var = tk.StringVar(value=NO_SUB)
-    sub_menu = tk.OptionMenu(kind_row, sub_var, NO_SUB, *subtypes.SUBTYPES)
+    # Its choices are filled in each time EDIT opens (see sub_choices): the
+    # SUBs can be changed in the main window's Settings tab meanwhile.
+    sub_menu = tk.OptionMenu(kind_row, sub_var, NO_SUB)
     sub_menu.config(font=("Consolas", 10), bg=FIELD, fg="#DCE6F0",
                     activebackground="#1d4f3a", activeforeground="#FFFFFF",
                     highlightthickness=0, relief="flat", width=15, anchor="w")
@@ -4861,8 +4974,17 @@ def run_overlay(state, cfg):
             label_trace(st, naming["trace"], bname_var.get())
         end_bname()
 
+    def sub_choices():
+        """The SUB picker's choices: none, then the SUBs in use now."""
+        menu = sub_menu["menu"]
+        menu.delete(0, "end")
+        for name in [NO_SUB] + subtypes.names():
+            menu.add_command(label=name,
+                             command=lambda n=name: sub_var.set(n))
+
     def do_start_rename(st):
         chosen = selected_id()
+        sub_choices()
         with st.lock:
             if chosen is None:
                 st.flash("select a waypoint first")
@@ -5323,6 +5445,7 @@ def cmd_run(args):
         )
     cfg = load_config()
     state = State(cfg, load_waypoints())
+    load_subtypes(state.waypoints)
     state.bodies = load_bodies()
     state.heightmap = load_heightmap()
     state.traces = load_traces()

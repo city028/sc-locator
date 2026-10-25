@@ -1847,6 +1847,35 @@ above Copy/Export (a place in space gets only those). Show details is one
 comes from `waypoint_details_text`, `body_details_text` and
 `building_details_text` with `traces.building_facts`, all testable.
 
+**Edit... (2026-10-25).** The Waypoints tab had SUB, QT, a note and Shown
+around below the table, easy to miss. They moved into one window,
+`ask_waypoint`, opened by Edit... in the waypoint menu wherever a waypoint
+is right-clicked (Rename... stays, for consistency). OK saves through
+`update_waypoint`, which checks the name and SUB before changing anything.
+Then the rest went too: the name field, RENAME, SHOW ON MAP and SHOW ON
+HEIGHT MAP were in the menu already, DELETE became Delete... in it (asks
+first, clears a target that was it), and IMPORT moved to a new Settings tab
+(`SettingsTab`, Import waypoints...; `import_file` takes the tab's frame
+as its dialogs' parent). Nothing is left under the Waypoints table. The
+Reports tab keeps its own IMPORT at the top.
+
+**SUB categories (2026-10-25).** Eight built-ins added (Settlement, FOB,
+PAF, OLP, PAF Bunker, Ground Race Track, Crash Site, Derelict Ship), each
+with an icon; "Forward Operating Base", not the "Outward" first asked for,
+by the user's choice. The SUBs became a list the user manages, [name, icon]
+pairs in `subtypes.json` (gitignored, sandboxed in the tests' harness):
+`subtypes.use` puts it in place, `names()` / `icon_of()` read it, and the
+pure `added` / `edited` / `removed` / `restored` change it (names unique
+ignoring case). Icons are keyed by the built-in's own name, so a renamed
+built-in keeps its drawing and a new SUB points at any of them.
+`load_subtypes` falls back to the built-ins on a missing or malformed file;
+`sync_subs` adds a SUB a waypoint carries but the list lacks (an import, a
+hand edit) with no icon, so the Edit window never refuses a waypoint's own
+SUB. `edit_sub` / `delete_sub` carry a rename or a clear onto the waypoints
+and save both files. Settings has the list (name, icon, how many use it)
+with Add / Edit / Delete / Restore built-ins; `ask_sub` previews the icon.
+The overlay's SUB menu is refilled each time EDIT opens.
+
 **A deadlock found on the way.** `ReportViewer.lines_for` (since the commit
 that added report copy/export) held `state.lock` and, for the place you
 were at, called `body_report`, which takes it again; `threading.Lock` is

@@ -12,6 +12,7 @@ stations.json
 heightmap.json
 survey.json
 traces.json
+subtypes.json
 bak/
 *.bak
 

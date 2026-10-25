@@ -167,11 +167,20 @@ A waypoint is a saved position on a body (or in deep space).
   star map shows POI waypoints and the height map survey ones unless you
   tick the other type; the Waypoints tab shows both.
 - Every waypoint has a **SUB**: what kind of place it is. It sets the
-  waypoint's icon on the star map and the height map. The kinds are Space
-  Station, Spaceport, City, Village, Building, Tower, Turret, Landing Pad,
-  Wreck, Ruin, Summit, Jump Point, Town Hall, Radio Dish, Cargo Elevator,
-  Shop, Cave and Minable. A waypoint with no SUB (`none`) keeps the plain pin.
-  It is meant for POI waypoints, but survey ones can have it too.
+  waypoint's icon on the star map and the height map. The built-in kinds
+  are Space Station, Spaceport, City, Village, Building, Tower, Turret,
+  Landing Pad, Wreck, Ruin, Summit, Jump Point, Town Hall, Radio Dish, Cargo
+  Elevator, Shop, Cave, Minable, Settlement, Forward Operating Base (FOB),
+  Planetary Alignment Facility (PAF), Orbital Laser Platform (OLP), PAF
+  Bunker, Ground Race Track, Crash Site and Derelict Ship, each with its own
+  icon. Add, rename and delete them under **SUB categories** in the Settings
+  tab: a SUB you add takes any of the icons (or the plain pin), a rename or
+  delete carries over to the waypoints with it (a delete asks first, and
+  leaves them with no SUB), and **Restore built-ins** adds back any built-in
+  one you deleted. The list is kept in `subtypes.json`; a SUB on an imported
+  waypoint that you do not have is added to it. A waypoint with no SUB
+  (`none`) keeps the plain pin. It is meant for POI waypoints, but survey
+  ones can have it too.
 - Every waypoint has a **QT** yes/no: whether you can quantum travel to it.
   New and older waypoints start as **yes** in deep space (stations, jump
   points) and **no** on a planet or moon; set it by hand on cities and
@@ -314,8 +323,9 @@ quits the program.
   everything fits; the globe itself is to scale and turned to how it stands
   right now, so surface waypoints sit right against the moons. Moons not yet
   analysed are listed on the left. A deep-space waypoint is shown around the
-  nearest body within 1,000 Mm; to choose by hand, use **Shown around** in the
-  Waypoints tab (e.g. a Lagrange station that sits far from its planet).
+  nearest body within 1,000 Mm; to choose by hand, set **Shown around** in
+  its **Edit...** window (e.g. a Lagrange station that sits far from its
+  planet).
   Clicking a pin opens it in the Waypoints tab; right-click it, or a planet
   or moon, for its menu (see [Right-click menus](#right-click-menus)).
 - **View from an orbital marker**: with a planet or moon open, the **OM-1** to
@@ -323,20 +333,23 @@ quits the program.
   the zoom you have set (OM-1 north pole, OM-2 south pole, OM-3/OM-4 equator at
   longitude +90/-90, OM-5/OM-6 at 0/180). The view stays over the marker as
   the planet turns, until you drag it.
-- **Waypoints**: every waypoint in a table; rename, delete, and add a note.
+- **Waypoints**: every waypoint in a table. Right-click a row for its menu:
+  show it on the maps, **Rename...**, **Delete...** (asks first), and
+  **Edit...** for a window with all of it: name, **SUB**, **QT**, note, and
+  for deep space **Shown around**; **OK** saves them together, **X** or
+  Escape leaves it as it was.
   Names need not be unique: any number of waypoints can be called Cave.
   The app tells them apart by a hidden `id` each one carries in
   `waypoints.json`, given to older waypoints the first time it loads.
-  Pick its **SUB** and tick **QT** below the table; both save at once.
   Filter by system, body and type (all, POI or Survey), and type in
   **Search** to narrow the list to names holding that text (any case) as you
-  type. **SHOW ON MAP** opens
-  the selected one on the star map, **SHOW ON HEIGHT MAP** centres the height
-  map on it. Copy, export and import them, see
-  [Sharing](#sharing-waypoints-and-reports).
+  type. Copy and export them from the same menu, import them in Settings;
+  see [Sharing](#sharing-waypoints-and-reports).
 - **Reports**: every analysis result, with your own notes saved alongside it
   in `bodies.json`. A new ANALYSE run of the same place keeps the notes.
   Copy, export and import them the same way.
+- **Settings**: **Import waypoints...** for a file someone shared, and the
+  **SUB categories** (see above).
 
 Sizes on the system map are not to scale (a planet would be smaller than a
 pixel); positions are.
@@ -354,7 +367,7 @@ are already on.
 
 | Right-click | Where | Menu |
 |---|---|---|
-| a **waypoint** (POI, survey, deep space) | its pin on the star map or height map, its row in Waypoints | **Show details**, **Show on star map**, **Show on height map** (on a planet or moon only), **Show in Waypoints**, **Rename...** |
+| a **waypoint** (POI, survey, deep space) | its pin on the star map or height map, its row in Waypoints | **Show details**, **Show on star map**, **Show on height map** (on the ground of a planet or moon: not in deep space, nor a station in orbit over 100 km up), **Show in Waypoints**, **Rename...**, **Edit...** (name, SUB, QT, note, and Shown around in deep space), **Delete...** |
 | a **planet or moon** | its globe on the star map (in its own view, anywhere on it), a body in the list on the left, the ground of the height map, its row in Reports | **Show details**, **Open on star map**, **Show on height map** (if surveyed or traced), **Show report** (if analysed), **Show waypoints** |
 | a **building** | the height map | **Show details**, **Rename...** |
 
@@ -378,8 +391,8 @@ select several rows, then right-click one of them:
 - **Export...** saves them to a file you choose, in the same format as
   `waypoints.json` or `bodies.json`. Send that file to a friend.
 
-**IMPORT** (next to SHOW ON MAP in the Waypoints tab, top right in the
-Reports tab) reads a file someone sent you. Each record is checked first:
+**Import waypoints...** (in the Settings tab) and **IMPORT** (top right in
+the Reports tab) read a file someone sent you. Each record is checked first:
 
 - Records missing a field they need, or with a field that makes no sense,
   are skipped. The rest are imported, and a summary at the end lists what was
@@ -648,6 +661,7 @@ All next to the `.exe`:
 | `heightmap.json` | ground heights from survey mode, per body |
 | `survey.json` | the last survey square, to resume it |
 | `traces.json` | railways you traced, water and buildings you surveyed |
+| `subtypes.json` | your SUB categories and the icon each uses |
 | `bak/` | automatic backups of the files above |
 
 To move to a new PC, copy the whole folder. To share waypoints or reports with

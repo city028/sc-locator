@@ -141,13 +141,14 @@ def of_types(wps, switches):
             if switches.get(w.get("type", "poi"), switches["poi"]).get()]
 
 
-def draw_icon(c, sub, x, y, size, tags=()):
+def draw_icon(c, sub, x, y, size, tags=(), icon=None):
     """A waypoint's SUB icon on canvas `c`: a dark badge `size` px in radius
-    centred on (x, y), the glyph in the pin's colour inside. Returns the ids."""
+    centred on (x, y), the glyph in the pin's colour inside; `icon` draws
+    that ICONS key instead (a preview). Returns the ids."""
     ids = [c.create_oval(x - size, y - size, x + size, y + size, fill=BG,
                          outline=PIN, width=1.5, tags=tags)]
     width = max(1.0, size * 0.14)
-    for kind, paint, xy in subtypes.icon_items(sub, x, y, size * 0.68):
+    for kind, paint, xy in subtypes.icon_items(sub, x, y, size * 0.68, icon):
         colour = PIN if paint == "fg" else BG
         if kind == "poly":
             ids.append(c.create_polygon(*xy, fill=colour, outline="",
@@ -232,9 +233,10 @@ def open_main(root, state, scl, set_hud):
     height = HeightMapTab(nb, state, scl, follow, nav)
     reports = ReportViewer(nb, state, scl, nav)
     nav.star, nav.height, nav.editor, nav.reports = star, height, editor, reports
-    tabs = [star, height, editor, reports]
+    settings = SettingsTab(nb, state, scl, nav, editor)
+    tabs = [star, height, editor, reports, settings]
     for tab, title in zip(tabs, ("Star map", "Height map", "Waypoints",
-                                 "Reports")):
+                                 "Reports", "Settings")):
         nb.add(tab.frame, text=title)
 
     # Dragged to another screen: refit when it lands, not a second later.
@@ -431,6 +433,51 @@ class Navigator:
             st.flash(f"renamed to {new}")
         self.refresh_tabs()
 
+    def edit_waypoint(self, wid, at=None):
+        """Every field of a waypoint in one window (see ask_waypoint)."""
+        st, scl = self.state, self.scl
+        wps, bodies = snapshot(st)
+        w = scl.find_waypoint(wps, wid)
+        if w is None:
+            return
+        names = sorted({q["name"] for q in wps}, key=str.lower)
+        around = None
+        if w.get("frame") == "system":
+            around = sorted(starmap.placed_bodies(bodies, w.get("system")))
+        got = ask_waypoint(self.nb, w, names, around, scl.NO_SUB, at)
+        if got is None:
+            return
+        with st.lock:
+            try:
+                scl.update_waypoint(st.waypoints, wid, **got)
+            except ValueError as exc:
+                st.flash(str(exc))
+                return
+            scl.save_json(scl.WAYPOINT_FILE, st.waypoints)
+            st.flash(f"saved {got['name'].strip()}")
+        self.refresh_tabs()
+
+    def delete_waypoint(self, wid):
+        """Delete a waypoint, once asked; a target that was it is cleared."""
+        st, scl = self.state, self.scl
+        wps, _ = snapshot(st)
+        w = scl.find_waypoint(wps, wid)
+        if w is None or not messagebox.askyesno(
+                "Delete waypoint", f"Delete '{w['name']}' ({w['planet']})?",
+                parent=self.nb):
+            return
+        with st.lock:
+            try:
+                scl.delete_waypoint(st.waypoints, wid)
+            except ValueError as exc:
+                st.flash(str(exc))
+                return
+            if st.target == wid:
+                st.target = None
+            scl.save_json(scl.WAYPOINT_FILE, st.waypoints)
+            st.flash(f"deleted {w['name']}")
+        self.refresh_tabs()
+
     def rename_building(self, name, label, at=None):
         with self.state.lock:
             given = self.scl.building_labels(self.state.traces)
@@ -452,11 +499,15 @@ class Navigator:
                                                                         at))
         if here != "star" and w.get("system") in starmap.SYSTEMS:
             add(label="Show on star map", command=lambda: self.to_star(wid))
-        if here != "height" and w.get("frame", "planet") == "planet":
+        # The ground only: not deep space, nor a station up in orbit.
+        if (here != "height" and w.get("frame", "planet") == "planet"
+                and not self.scl.in_orbit(w, self.state.cfg)):
             add(label="Show on height map", command=lambda: self.to_height(wid))
         if here != "list":
             add(label="Show in Waypoints", command=lambda: self.to_list(wid))
         add(label="Rename...", command=lambda: self.rename_waypoint(wid, at))
+        add(label="Edit...", command=lambda: self.edit_waypoint(wid, at))
+        add(label="Delete...", command=lambda: self.delete_waypoint(wid))
         return True
 
     def body_menu(self, menu, body, here, at, opened=False):
@@ -925,7 +976,7 @@ class StarMap:
                                      outline=ACCENT, width=2, tags="pin"))
         ids.append(c.create_polygon(x, y, x - 5, y - 10, x + 5, y - 10,
                                     fill=PIN, outline="", tags="pin"))
-        if sub in subtypes.ICONS:       # its icon in place of the pin's head
+        if subtypes.icon_of(sub):       # its icon in place of the pin's head
             ids += draw_icon(c, sub, x, y - 17, px(9), tags="pin")
         else:
             ids += [
@@ -933,7 +984,7 @@ class StarMap:
                               outline="", tags="pin"),
                 c.create_oval(x - 2, y - 14, x + 2, y - 10, fill=BG,
                               outline="", tags="pin")]
-        ids.append(c.create_text(x + (px(9) + 3 if sub in subtypes.ICONS
+        ids.append(c.create_text(x + (px(9) + 3 if subtypes.icon_of(sub)
                                       else 9), y - 12,
                                  text=label or self.names.get(wid, ""),
                                  anchor="w", fill=FG,
@@ -1319,6 +1370,10 @@ class HeightMapTab:
             with self.state.lock:
                 self.state.flash(f"{name}: not on a body, not on the height map")
             return
+        if self.scl.in_orbit(w, self.state.cfg):
+            with self.state.lock:
+                self.state.flash(f"{w['name']}: in orbit, not on the height map")
+            return
         self.types.get(w.get("type"), self.types["poi"]).set(True)
         if w["planet"] != self.body:
             self.body_var.set(w["planet"])
@@ -1630,7 +1685,7 @@ class HeightMapTab:
                     sx, sy = xy
                     name = names[wid]
                     gap = 7
-                    if subs.get(wid) in subtypes.ICONS:
+                    if subtypes.icon_of(subs.get(wid)):
                         items = draw_icon(c, subs[wid], sx, sy, px(8))
                         gap = px(8) + 3
                     else:
@@ -1941,12 +1996,11 @@ class WaypointEditor:
                ("around", 120),
                ("lat", 80), ("lon", 85), ("height", 280), ("saved", 170),
                ("note", 200))
-    AUTO = "auto (by distance)"
 
     def __init__(self, parent, state, scl, nav):
         self.state, self.scl, self.nav = state, scl, nav
         self.frame = tk.Frame(parent, bg=BG)
-        self.seen, self.loaded = None, False
+        self.seen = None
 
         bar = tk.Frame(self.frame, bg=BG)
         bar.pack(side="top", fill="x", pady=(0, 6))
@@ -1986,75 +2040,17 @@ class WaypointEditor:
         scroll = ttk.Scrollbar(self.frame, orient="vertical",
                                command=self.tree.yview)
         self.tree.configure(yscrollcommand=scroll.set)
-        edit = tk.Frame(self.frame, bg=BG)
-        edit.pack(side="bottom", fill="x", pady=(8, 0))
         scroll.pack(side="right", fill="y")
         self.tree.pack(fill="both", expand=True)
-        self.tree.bind("<<TreeviewSelect>>", self.on_select)
+        # Everything done to a waypoint is in its right-click menu; import
+        # is in the Settings tab.
         self.tree.bind("<Button-3>", self.popup)
-
-        row = tk.Frame(edit, bg=BG)
-        row.pack(fill="x")
-        tk.Label(row, text="Name", font=mono(), fg=DIM, bg=BG).pack(side="left")
-        self.name_var = tk.StringVar()
-        name_entry = tk.Entry(row, textvariable=self.name_var, font=mono(),
-                              bg=PANEL, fg=FG, insertbackground=FG,
-                              relief="flat", width=32)
-        name_entry.pack(side="left", padx=6)
-        name_entry.bind("<Return>", lambda e: self.rename())
-        ttk.Button(row, text="RENAME", command=self.rename).pack(side="left")
-        ttk.Button(row, text="DELETE", command=self.delete).pack(side="left",
-                                                                 padx=6)
-        ttk.Button(row, text="SHOW ON MAP", command=self.show_on_map).pack(
-            side="left")
-        ttk.Button(row, text="SHOW ON HEIGHT MAP",
-                   command=lambda: self.show_on_map(self.nav.to_height)).pack(
-            side="left", padx=(6, 0))
-        ttk.Button(row, text="IMPORT", command=self.import_file).pack(
-            side="left", padx=6)
-        # Deep space only: which body the star map shows it around.
-        tk.Label(row, text="Shown around", font=mono(), fg=DIM, bg=BG).pack(
-            side="left", padx=(18, 6))
-        self.parent_var = tk.StringVar()
-        self.parent_pick = ttk.Combobox(row, textvariable=self.parent_var,
-                                        state="disabled", width=22)
-        self.parent_pick.pack(side="left")
-        self.parent_pick.bind("<<ComboboxSelected>>",
-                              lambda e: self.set_parent())
-        # What kind of place it is (its icon on the maps), and whether it
-        # can be jumped to. Both apply as soon as they are picked.
-        row = tk.Frame(edit, bg=BG)
-        row.pack(fill="x", pady=(6, 0))
-        tk.Label(row, text="SUB", font=mono(), fg=DIM, bg=BG).pack(side="left")
-        self.sub_var = tk.StringVar()
-        self.sub_pick = ttk.Combobox(row, textvariable=self.sub_var,
-                                     state="disabled", width=18,
-                                     values=[self.scl.NO_SUB]
-                                     + list(subtypes.SUBTYPES))
-        self.sub_pick.pack(side="left", padx=6)
-        self.sub_pick.bind("<<ComboboxSelected>>", lambda e: self.set_sub())
-        self.qt_var = tk.BooleanVar()
-        self.qt_box = ttk.Checkbutton(row, text="QT - can be jumped to",
-                                      variable=self.qt_var, state="disabled",
-                                      command=self.set_qt)
-        self.qt_box.pack(side="left", padx=(12, 0))
-        tk.Label(edit, text="Note", font=mono(), fg=DIM, bg=BG).pack(anchor="w",
-                                                                   pady=(6, 0))
-        self.note = text_box(edit, 4)
-        self.note.pack(fill="x")
-        ttk.Button(edit, text="SAVE NOTE", command=self.save_note).pack(
-            anchor="e", pady=(4, 0))
 
     def selected(self):
         """The id of the one selected waypoint (rows are keyed by id, as
         names repeat); None when none or several are."""
         sel = self.tree.selection()
         return sel[0] if len(sel) == 1 else None
-
-    def name_of(self, wid):
-        """A waypoint's name, for messages; "" if it is gone."""
-        wps, _ = snapshot(self.state)
-        return (self.scl.find_waypoint(wps, wid) or {}).get("name", "")
 
     def chosen(self):
         """The selected waypoint records, in list order."""
@@ -2125,9 +2121,12 @@ class WaypointEditor:
         with self.state.lock:
             self.state.flash(f"exported {len(wps)} to {os.path.basename(path)}")
 
-    def import_file(self):
+    def import_file(self, parent=None):
+        """Import waypoints from a shared file, its dialogs over `parent`
+        (the tab it is started from; the Settings tab)."""
+        parent = parent or self.frame
         path = filedialog.askopenfilename(
-            parent=self.frame, title="Import waypoints",
+            parent=parent, title="Import waypoints",
             filetypes=[("Waypoints", "*.json"), ("All files", "*.*")])
         if not path:
             return
@@ -2136,7 +2135,7 @@ class WaypointEditor:
             good, bad = scl.read_import_file(path)
         except (OSError, ValueError) as exc:
             messagebox.showerror("Import waypoints", str(exc),
-                                 parent=self.frame)
+                                 parent=parent)
             return
         now = time.strftime("%Y-%m-%d %H:%M:%S")
         added, replaced, declined = [], [], []
@@ -2151,7 +2150,7 @@ class WaypointEditor:
                 action = always
                 if action is None:
                     action, to_all = ask_conflict(
-                        self.frame, scl.conflict_text(w, nearby))
+                        parent, scl.conflict_text(w, nearby))
                     if to_all:
                         always = action
                 if action == "no":
@@ -2171,11 +2170,13 @@ class WaypointEditor:
         with st.lock:
             if added or replaced:
                 scl.save_json(scl.WAYPOINT_FILE, st.waypoints)
+            if scl.sync_subs(st.waypoints):     # a SUB of theirs, now ours
+                scl.save_json(scl.SUBTYPES_FILE, subtypes.current())
             st.flash(f"imported {len(added) + len(replaced)} waypoints")
         self.refresh()
         messagebox.showinfo("Import waypoints", scl.import_summary(
             os.path.basename(path), added, replaced, declined, bad),
-            parent=self.frame)
+            parent=parent)
 
     def select(self, wid):
         """Select a waypoint by id and scroll to it, clearing a filter that
@@ -2240,152 +2241,206 @@ class WaypointEditor:
         chosen = [n for n in chosen if self.tree.exists(n)]
         if chosen:
             self.tree.selection_set(chosen)
-        else:
-            self.on_select()
 
     def pick_system(self):
         """A new system: its bodies are the choices, starting from all."""
         self.body_var.set("all")
         self.refresh()
 
-    def on_select(self, _event=None):
-        wid = self.selected()
-        # A rebuild reselects the same row; reloading then would throw away a
-        # note being typed when the overlay saves a waypoint.
-        if wid == self.loaded:
+
+
+class SettingsTab:
+    """What is done to the program's data as a whole rather than to one
+    waypoint: importing a file of waypoints someone shared, and the SUB
+    categories a waypoint can be given."""
+
+    NO_ICON = "(plain pin)"
+
+    def __init__(self, parent, state, scl, nav, editor):
+        self.state, self.scl, self.nav = state, scl, nav
+        self.frame = tk.Frame(parent, bg=BG)
+        self.seen = None
+        box = tk.LabelFrame(self.frame, text=" Waypoints ", font=mono(),
+                            fg=ACCENT, bg=BG, bd=2, relief="groove",
+                            padx=10, pady=8)
+        box.pack(anchor="nw", fill="x", padx=4, pady=4)
+        ttk.Button(box, text="Import waypoints...",
+                   command=lambda: editor.import_file(self.frame)).pack(
+            anchor="w")
+        tk.Label(box, font=mono(9), fg=DIM, bg=BG, justify="left",
+                 text="Adds the waypoints from a file someone exported for "
+                      "you.\nOne within 1,000 m of one of yours asks first."
+                 ).pack(anchor="w", pady=(6, 0))
+
+        box = tk.LabelFrame(self.frame, text=" SUB categories ", font=mono(),
+                            fg=ACCENT, bg=BG, bd=2, relief="groove",
+                            padx=10, pady=8)
+        box.pack(anchor="nw", fill="both", expand=True, padx=4, pady=4)
+        self.tree = ttk.Treeview(box, show="headings", selectmode="browse",
+                                 columns=("name", "icon", "used"), height=14)
+        for name, title, width in (("name", "SUB", 320), ("icon", "ICON", 260),
+                                   ("used", "WAYPOINTS", 100)):
+            self.tree.heading(name, text=title)
+            set_column(self.tree, name, width, stretch=name == "name")
+        scroll = ttk.Scrollbar(box, orient="vertical", command=self.tree.yview)
+        self.tree.configure(yscrollcommand=scroll.set)
+        self.tree.pack(side="left", fill="both", expand=True)
+        scroll.pack(side="left", fill="y")
+        self.tree.bind("<Double-1>", lambda e: self.edit())
+        side = tk.Frame(box, bg=BG)
+        side.pack(side="left", fill="y", padx=(10, 0))
+        for text, command in (("Add...", self.add), ("Edit...", self.edit),
+                              ("Delete...", self.delete),
+                              ("Restore built-ins", self.restore)):
+            ttk.Button(side, text=text, command=command).pack(fill="x",
+                                                              pady=(0, 6))
+        tk.Label(side, font=mono(9), fg=DIM, bg=BG, justify="left",
+                 text="What a waypoint is,\nand its icon on the maps.\n\n"
+                      "A rename or delete\ncarries over to the\nwaypoints "
+                      "with it.\n\nRestore built-ins adds\nback any you "
+                      "deleted.").pack(anchor="w", pady=(6, 0))
+
+    def refresh(self):
+        """The SUB list, redrawn when it or the waypoints' use of it changes."""
+        subs = subtypes.current()
+        with self.state.lock:
+            used = {}
+            for w in self.state.waypoints:
+                if w.get("sub"):
+                    used[w["sub"]] = used.get(w["sub"], 0) + 1
+        seen = (tuple(map(tuple, subs)), tuple(sorted(used.items())))
+        if seen == self.seen:
             return
-        self.loaded = wid
-        wps, _ = snapshot(self.state)
-        w = self.scl.find_waypoint(wps, wid)
-        self.name_var.set((w or {}).get("name", ""))
-        set_text(self.note, (w or {}).get("note", ""))
-        self.sub_var.set((w or {}).get("sub") or (self.scl.NO_SUB if w else ""))
-        self.qt_var.set(bool((w or {}).get("qt")))
-        self.sub_pick.config(state="disabled" if w is None else "readonly")
-        self.qt_box.config(state="disabled" if w is None else "normal")
-        if w is None or w.get("frame") != "system":
-            self.parent_var.set("")
-            self.parent_pick.config(state="disabled", values=())
+        self.seen = seen
+        chosen = self.tree.selection()
+        self.tree.delete(*self.tree.get_children())
+        for name, icon in sorted(subs, key=lambda p: p[0].lower()):
+            self.tree.insert("", "end", iid=name, values=(
+                name, icon or self.NO_ICON, used.get(name, 0)))
+        chosen = [n for n in chosen if self.tree.exists(n)]
+        if chosen:
+            self.tree.selection_set(chosen)
+
+    def selected(self):
+        sel = self.tree.selection()
+        return sel[0] if sel else None
+
+    def after_change(self, name=None):
+        """Show a change here and on every tab; keep `name` selected."""
+        self.refresh()
+        if name and self.tree.exists(name):
+            self.tree.selection_set(name)
+            self.tree.see(name)
+        self.nav.refresh_tabs()
+
+    def ask(self, title, name="", icon=""):
+        got = ask_sub(self.frame, title, name, icon,
+                      list(subtypes.ICONS), self.NO_ICON)
+        if got is None:
+            return None
+        return got[0], ("" if got[1] == self.NO_ICON else got[1])
+
+    def add(self):
+        got = self.ask("Add a SUB")
+        if got is None:
             return
-        _, bodies = snapshot(self.state)
-        self.parent_pick.config(state="readonly", values=[self.AUTO, "none"] +
-                                sorted(starmap.placed_bodies(bodies,
-                                                             w.get("system"))))
-        self.parent_var.set(w.get("parent", self.AUTO))
-
-    def set_parent(self):
-        wid, pick = self.selected(), self.parent_var.get()
-        st, scl = self.state, self.scl
-        name = self.name_of(wid)
-        with st.lock:
-            if wid is None:
-                return
-            try:
-                scl.set_waypoint_parent(st.waypoints, wid,
-                                        None if pick == self.AUTO else pick)
-            except ValueError as exc:
-                st.flash(str(exc))
-                return
-            scl.save_json(scl.WAYPOINT_FILE, st.waypoints)
-            st.flash(f"{name}: shown around {pick}")
-        self.refresh()
-
-    def set_sub(self):
-        wid, pick = self.selected(), self.sub_var.get()
-        st, scl = self.state, self.scl
-        name = self.name_of(wid)
-        with st.lock:
-            if wid is None:
-                return
-            try:
-                scl.set_waypoint_sub(st.waypoints, wid,
-                                     "" if pick == scl.NO_SUB else pick)
-            except ValueError as exc:
-                st.flash(str(exc))
-                return
-            scl.save_json(scl.WAYPOINT_FILE, st.waypoints)
-            st.flash(f"{name}: {pick}")
-        self.refresh()
-
-    def set_qt(self):
-        wid, qt = self.selected(), self.qt_var.get()
-        st, scl = self.state, self.scl
-        name = self.name_of(wid)
-        with st.lock:
-            if wid is None:
-                return
-            try:
-                scl.set_waypoint_qt(st.waypoints, wid, qt)
-            except ValueError as exc:
-                st.flash(str(exc))
-                return
-            scl.save_json(scl.WAYPOINT_FILE, st.waypoints)
-            st.flash(f"{name}: QT {'yes' if qt else 'no'}")
-        self.refresh()
-
-    def show_on_map(self, show=None):
-        """SHOW ON MAP, or with `show` SHOW ON HEIGHT MAP."""
-        wid = self.selected()
-        if wid is None:
-            with self.state.lock:
-                self.state.flash("select one waypoint first")
+        try:
+            self.scl.add_sub(self.state, *got)
+        except ValueError as exc:
+            messagebox.showerror("Add a SUB", str(exc), parent=self.frame)
             return
-        (show or self.nav.to_star)(wid)
+        self.after_change(subtypes.current()[-1][0])
 
-    def rename(self):
-        old, new = self.selected(), self.name_var.get().strip()
-        st, scl = self.state, self.scl
-        with st.lock:
-            if old is None:
-                st.flash("select one waypoint first")
-                return
-            try:
-                scl.rename_waypoint(st.waypoints, old, new)
-            except ValueError as exc:
-                st.flash(str(exc))
-                return
-            scl.save_json(scl.WAYPOINT_FILE, st.waypoints)
-            st.flash(f"renamed to {new}")
-        self.refresh()
-        if self.tree.exists(old):
-            self.tree.selection_set(old)
+    def edit(self):
+        old = self.selected()
+        if old is None:
+            return
+        icon = next(i for n, i in subtypes.current() if n == old)
+        got = self.ask("Edit a SUB", old, icon)
+        if got is None:
+            return
+        at = [n for n, _ in subtypes.current()].index(old)
+        try:
+            self.scl.edit_sub(self.state, old, *got)
+        except ValueError as exc:
+            messagebox.showerror("Edit a SUB", str(exc), parent=self.frame)
+            return
+        self.after_change(subtypes.current()[at][0])
 
     def delete(self):
-        wid = self.selected()
-        name = self.name_of(wid)
-        if wid is None or not messagebox.askyesno(
-                "Delete waypoint", f"Delete '{name}'?", parent=self.frame):
+        name = self.selected()
+        if name is None:
             return
-        st, scl = self.state, self.scl
-        with st.lock:
-            try:
-                scl.delete_waypoint(st.waypoints, wid)
-            except ValueError as exc:
-                st.flash(str(exc))
-                return
-            if st.target == wid:
-                st.target = None
-            scl.save_json(scl.WAYPOINT_FILE, st.waypoints)
-            st.flash(f"deleted {name}")
-        self.refresh()
+        n = self.scl.sub_users(self.state, name)
+        if not messagebox.askyesno(
+                "Delete a SUB", f"Delete the SUB '{name}'?" + (
+                    f"\n\n{n} waypoint{'' if n == 1 else 's'} "
+                    f"{'has' if n == 1 else 'have'} it, and will have no "
+                    "SUB." if n else ""), parent=self.frame):
+            return
+        self.scl.delete_sub(self.state, name)
+        self.after_change()
 
-    def save_note(self):
-        wid = self.selected()
-        st, scl = self.state, self.scl
-        name = self.name_of(wid)
-        with st.lock:
-            if wid is None:
-                st.flash("select one waypoint first")
-                return
-            try:
-                scl.set_waypoint_note(st.waypoints, wid,
-                                      self.note.get("1.0", "end"))
-            except ValueError as exc:
-                st.flash(str(exc))
-                return
-            scl.save_json(scl.WAYPOINT_FILE, st.waypoints)
-            st.flash(f"note saved on {name}")
-        self.refresh()
+    def restore(self):
+        self.scl.restore_subs(self.state)
+        self.after_change()
+
+
+def ask_sub(parent, title, name, icon, icons, no_icon):
+    """A SUB's name and icon: a box to type the name in, the icons to pick
+    from (`icons`, or `no_icon` for the plain pin) with a preview. Returns
+    (name, icon) or None if cancelled (closing it, X or Escape)."""
+    win = tk.Toplevel(parent, bg=BG)
+    win.withdraw()
+    win.title(title)
+    win.transient(parent.winfo_toplevel())
+    answer = {}
+    tk.Label(win, text="Name", font=mono(), fg=DIM, bg=BG).grid(
+        row=0, column=0, sticky="w", padx=(10, 6), pady=(10, 3))
+    name_var = tk.StringVar(value=name)
+    entry = tk.Entry(win, textvariable=name_var, font=mono(), bg=PANEL, fg=FG,
+                     insertbackground=FG, relief="flat", width=36)
+    entry.grid(row=0, column=1, sticky="we", padx=(0, 10), pady=(10, 3))
+    tk.Label(win, text="Icon", font=mono(), fg=DIM, bg=BG).grid(
+        row=1, column=0, sticky="w", padx=(10, 6), pady=3)
+    icon_var = tk.StringVar(value=icon or no_icon)
+    pick = ttk.Combobox(win, textvariable=icon_var, state="readonly",
+                        values=[no_icon] + list(icons), width=34)
+    pick.grid(row=1, column=1, sticky="we", padx=(0, 10), pady=3)
+    preview = tk.Canvas(win, width=56, height=56, bg=PANEL,
+                        highlightthickness=0)
+    preview.grid(row=2, column=1, sticky="w", pady=3)
+
+    def show(_e=None):
+        preview.delete("all")
+        chosen = icon_var.get()
+        if chosen == no_icon:           # the plain pin, as the maps draw it
+            preview.create_polygon(28, 44, 23, 34, 33, 34, fill=PIN)
+            preview.create_oval(22, 16, 34, 28, fill=PIN, outline="")
+            preview.create_oval(26, 20, 30, 24, fill=BG, outline="")
+        else:
+            draw_icon(preview, chosen, 28, 28, 22, icon=chosen)
+
+    pick.bind("<<ComboboxSelected>>", show)
+    show()
+    row = tk.Frame(win, bg=BG)
+    row.grid(row=3, column=0, columnspan=2, sticky="e", padx=10, pady=10)
+
+    def ok(_e=None):
+        answer["got"] = (name_var.get(), icon_var.get())
+        win.destroy()
+
+    ttk.Button(row, text="OK", command=ok).pack(side="left")
+    ttk.Button(row, text="X", width=3, command=win.destroy).pack(
+        side="left", padx=(6, 0))
+    entry.bind("<Return>", ok)
+    win.bind("<Escape>", lambda e: win.destroy())
+    win.deiconify()
+    entry.focus_set()
+    entry.select_range(0, "end")
+    win.grab_set()
+    win.wait_window()
+    return answer.get("got")
 
 
 def ask_conflict(parent, text, can_keep=True):
@@ -2420,6 +2475,85 @@ def ask_conflict(parent, text, can_keep=True):
     win.grab_set()
     win.wait_window()
     return answer["action"], to_all.get()
+
+
+AROUND_AUTO = "auto (by distance)"     # Shown around: the nearest body
+
+
+def ask_waypoint(parent, w, names, around, no_sub, at=None):
+    """Edit... for waypoint `w`: its name (typed, or one in `names`), SUB,
+    QT, note and, if `around` is a list (deep space only), the body it is
+    shown around, in a window by the screen point `at`. `no_sub` is the
+    SUB list's "not said" (scl.NO_SUB). Returns the fields
+    as scl.update_waypoint takes them, or None if cancelled (closing it, X
+    or Escape)."""
+    win = tk.Toplevel(parent, bg=BG)
+    win.withdraw()                  # placed before it is seen
+    win.title("Edit waypoint")
+    win.transient(parent.winfo_toplevel())
+    answer = {}
+    tk.Label(win, text=f"{w['name']} ({w['planet']})", font=mono(), fg=DIM,
+             bg=BG).grid(row=0, column=0, columnspan=2, sticky="w",
+                         padx=10, pady=(10, 6))
+    style = ttk.Style(win)
+    # Typed into, on the dark field: light text, as in ask_name.
+    style.configure("Name.TCombobox", foreground=FG, insertcolor=FG)
+
+    def label(row, text):
+        tk.Label(win, text=text, font=mono(), fg=DIM, bg=BG).grid(
+            row=row, column=0, sticky="nw", padx=(10, 6), pady=3)
+
+    label(1, "Name")
+    name = tk.StringVar(value=w["name"])
+    box = ttk.Combobox(win, textvariable=name, values=names, width=32,
+                       style="Name.TCombobox")
+    box.grid(row=1, column=1, sticky="we", padx=(0, 10), pady=3)
+    label(2, "SUB")
+    sub = tk.StringVar(value=w.get("sub") or no_sub)
+    ttk.Combobox(win, textvariable=sub, state="readonly", width=32,
+                 values=[no_sub] + subtypes.names()).grid(
+        row=2, column=1, sticky="we", padx=(0, 10), pady=3)
+    qt = tk.BooleanVar(value=bool(w.get("qt")))
+    ttk.Checkbutton(win, text="QT - can be jumped to", variable=qt).grid(
+        row=3, column=1, sticky="w", pady=3)
+    row = 4
+    parent_var = None
+    if around is not None:
+        label(row, "Shown around")
+        parent_var = tk.StringVar(value=w.get("parent", AROUND_AUTO))
+        ttk.Combobox(win, textvariable=parent_var, state="readonly", width=32,
+                     values=[AROUND_AUTO, "none"] + list(around)).grid(
+            row=row, column=1, sticky="we", padx=(0, 10), pady=3)
+        row += 1
+    label(row, "Note")
+    note = text_box(win, 4)
+    note.config(width=34)
+    set_text(note, w.get("note", ""))
+    note.grid(row=row, column=1, sticky="we", padx=(0, 10), pady=3)
+    buttons = tk.Frame(win, bg=BG)
+    buttons.grid(row=row + 1, column=0, columnspan=2, sticky="e", padx=10,
+                 pady=10)
+
+    def ok(_e=None):
+        pick = parent_var.get() if parent_var is not None else AROUND_AUTO
+        answer.update(name=name.get(),
+                      sub="" if sub.get() == no_sub else sub.get(),
+                      qt=qt.get(), note=note.get("1.0", "end"),
+                      parent=None if pick == AROUND_AUTO else pick)
+        win.destroy()
+
+    ttk.Button(buttons, text="OK", command=ok).pack(side="left")
+    ttk.Button(buttons, text="X", width=3, command=win.destroy).pack(
+        side="left", padx=(6, 0))
+    box.bind("<Return>", ok)
+    win.bind("<Escape>", lambda e: win.destroy())
+    place_near(win, at)
+    win.deiconify()
+    box.focus_set()
+    box.select_range(0, "end")
+    win.grab_set()
+    win.wait_window()
+    return answer or None
 
 
 def ask_name(parent, title, heading, current, given, at=None,
