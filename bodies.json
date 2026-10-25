@@ -752,5 +752,71 @@
       "armistice": true,
       "source": "UEX 2026-10-24"
     }
+  },
+  "wala": {
+    "planet": "wala",
+    "system": "stanton",
+    "radius_m": 283000.0,
+    "analysed": "2026-10-25 10:34",
+    "kind": "rotating",
+    "site": {
+      "lat": -28.12427808518203,
+      "lon": -94.87291976315967
+    },
+    "samples": 24,
+    "duration_s": 32.530399322509766,
+    "rho_m": 248338.81412337165,
+    "rho_local_m": 248358.7292925527,
+    "omega_deg_s": 0.015493967781338668,
+    "period_s": 23234.848883162984,
+    "sigma": 0.006530697872354014,
+    "arc_deg": 0.5046631443218899,
+    "axis": [
+      -0.000930938943875905,
+      -0.020292251959379094,
+      0.9997936576429659
+    ],
+    "axis_tilt_deg": 1.1639633127061224,
+    "centre": [
+      18379649189.84046,
+      -22000469533.907185,
+      5054.481664277191
+    ],
+    "star_distance_m": 28667615248.813545,
+    "declination_deg": -0.8581088374569815,
+    "t_ref": 1792910053.4421859,
+    "subsolar_lon_ref": 127.30695601499576,
+    "label": "moon"
+  },
+  "space 16729220,-19942050,2240 km": {
+    "scope": "space",
+    "system": "stanton",
+    "analysed": "2026-10-25 10:22",
+    "site_sys": [
+      16729220032.3,
+      -19942050234.9,
+      2240262.9000000004
+    ],
+    "samples": 60,
+    "duration_s": 59.47489929199219,
+    "kind": "fixed",
+    "label": "Lagrange station",
+    "station": {
+      "name": "ARC-L1 Wide Forest Station",
+      "body": "ArcCorp Lagrange Point 1",
+      "faction": "United Empire of Earth",
+      "services": [
+        "refinery",
+        "repair",
+        "refuel",
+        "clinic",
+        "shops",
+        "trade",
+        "habs"
+      ],
+      "pads": null,
+      "armistice": true,
+      "source": "UEX 2026-10-24"
+    }
   }
 }

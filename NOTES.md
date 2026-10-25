@@ -1887,6 +1887,97 @@ a test runs it on a thread and fails, rather than hangs, if it comes back.
 Test windows now use a watchdog thread: a Tk timer cannot fire while the
 main thread is stuck.
 
+## Deleting and restoring from the backups (2026-10-25)
+
+Reports, waypoints and surveys can be deleted in the app, and put back
+from the backups `save_json` keeps (BACKUP_KEEP = 30 versions of each
+file). `backed_up(path)` reads them newest first with the time each was
+replaced; the newest backup holding a thing is its last version, and that
+time is when it went. What counts as "gone":
+
+- a report: no report under its key, and no place in space within
+  SPACE_MATCH_M (a place analysed again gets a slightly different key);
+- a waypoint: its id is gone (ids are random, never given out twice);
+- a trace: no trace with its name and start time (names are given out
+  again once free; restored under the next free one if taken);
+- a height map: its body has none (one surveyed again since is not
+  offered).
+
+Found by hand first: the user deleted Checkmate in testing and could not
+tell which backup held it, as files are named by the time they were
+replaced and places in space by their coordinates. Restore windows list by
+name (a place in space takes its waypoint's name) with when it went.
+
+Height surveys are not separable: cells keep a mean and a count, not which
+survey measured them, so a body's height map is deleted whole. A cell
+remembering its survey would allow more, for surveys flown after it.
+`save_json(..., backup=False)` exists for report notes saved as you type;
+everything else here saves with a backup, so a delete can be undone. The
+height map's backups cover about an hour of surveying (saved every 2 min).
+
+## Pop-ups open by the pointer (2026-10-25)
+
+Found in review: Settings > Waypoints' Add... and Edit... (`ask_sub`) and
+the import conflict window (`ask_conflict`) were never placed, so Windows
+opened them at the top left of the screen; tkinter's messagebox centres on
+the main window and is drawn in Windows' light colours. The rule now, asked
+for as the default: every pop-up goes through `place_near`, which with no
+point given uses the mouse pointer, just below and right of it, kept inside
+the main window counting the pop-up's own title bar and border (taken from
+the main window's: without them it ran off the bottom). The messageboxes
+became `ask_yes_no` / `show_message` (`ask_buttons`): same arguments, the
+program's colours, Enter for the first button, Escape or closing for
+No. Only the Open / Save as file dialogs are still Windows' own and placed
+by Windows.
+
+## Height detail on the globe: investigated (2026-10-25)
+
+Asked whether the star map's globe can show the height map's detail without
+slowing it down. Nothing changed in the program; prototypes and numbers only
+(1100 x 800 window; microTech's real survey, 2,312 cells, and a synthetic
+32 x 32 km one, 102,400 cells, centred on it).
+
+**Today.** The globe draws `coarse` tiles, 192 per face edge: ~8 km on a
+1000 km body. The whole real survey is 24 tiles. Zoom 1 is ~5 km a pixel,
+zoom 200 (the most) ~25 m, so zoomed in a tile is hundreds of pixels wide.
+A drag step is ~30-45 ms, about the same with no survey at all: the shaded
+ball (up to 140 ovals) and the grid cost as much as the tiles.
+
+**Finer polygons do not scale.** Each tile drawn costs ~0.07-0.13 ms.
+
+| tiles | real survey | 102,400 cells |
+|---|---|---|
+| 8 km (now) | 33 ms | 30 ms |
+| 1 km | 50-65 ms | 90-155 ms |
+| 100 m, all | 160-250 ms | ~10 s |
+| sized to ~6 px, only those on screen | 40-160 ms | 2-3 s at zoom 100+ |
+
+A screen full of surveyed ground is ~20,000 tiles of 6 px, whatever is done.
+
+**Raw cells as one image** (each 2-3 px screen block mapped back to its cell,
+in the coarse level whose tile is about a block): 20-100 ms a step whatever
+the survey's size, and checked to hit the same cells as `cell_of` (2,000 of
+2,000 random points). But at 100 m the real survey is dots: legs flown 500 m
+apart, which the height map fills in.
+
+**The height map's own relief as one image.** Zoomed in (view under ~200 km
+half-width), `local_cells` + `relief_grid` worked out around the point under
+the view's centre, kept while `covers` says the view is still on it; each
+step maps the screen blocks onto that flat map and looks them up as
+`relief_image` does, over the ball. It looks like the height map's filled
+relief on the globe. Drag step 95-130 ms (2 px blocks; the image part 55-90
+ms of it) on both surveys; rebuilding the relief on zooming or moving onto
+new ground 3-35 ms for the real survey, 130-900 ms for 102,400 cells (the
+same work as the height map's full redraw).
+
+**So:** more detail is possible, not for free: about +50-90 ms a drag step as
+prototyped. Ways to cut that, not yet measured: 3-4 px blocks (the image
+part about halves at 3 px), working only over the screen box of the relief
+rather than the whole canvas (the real survey covers a quarter of it at
+zoom 200), and skipping the image when no surveyed ground is in view, so
+other views cost nothing. Contours, lakes and railways could be projected
+the same way as lines.
+
 ## Still open
 
 - `HDG` is course over ground, not facing — wrong whenever hovering, strafing

@@ -173,8 +173,8 @@ A waypoint is a saved position on a body (or in deep space).
   Elevator, Shop, Cave, Minable, Settlement, Forward Operating Base (FOB),
   Planetary Alignment Facility (PAF), Orbital Laser Platform (OLP), PAF
   Bunker, Ground Race Track, Crash Site and Derelict Ship, each with its own
-  icon. Add, rename and delete them under **SUB categories** in the Settings
-  tab: a SUB you add takes any of the icons (or the plain pin), a rename or
+  icon. Add, rename and delete them under **SUB categories** in Settings >
+  Waypoints: a SUB you add takes any of the icons (or the plain pin), a rename or
   delete carries over to the waypoints with it (a delete asks first, and
   leaves them with no SUB), and **Restore built-ins** adds back any built-in
   one you deleted. The list is kept in `subtypes.json`; a SUB on an imported
@@ -185,6 +185,11 @@ A waypoint is a saved position on a body (or in deep space).
   New and older waypoints start as **yes** in deep space (stations, jump
   points) and **no** on a planet or moon; set it by hand on cities and
   outposts you can jump to. It changes the route, see below.
+- A waypoint can be made **Private** (yes/no, no to start with): a private
+  waypoint is left out when you copy or export several, and asks first
+  when it is the only one you picked (see
+  [Sharing](#sharing-waypoints-and-reports)). Set it in the main window's
+  **Edit...** window.
 - Set SUB and QT with **EDIT** in the panel (just after saving, in game) or in
   the main window's Waypoints tab.
 
@@ -313,10 +318,12 @@ quits the program.
   shown, and every body that has one, in view. Drag to rotate, mouse wheel to
   zoom; **default view** (top right) puts the view back as it started. The
   **POI waypoints** and **Survey waypoints** switches pick which types are
-  shown; only POI at first. Click a planet or moon
+  shown; only POI at first, and Survey only in a planet's or moon's view.
+  Click a planet or moon
   to open it: its waypoints are shown on the globe, stations at their real
-  height above it. Bodies with waypoints that have not been analysed yet are
-  listed on the left and open the same way.
+  height above it. A drag turns the globe less the closer you are zoomed in
+  (how much less: Settings > Star map). Bodies with waypoints that have not
+  been analysed yet are listed on the left and open the same way.
 - **Around a planet**: the opened planet also shows its analysed moons and the
   places in space near it (stations, bases), in their true direction, with the
   real distance in the label. Distances beyond the globe are pulled in so
@@ -335,7 +342,8 @@ quits the program.
   the planet turns, until you drag it.
 - **Waypoints**: every waypoint in a table. Right-click a row for its menu:
   show it on the maps, **Rename...**, **Delete...** (asks first), and
-  **Edit...** for a window with all of it: name, **SUB**, **QT**, note, and
+  **Edit...** for a window with all of it: name, **SUB**, **QT**,
+  **Private**, note, and
   for deep space **Shown around**; **OK** saves them together, **X** or
   Escape leaves it as it was.
   Names need not be unique: any number of waypoints can be called Cave.
@@ -343,13 +351,61 @@ quits the program.
   `waypoints.json`, given to older waypoints the first time it loads.
   Filter by system, body and type (all, POI or Survey), and type in
   **Search** to narrow the list to names holding that text (any case) as you
-  type. Copy and export them from the same menu, import them in Settings;
+  type. Copy and export them from the same menu, import them in Settings > Waypoints;
   see [Sharing](#sharing-waypoints-and-reports).
 - **Reports**: every analysis result, with your own notes saved alongside it
   in `bodies.json`. A new ANALYSE run of the same place keeps the notes.
-  Copy, export and import them the same way.
-- **Settings**: **Import waypoints...** for a file someone shared, and the
-  **SUB categories** (see above).
+  Notes are saved as you type (a second after you stop, or at once when you
+  pick another report); with none or several reports selected the notes box
+  is closed. The list shows each place's **NAME** (a place in space takes the name of
+  the waypoint saved there, within 20 km), **TYPE** (planet, moon,
+  Lagrange station, jump point, orbital station...), **SYSTEM**, **KIND**
+  (rotating, fixed, moving), **COORDINATES** in the system frame in Mm
+  (1,000 km; a body's centre, a place where it was analysed) and the date
+  **ANALYSED**; the report beside it has the full figures.
+  Copy and export them the same way; import them in Settings > Reports.
+  **Delete...** in the same
+  right-click menu takes the selected reports out, with their notes, once
+  asked: a planet or moon goes back to not analysed (off the star map until
+  you ANALYSE it again); its waypoints stay. Deleted by mistake? **Restore
+  deleted reports...** in Settings > Reports lists, by name, every report
+  still in the backups of `bodies.json` (its last 30 saves) that is gone
+  now; pick and **RESTORE** to put them back as they were, notes and all.
+- **Surveys**: every survey kept: each trace (railway, lake, sea, waterway,
+  building) with its label, body, start, points and length, and each
+  body's **height map** with its cells. Every height survey on a body adds
+  to that one map (a cell does not remember which survey measured it), so
+  a height map is kept and deleted whole. Right-click a row: a trace has
+  **Show on height map** (centred on it, its layer switched on), a
+  building also **Show details** and **Rename...**; a height map has its
+  body's menu. **Delete...** works on every selected row, once asked; a
+  trace or height survey still running is not deleted. Deleted ones come
+  back from **Restore deleted surveys...** in Settings > Survey, while they
+  are in the backups of `traces.json` and `heightmap.json` (their last 30
+  saves each; the height map is saved every 2 minutes while surveying, so
+  that is about an hour of surveying). A trace whose name has been given
+  out again comes back under the next free one.
+- **Settings**, a tab per section:
+  - **Star map**: how much slower a planet's or moon's view turns when
+    zoomed in (0: the same at every zoom; 1, the default: the ground under
+    the mouse keeps pace with it).
+  - **Height map**: what each of its switches starts as. A change is made
+    on the height map at once too; **Reset to shipped** puts them all back.
+  - **Waypoints**: **Import waypoints...** for a file someone shared,
+    **Restore deleted waypoints...** (deleted ones still in the backups of
+    `waypoints.json`, by name, put back as they were), and the **SUB
+    categories** (see above).
+  - **Reports**: **Import reports...** for a file someone shared, and
+    **Restore deleted reports...** (see Reports above).
+  - **Survey**: **Restore deleted surveys...** (see Surveys above), and
+    every kind of survey (height survey and its patterns,
+    railway, lake, sea, waterway, building), what each does and records,
+    and the limits it drops misreads by. Four can be set here, from the
+    next survey on: **Record below** (`survey_max_height_m`), the lake's
+    and sea's **Water below camera** (`water_below_cam_m`), a new
+    waterway's **Width** (`waterway_width_m`) and a new building's **Wall
+    offset** (`building_wall_offset_m`).
+  - **Other**: nothing to set yet.
 
 Sizes on the system map are not to scale (a planet would be smaller than a
 pixel); positions are.
@@ -367,7 +423,7 @@ are already on.
 
 | Right-click | Where | Menu |
 |---|---|---|
-| a **waypoint** (POI, survey, deep space) | its pin on the star map or height map, its row in Waypoints | **Show details**, **Show on star map**, **Show on height map** (on the ground of a planet or moon: not in deep space, nor a station in orbit over 100 km up), **Show in Waypoints**, **Rename...**, **Edit...** (name, SUB, QT, note, and Shown around in deep space), **Delete...** |
+| a **waypoint** (POI, survey, deep space) | its pin on the star map or height map, its row in Waypoints | **Show details**, **Centre** (star map, in its planet's or moon's view: turns it to the middle, so the wheel zooms straight in on it; not for deep space), **Show on star map**, **Show on height map** (on the ground of a planet or moon: not in deep space, nor a station in orbit over 100 km up), **Show in Waypoints**, **Rename...**, **Edit...** (name, SUB, QT, Private, note, and Shown around in deep space), **Delete...** |
 | a **planet or moon** | its globe on the star map (in its own view, anywhere on it), a body in the list on the left, the ground of the height map, its row in Reports | **Show details**, **Open on star map**, **Show on height map** (if surveyed or traced), **Show report** (if analysed), **Show waypoints** |
 | a **building** | the height map | **Show details**, **Rename...** |
 
@@ -387,12 +443,19 @@ select several rows, then right-click one of them:
 - **Copy** puts them on the clipboard, ready to paste into Discord. A
   waypoint becomes a few readable lines (name, type, system and body,
   latitude/longitude, height, note); a report is pasted in a code block so its
-  columns stay lined up, with your notes below it.
+  columns stay lined up, with your notes below it. Private waypoints are
+  left out, as for Export.
 - **Export...** saves them to a file you choose, in the same format as
-  `waypoints.json` or `bodies.json`. Send that file to a friend.
+  `waypoints.json` or `bodies.json`. Send that file to a friend. Private
+  waypoints are left out (it says how many); if all you picked are
+  private, nothing is written.
 
-**Import waypoints...** (in the Settings tab) and **IMPORT** (top right in
-the Reports tab) read a file someone sent you. Each record is checked first:
+To share one private waypoint with someone you choose, pick that one on its
+own: **Copy** and **Export...** then ask "… is a private waypoint. Copy (or
+Export) it anyway?", and **OK** shares it; **Cancel** does not.
+
+**Import waypoints...** (in Settings > Waypoints) and **Import reports...**
+(in Settings > Reports) read a file someone sent you. Each record is checked first:
 
 - Records missing a field they need, or with a field that makes no sense,
   are skipped. The rest are imported, and a summary at the end lists what was
@@ -428,7 +491,7 @@ The first spot a survey records on a body gets a waypoint, `survey-001`,
 area can be found again from **Go to** in the Height map tab. Rename or delete
 it like any other waypoint. A survey that starts within 5 km of a survey
 waypoint, renamed or not, adds no new one. These are **Survey** waypoints: the
-height map shows them, the star map only when you tick **Survey waypoints**.
+height map and the star map show them when you tick **Survey waypoints**.
 
 - Works in flight too: the HUD reports the ground under you, not your own
   height. Nothing is recorded more than 5 km over the reference sphere
@@ -448,7 +511,10 @@ height map shows them, the star map only when you tick **Survey waypoints**.
 - **Height map** tab: the ground around you at full detail, coloured by
   height from green through tan to white. Grey is ground nobody measured. It
   follows you while **follow me** is ticked; drag to move, wheel to zoom (0.4 m
-  to 800 m a pixel). Switches on the left turn each layer on or off:
+  to 800 m a pixel). Switches on the left turn each layer on or off. All
+  start on except **Survey samples**, **Survey pattern**, **Survey
+  waypoints** and **POI heights**; change how each starts in Settings >
+  Height map:
   - **Filled relief**: the ground between your flight lines filled in and
     shaded as if lit from the upper left. It only reaches 400 m from a
     measured cell, and it is a guess between lines, not measured ground.
@@ -457,12 +523,11 @@ height map shows them, the star map only when you tick **Survey waypoints**.
     height in metres.
   - **Survey pattern**: the square course, dashed (see below).
   - **POI waypoints** / **Survey waypoints**: your waypoints on that body of
-    each type, each with the ground height where it was saved. Both are on
-    at first.
+    each type, each with the ground height where it was saved.
   - **POI heights**: the ground height after each POI's name; untick it
     to show POI names only. Survey waypoints keep theirs.
 
-  A **Go to** list centres the map on a waypoint of the types shown.
+  A **Go to** list (A to Z) centres the map on a waypoint of the types shown.
 
 #### Flying a pattern
 
@@ -517,7 +582,7 @@ can be done in parts, `lake-001`, `lake-002` and so on.
 pick it, fly along the middle of the water and press **END TRACE** at the
 other end. Keep under 200 m/s: a fix that moved faster is taken for a
 misread and dropped. The height map draws it as water, to scale,
-`waterway_width_m` wide (30 m unless you change it) and never thinner than
+`waterway_width_m` wide (30 m unless you change it in Settings > Survey) and never thinner than
 2 px; one that runs into a lake joins it. Each waterway keeps the width it
 was started with, as `width_m` in `traces.json`, so one can be corrected
 there.
@@ -636,6 +701,8 @@ program is closed. The ones you are most likely to change:
 | `water_below_cam_m` | `2` | how far (m) below your camera the water is when a lake survey starts |
 | `waterway_width_m` | `30` | how wide (m) a new waterway is drawn on the height map |
 | `building_wall_offset_m` | `0.5` | how far (m) outside the walls you walk round a building; its outline is pulled in this much |
+| `starmap_zoom_slowdown` | `1.0` | how much slower a planet's or moon's view on the star map turns when zoomed in: per pixel, divided by the zoom to this power (also in Settings > Star map) |
+| `heightmap_switches` | `{}` | what the height map's switches start as, e.g. `{"samples": true}`; one not named starts as shipped (also in Settings > Height map) |
 | `min_move` | `20.0` | metres you must move before your heading updates |
 | `game_process` | `["starcitizen.exe"]` | process names that count as the game running |
 | `read_rows_only` | `true` | read only the HUD rows the locator uses once their layout is known (about twice as fast); `false` reads every row every time |
@@ -665,7 +732,7 @@ All next to the `.exe`:
 | `bak/` | automatic backups of the files above |
 
 To move to a new PC, copy the whole folder. To share waypoints or reports with
-a friend, use **Export...** and **IMPORT** (see
+a friend, use **Export...** and **Import...** (see
 [Sharing](#sharing-waypoints-and-reports)) rather than sending the whole file:
 an import checks each record and asks before replacing anything they
 already have.
@@ -761,6 +828,8 @@ The result is `dist\sc-locator.exe`.
 | `spin_analysis.py` | maths for the body analysis (circle fit, spin, sun position) |
 | `stations.py` | UEX station list download and formatting |
 | `sc_locator.spec` | PyInstaller build recipe |
+| `icon.ico` | the program's icon, on the `.exe` and its windows |
+| `make_icon.py` | draws `icon.ico` (`python make_icon.py icon.ico`) |
 | `bodies.json` | measured analyses for the Stanton bodies |
 | `NOTES.md` | detailed development notes: how the HUD behaves, what OCR gets wrong, and why things work the way they do |
 | `OCR-PERFORMANCE.md` | the switch to tesserocr and reading only the needed HUD rows, with before/after measurements |

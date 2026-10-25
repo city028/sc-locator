@@ -12,9 +12,10 @@ TESS = os.environ.get("TESSERACT_DIR", r"C:\Program Files\Tesseract-OCR")
 datas = [
     (os.path.join(TESS, "tessdata", "eng.traineddata"), "tesseract/tessdata"),
     (os.path.join(TESS, "doc", "LICENSE"), "tesseract"),
+    ("icon.ico", "."),          # the windows' icon (make_icon.py draws it)
 ]
 
 a = Analysis(["sc_locator.py"], datas=datas)
 pyz = PYZ(a.pure)
 exe = EXE(pyz, a.scripts, a.binaries, a.datas, name="sc-locator",
-          console=True, upx=False)
+          console=True, upx=False, icon="icon.ico")

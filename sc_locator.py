@@ -48,6 +48,7 @@ if str(HERE) not in sys.path:            # the maths lives beside this file
     sys.path.insert(0, str(HERE))
 import heightmap                         # noqa: E402
 import spin_analysis as spin             # noqa: E402
+import starmap                           # noqa: E402
 import stations                          # noqa: E402
 import subtypes                          # noqa: E402
 import survey                            # noqa: E402
@@ -60,6 +61,7 @@ BUNDLE = Path(getattr(sys, "_MEIPASS", HERE))
 if FROZEN:
     HERE = Path(sys.executable).resolve().parent
 
+ICON_FILE = BUNDLE / "icon.ico"          # packed into the .exe, see the spec
 CONFIG_FILE = HERE / "locator_config.json"
 WAYPOINT_FILE = HERE / "waypoints.json"
 BODIES_FILE = HERE / "bodies.json"       # what landing on a body taught us
@@ -171,6 +173,14 @@ DEFAULT_CONFIG = {
     # pulled in this much. Each one keeps the offset it started with, as
     # offset_m in traces.json.
     "building_wall_offset_m": 0.5,
+    # Dragging a planet's or moon's view on the star map turns it less the
+    # more it is zoomed in: per pixel, divided by zoom to this power. Set in
+    # Settings > Star map.
+    "starmap_zoom_slowdown": 1.0,
+    # What the height map's switches start as, {switch: true/false}; one not
+    # named starts as shipped (main_window.HEIGHT_SWITCHES). Set in Settings >
+    # Height map.
+    "heightmap_switches": {},
     "stale_after": 3.0,                # seconds before a fix is flagged stale
     "default_radius": 1000000.0,         # used when the zone is not in BODY_RADII
     "min_move": 20.0,                    # metres moved before heading is updated
@@ -233,14 +243,18 @@ def prune_backups(name, keep=BACKUP_KEEP):
             pass
 
 
-def save_json(path, data, indent=2):
+def save_json(path, data, indent=2, backup=True):
     """Write JSON, keeping the previous BACKUP_KEEP versions in bak/.
 
     Waypoints are collected by flying to each spot, so they cost real time to
     replace and almost nothing to keep copies of. One overwritten .bak gave a
     single chance to notice a bad write before the original was gone.
+
+    `backup` False writes without a copy: for saves that come in a run, such
+    as report notes saved as you type, which would otherwise push every
+    older version out of bak/ within a paragraph.
     """
-    if path.exists():
+    if backup and path.exists():
         BACKUP_DIR.mkdir(exist_ok=True)
         shutil.copy2(path, backup_name(path))
         prune_backups(path.name)
@@ -458,6 +472,16 @@ def load_config():
     if not CONFIG_FILE.exists():
         save_json(CONFIG_FILE, cfg)
     return cfg
+
+
+def save_setting(state, key, value):
+    """A setting changed in the app: in use at once, and kept in the config
+    file. Only that key is written, so the file keeps what else is in it."""
+    with state.lock:
+        state.cfg[key] = value
+    saved = load_json(CONFIG_FILE, {})
+    saved[key] = value
+    save_json(CONFIG_FILE, saved)
 
 
 # ----------------------------------------------------------------------------
@@ -2618,11 +2642,13 @@ def edit_waypoint(wps, wid, new, sub, qt):
     set_waypoint_qt(wps, wid, qt)
 
 
-def update_waypoint(wps, wid, name, sub, qt, note, parent=None):
+def update_waypoint(wps, wid, name, sub, qt, note, parent=None,
+                    private=None):
     """Everything the Edit window sets, all checked before anything changes:
-    the name (need not be unique), SUB, QT, the note (empty removes it) and,
+    the name (need not be unique), SUB, QT, the note (empty removes it),
     for a deep-space waypoint only, the body it is shown around (`parent`,
-    as set_waypoint_parent takes it; None hands it back to distance)."""
+    as set_waypoint_parent takes it; None hands it back to distance), and
+    whether it is private (None leaves that as it is)."""
     w = _waypoint(wps, wid)
     if not name.strip():
         raise ValueError("name cannot be empty")
@@ -2632,6 +2658,24 @@ def update_waypoint(wps, wid, name, sub, qt, note, parent=None):
     set_waypoint_note(wps, wid, note)
     if w.get("frame") == "system":
         set_waypoint_parent(wps, wid, parent)
+    if private is not None:
+        set_waypoint_private(wps, wid, private)
+
+
+def set_waypoint_private(wps, wid, private):
+    """A private waypoint is never exported. Kept only while it is: no
+    "private" means no, as on every waypoint from before it existed."""
+    w = _waypoint(wps, wid)
+    if private:
+        w["private"] = True
+    else:
+        w.pop("private", None)
+
+
+def exportable(wps):
+    """The waypoints Export writes out and Copy copies: all but the private
+    ones."""
+    return [w for w in wps if not w.get("private")]
 
 
 def set_waypoint_parent(wps, wid, parent):
@@ -2734,6 +2778,8 @@ def waypoint_details_text(w, around=None, here=None):
             here["sys_pos"], (w["x"], w["y"], w["z"]))) + " direct")
     if w.get("saved"):
         lines.append(f"Saved {w['saved']}")
+    if w.get("private"):
+        lines.append("Private: never exported")
     return "\n".join(lines)
 
 
@@ -2963,6 +3009,179 @@ def set_report_notes(bodies, key, notes):
         rec.pop("notes", None)
 
 
+def delete_reports(bodies, keys):
+    """Take reports out, notes and all. The place is then as if never
+    analysed: a body leaves the star map until ANALYSE is run there again.
+    Waypoints are not touched. Returns the keys that were there."""
+    gone = [k for k in keys if k in bodies]
+    for k in gone:
+        del bodies[k]
+    return gone
+
+
+def deleted_reports(bodies, backups=None):
+    """Reports in the kept backups of bodies.json that are gone from
+    `bodies` now: [(key, report, gone since)], most recently gone first.
+
+    Each comes from the newest backup holding it, the last version before
+    it went; "gone since" is that backup's time ("YYYY-MM-DD HH:MM"), the
+    save that replaced it. A place in space that has a report again within
+    SPACE_MATCH_M (analysed again, under a slightly different key) is not
+    gone. Only the BACKUP_KEEP newest versions are kept, so a report
+    deleted long enough ago is no longer there to find.
+    """
+    found = {}
+    for data, since in backed_up(BODIES_FILE, backups):
+        if not isinstance(data, dict):
+            continue
+        for key, rec in data.items():
+            if key in found or not isinstance(rec, dict):
+                continue
+            same, nearby = report_conflicts(key, rec, bodies)
+            if same is None and not nearby:
+                found[key] = (key, rec, since)
+    return list(found.values())
+
+
+def backed_up(path, backups=None):
+    """(data, time) for each kept backup of the file `path`, newest first:
+    what it held, and when that version was replaced ("YYYY-MM-DD HH:MM").
+    `backups` are the backup files to read (default: all of path's in
+    bak/); one that cannot be read is skipped."""
+    if backups is None:
+        backups = BACKUP_DIR.glob(path.name + ".*.bak")
+    for p in sorted(backups, key=lambda p: p.name, reverse=True):
+        data = load_json(p, None)
+        if data is None:
+            continue
+        s = p.name[len(path.name) + 1:]
+        yield data, f"{s[:4]}-{s[4:6]}-{s[6:8]} {s[9:11]}:{s[11:13]}"
+
+
+def deleted_waypoints(wps, backups=None):
+    """Waypoints in the kept backups of waypoints.json that are gone from
+    `wps`: [(id, waypoint, gone since)], as deleted_reports. Matched by id,
+    which is never given out twice."""
+    have = {w.get("id") for w in wps}
+    found = {}
+    for data, since in backed_up(WAYPOINT_FILE, backups):
+        for w in data if isinstance(data, list) else []:
+            wid = w.get("id") if isinstance(w, dict) else None
+            if wid and wid not in have and wid not in found:
+                found[wid] = (wid, w, since)
+    return list(found.values())
+
+
+def restore_waypoints(wps, picks):
+    """Put waypoints back, as deleted_waypoints found them. Returns their
+    names."""
+    have = {w.get("id") for w in wps}
+    back = [w for w in picks if w.get("id") not in have]
+    wps.extend(back)
+    return [w["name"] for w in back]
+
+
+def delete_traces(state, names):
+    """Delete traces (railways, lakes, buildings...) by name and save. The
+    one being traced now is left: it would be saved again when it ends.
+    Returns the names deleted."""
+    with state.lock:
+        running = state.trace["name"] if state.trace else None
+        gone = [t for t in state.traces
+                if t["name"] in names and t["name"] != running]
+        for t in gone:
+            state.traces.remove(t)
+        if gone:
+            state.traces_dirty = True
+    save_traces(state, force=True)
+    return [t["name"] for t in gone]
+
+
+def deleted_traces(all_traces, backups=None):
+    """Traces in the kept backups of traces.json that are gone now:
+    [(name, trace, gone since)], as deleted_reports. A name is given out
+    again once free, so a trace is matched by its name and when it was
+    started."""
+    have = {(t["name"], t.get("started")) for t in all_traces}
+    found = {}
+    for data, since in backed_up(TRACES_FILE, backups):
+        for t in data if isinstance(data, list) else []:
+            if not isinstance(t, dict) or "name" not in t:
+                continue
+            k = (t["name"], t.get("started"))
+            if k not in have and k not in found:
+                found[k] = (t["name"], t, since)
+    return list(found.values())
+
+
+def restore_traces(state, picks):
+    """Put traces back, as deleted_traces found them, and save. One whose
+    name is taken by now gets the next free one of its kind. Returns the
+    names they came back under."""
+    names = []
+    with state.lock:
+        for t in picks:
+            t = dict(t)
+            if any(q["name"] == t["name"] for q in state.traces):
+                t["name"] = traces.trace_name(state.traces, t["kind"])
+            state.traces.append(t)
+            names.append(t["name"])
+        if names:
+            state.traces_dirty = True
+    save_traces(state, force=True)
+    return names
+
+
+def delete_heightmaps(state, bodies):
+    """Delete the whole height map of each body in `bodies` and save. A body
+    being surveyed now is left. Returns the bodies deleted."""
+    with state.lock:
+        busy = state.planet if state.survey else None
+        gone = [b for b in bodies if b in state.heightmap and b != busy]
+        for b in gone:
+            del state.heightmap[b]
+        if gone:
+            state.heightmap_dirty = True
+    save_heightmap(state, force=True)
+    return gone
+
+
+def deleted_heightmaps(store, backups=None):
+    """Bodies' height maps in the kept backups of heightmap.json whose body
+    has none now: [(body, its record, gone since)], as deleted_reports. A
+    body surveyed again since has one, so is not offered."""
+    found = {}
+    for data, since in backed_up(HEIGHTMAP_FILE, backups):
+        for body, rec in (data.items() if isinstance(data, dict) else ()):
+            if (body not in store and body not in found
+                    and isinstance(rec, dict) and rec.get("cells")):
+                found[body] = (body, rec, since)
+    return list(found.values())
+
+
+def restore_heightmaps(state, picks):
+    """Put height maps back, as deleted_heightmaps found them: [(body,
+    record)], and save. One whose body has a height map again is left."""
+    with state.lock:
+        back = [(b, rec) for b, rec in picks if b not in state.heightmap]
+        for b, rec in back:
+            state.heightmap[b] = rec
+        if back:
+            state.heightmap_dirty = True
+    save_heightmap(state, force=True)
+    return [b for b, _ in back]
+
+
+def restore_reports(bodies, picks):
+    """Put reports back, as deleted_reports found them: [(key, report)].
+    One whose key has a report again is left as it is. Returns the keys
+    put back."""
+    back = [(k, rec) for k, rec in picks if k not in bodies]
+    for k, rec in back:
+        bodies[k] = rec
+    return [k for k, _ in back]
+
+
 def place_report_lines(state, key):
     """The report lines for one place, None if it has no report: live (sun
     figures as of now) where you are, stored anywhere else.
@@ -3115,6 +3334,45 @@ def place_gap(a, b):
             return None
         return math.dist(a["site_over"], b["site_over"])
     return math.dist(a["site_sys"], b["site_sys"])
+
+
+def place_name(rec, wps):
+    """The name of the waypoint saved at a place in space, "" if none: the
+    nearest within SPACE_MATCH_M, matched as place_gap matches reports (by
+    its position over the body for a place that turns with one)."""
+    if rec.get("site_over") is not None and rec.get("over"):
+        at, near = rec["site_over"], [
+            w for w in wps if w["planet"] == rec["over"]
+            and w.get("frame", "planet") == "planet"]
+    elif rec.get("site_sys") is not None:
+        at, near = rec["site_sys"], [
+            w for w in wps if w.get("frame") == "system"
+            and w.get("system") == rec.get("system")]
+    else:
+        return ""
+    best = min(((math.dist(at, (w["x"], w["y"], w["z"])), w["name"])
+                for w in near), default=None)
+    return best[1] if best and best[0] <= spin.SPACE_MATCH_M else ""
+
+
+def report_columns(key, rec, wps):
+    """(name, type, coordinates) of a report for the Reports list.
+
+    A body is named by its key and is a planet or moon (or what its label
+    says). A place in space has no name of its own: it takes the waypoint
+    saved there, and its label (Lagrange station, jump point...) is its
+    type. Coordinates are system-frame Mm (1,000 km), short enough for a
+    column; the report has them in full: a body's centre, a place's
+    position when analysed."""
+    def mm(p):
+        return ",".join(str(round(c / 1e6)) for c in p) if p else ""  # no -0
+
+    if rec.get("scope") == "space":
+        return (place_name(rec, wps), rec.get("label") or "place in space",
+                mm(rec.get("site_sys")))
+    moon = any(key in m for m in starmap.MOONS.values())
+    return (key, rec.get("label") or ("moon" if moon else "planet"),
+            mm(rec.get("centre")))
 
 
 def report_conflicts(key, rec, bodies):
@@ -4583,6 +4841,10 @@ def run_overlay(state, cfg):
 
     root = tk.Tk()
     root.title("SC Locator")
+    try:                    # default: every window opened after it too
+        root.iconbitmap(default=str(ICON_FILE))
+    except tk.TclError:     # missing: Tk's own icon
+        pass
     root.overrideredirect(True)
     root.attributes("-topmost", True)
     root.attributes("-alpha", cfg["alpha"])

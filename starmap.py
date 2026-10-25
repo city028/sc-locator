@@ -321,3 +321,11 @@ def view_from(lat, lon, spin):
     ends up at the bottom of the screen.
     """
     return -math.pi / 2 - math.radians(lon) - spin, math.radians(lat)
+
+
+def turn_per_px(zoom, slowdown, base=0.01):
+    """Radians a body view turns per pixel dragged at `zoom`: `base` at zoom
+    1 or less, divided by zoom ** slowdown above it. 0 turns the same at
+    every zoom; at 1 the ground under the mouse keeps pace with it, so a
+    POI being zoomed into is not dragged past."""
+    return base / max(1.0, zoom) ** slowdown

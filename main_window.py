@@ -14,7 +14,7 @@ import os
 import time
 import tkinter as tk
 import tkinter.font as tkfont
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, ttk
 
 import numpy as np
 from PIL import Image, ImageDraw, ImageTk
@@ -124,14 +124,17 @@ def fit_to_screen(win, style):
 TYPE_LABELS = {"poi": "POI", "survey": "Survey"}   # see WAYPOINT_TYPES
 
 
-def type_switches(parent, on, command):
+def type_switches(parent, on, command, boxes=None):
     """A tick box per waypoint type, ticked for the types in `on`.
-    Returns {type: BooleanVar}."""
+    Returns {type: BooleanVar}; the tick boxes go in `boxes` if given."""
     out = {}
     for t, label in TYPE_LABELS.items():
         out[t] = tk.BooleanVar(value=t in on)
-        ttk.Checkbutton(parent, text=f"{label} waypoints", variable=out[t],
-                        command=command).pack(anchor="w")
+        box = ttk.Checkbutton(parent, text=f"{label} waypoints",
+                              variable=out[t], command=command)
+        box.pack(anchor="w")
+        if boxes is not None:
+            boxes[t] = box
     return out
 
 
@@ -232,11 +235,13 @@ def open_main(root, state, scl, set_hud):
     star = StarMap(nb, state, scl, nav, follow)
     height = HeightMapTab(nb, state, scl, follow, nav)
     reports = ReportViewer(nb, state, scl, nav)
+    surveys = SurveysTab(nb, state, scl, nav)
     nav.star, nav.height, nav.editor, nav.reports = star, height, editor, reports
+    nav.surveys = surveys
     settings = SettingsTab(nb, state, scl, nav, editor)
-    tabs = [star, height, editor, reports, settings]
+    tabs = [star, height, editor, reports, surveys, settings]
     for tab, title in zip(tabs, ("Star map", "Height map", "Waypoints",
-                                 "Reports", "Settings")):
+                                 "Reports", "Surveys", "Settings")):
         nb.add(tab.frame, text=title)
 
     # Dragged to another screen: refit when it lands, not a second later.
@@ -265,16 +270,24 @@ def blend(colours, t):
     return "#" + "".join(f"{round(u + (v - u) * t):02x}" for u, v in zip(ca, cb))
 
 
-def place_near(win, at):
+def place_near(win, at=None):
     """Put a window just below and right of the screen point `at` (where it
-    was asked for), kept inside the main window so it cannot run off the
-    edge of whichever screen that is on. Nothing if `at` is None."""
-    if at is None:
-        return
+    was asked for; the mouse pointer if None), kept inside the main window
+    so it cannot run off the edge of whichever screen that is on. Every
+    pop-up goes through here: one that is not placed opens at the top left
+    of the screen, far from the click that opened it."""
     win.update_idletasks()
+    if at is None:
+        at = win.winfo_pointerxy()
     top = win.master.winfo_toplevel()
-    right = top.winfo_rootx() + top.winfo_width() - win.winfo_reqwidth()
-    bottom = top.winfo_rooty() + top.winfo_height() - win.winfo_reqheight()
+    # The window's own title bar and border are not in its requested size;
+    # taken as the main window's, which has the same ones.
+    side = top.winfo_rootx() - top.winfo_x()
+    title = top.winfo_rooty() - top.winfo_y()
+    right = (top.winfo_rootx() + top.winfo_width() - win.winfo_reqwidth()
+             - 2 * side)
+    bottom = (top.winfo_rooty() + top.winfo_height() - win.winfo_reqheight()
+              - title - side)
     win.geometry(f"+{max(top.winfo_rootx(), min(at[0] + 12, right))}"
                  f"+{max(top.winfo_rooty(), min(at[1] + 12, bottom))}")
 
@@ -300,6 +313,53 @@ def details_window(parent, title, text, at=None):
     return win
 
 
+def ask_buttons(title, text, parent, buttons=("OK",)):
+    """A message in a window by the pointer, with a button per label in
+    `buttons`; waits, and returns the label clicked. Enter is the first
+    button; closing it or Escape returns None. In place of tkinter's
+    messagebox, which Windows centres on the main window and draws in its
+    own light colours."""
+    win = tk.Toplevel(parent, bg=BG)
+    win.withdraw()                  # placed before it is seen
+    win.title(title)
+    win.transient(parent.winfo_toplevel())
+    answer = {"got": None}
+    lines = text.splitlines() or [""]
+    box = text_box(win, min(30, len(lines)), readonly=True)
+    box.config(width=max(40, min(90, max(len(ln) for ln in lines) + 2)),
+               wrap="word")
+    set_text(box, text)
+    box.pack(fill="both", expand=True, padx=10, pady=(10, 6))
+    row = tk.Frame(win, bg=BG)
+    row.pack(anchor="e", padx=10, pady=(0, 10))
+
+    def choose(label):
+        answer["got"] = label
+        win.destroy()
+
+    for label in buttons:
+        ttk.Button(row, text=label, command=lambda b=label: choose(b)).pack(
+            side="left", padx=(6, 0))
+    win.bind("<Return>", lambda e: choose(buttons[0]))
+    win.bind("<Escape>", lambda e: win.destroy())
+    place_near(win)
+    win.deiconify()
+    win.focus_set()
+    win.grab_set()
+    win.wait_window()
+    return answer["got"]
+
+
+def ask_yes_no(title, text, parent):
+    """True for Yes; No, Escape or closing it is False."""
+    return ask_buttons(title, text, parent, ("Yes", "No")) == "Yes"
+
+
+def show_message(title, text, parent):
+    """A message to read, with OK."""
+    ask_buttons(title, text, parent)
+
+
 class Navigator:
     """The way between the tabs, and the right-click menus they share.
 
@@ -313,6 +373,7 @@ class Navigator:
     def __init__(self, nb, state, scl):
         self.nb, self.state, self.scl = nb, state, scl
         self.star = self.height = self.editor = self.reports = None
+        self.surveys = None
 
     # --- going to a tab -------------------------------------------------
 
@@ -341,6 +402,10 @@ class Navigator:
         self.nb.select(self.height.frame)
         self.height.body_var.set(body)
         self.height.open(body)
+
+    def trace_to_height(self, name):
+        self.nb.select(self.height.frame)
+        self.height.show_trace(name)
 
     def body_to_report(self, body):
         self.nb.select(self.reports.frame)
@@ -462,7 +527,7 @@ class Navigator:
         st, scl = self.state, self.scl
         wps, _ = snapshot(st)
         w = scl.find_waypoint(wps, wid)
-        if w is None or not messagebox.askyesno(
+        if w is None or not ask_yes_no(
                 "Delete waypoint", f"Delete '{w['name']}' ({w['planet']})?",
                 parent=self.nb):
             return
@@ -497,6 +562,11 @@ class Navigator:
         add = menu.add_command
         add(label="Show details", command=lambda: self.waypoint_details(wid,
                                                                         at))
+        # In its own body's view: turned to the middle, where the wheel
+        # zooms straight in on it.
+        if (here == "star" and w.get("frame", "planet") == "planet"
+                and self.star.body == w.get("planet")):
+            add(label="Centre", command=lambda: self.star.centre_on(wid))
         if here != "star" and w.get("system") in starmap.SYSTEMS:
             add(label="Show on star map", command=lambda: self.to_star(wid))
         # The ground only: not deep space, nor a station up in orbit.
@@ -541,6 +611,40 @@ class Navigator:
         add(label="Rename...", command=lambda: self.rename_building(name,
                                                                     label, at))
         return True
+
+
+def scrolled(parent):
+    """A frame filling `parent` that scrolls up and down, by its bar or the
+    mouse wheel, when what is in it is taller than the window; the bar
+    shows only then. Returns the frame to put things in."""
+    canvas = tk.Canvas(parent, bg=BG, highlightthickness=0)
+    bar = ttk.Scrollbar(parent, orient="vertical", command=canvas.yview)
+    inner = tk.Frame(canvas, bg=BG)
+    item = canvas.create_window(0, 0, window=inner, anchor="nw")
+    canvas.configure(yscrollcommand=bar.set)
+    canvas.pack(side="left", fill="both", expand=True)
+
+    def fit(_e=None):
+        canvas.itemconfigure(item, width=canvas.winfo_width())
+        canvas.configure(scrollregion=(0, 0, canvas.winfo_width(),
+                                       inner.winfo_reqheight()))
+        if inner.winfo_reqheight() > canvas.winfo_height():
+            if not bar.winfo_ismapped():
+                bar.pack(side="right", fill="y", before=canvas)
+        elif bar.winfo_ismapped():
+            bar.pack_forget()
+            canvas.yview_moveto(0)
+
+    def wheel(e):
+        if bar.winfo_ismapped():
+            canvas.yview_scroll(-e.delta // 120, "units")
+
+    inner.bind("<Configure>", fit)
+    canvas.bind("<Configure>", fit)
+    # The wheel scrolls it only while the pointer is over it.
+    canvas.bind("<Enter>", lambda e: canvas.bind_all("<MouseWheel>", wheel))
+    canvas.bind("<Leave>", lambda e: canvas.unbind_all("<MouseWheel>"))
+    return inner
 
 
 def text_box(parent, height, readonly=False):
@@ -602,8 +706,11 @@ class StarMap:
         pick.pack(anchor="w", pady=(0, 8))
         pick.bind("<<ComboboxSelected>>",
                   lambda e: self.show(self.system_var.get(), None))
-        # Survey markers would crowd the map: shown only when asked for.
-        self.types = type_switches(side, ("poi",), self.draw)
+        # Survey markers would crowd the map: shown only when asked for, and
+        # their switch only in a body's view, the system view has none.
+        self.type_boxes = {}
+        self.types = type_switches(side, ("poi",), self.draw, self.type_boxes)
+        self.type_boxes["survey"].pack_forget()
         self.back = ttk.Button(side, text="< back to system",
                                command=lambda: self.show(self.system, None))
         self.back.pack(anchor="w", fill="x", pady=(8, 12))
@@ -671,12 +778,15 @@ class StarMap:
         self.system, self.body, self.zoom, self.yaw = system, body, 1.0, 0.0
         self.om, self.marked, self.turn = None, marked, (0.0, 0.0)
         self.system_var.set(system)
+        survey = self.type_boxes["survey"]
         if body is None:
             self.om_bar.place_forget()
             self.reset_btn.place(relx=1.0, x=-10, y=10, anchor="ne")
+            survey.pack_forget()
         else:
             self.reset_btn.place_forget()
             self.om_bar.place(relx=1.0, x=-10, y=10, anchor="ne")
+            survey.pack(anchor="w", after=self.type_boxes["poi"])
         self.pitch = SYSTEM_PITCH if body is None else math.radians(20)
         self.draw()
 
@@ -772,6 +882,13 @@ class StarMap:
         if om is not None:
             self.view_om(*om)
 
+    def centre_on(self, wid):
+        """Turn the body view so waypoint wid is in the middle, at the zoom
+        already set, and keep it there as the body turns."""
+        w = self.scl.find_waypoint(snapshot(self.state)[0], wid)
+        if w is not None:
+            self.view_om(*starmap.facing((w["x"], w["y"], w["z"])))
+
     def open_unplaced(self, _event):
         sel = self.unplaced.curselection()
         if sel:
@@ -786,16 +903,19 @@ class StarMap:
         dx, dy = e.x - self.press[0], e.y - self.press[1]
         if abs(dx) + abs(dy) > 3:
             self.dragged = True
+        # A body turns less the closer it is zoomed; the system view does not.
+        step = 0.01 if self.body is None else starmap.turn_per_px(
+            self.zoom, self.state.cfg["starmap_zoom_slowdown"])
         if self.follow.get() and self.held is None and self.om is not None:
             # Following: turned away from you, and still turning with you.
-            self.turn = (self.turn[0] + dx * 0.01,
-                         max(-math.pi, min(math.pi, self.turn[1] + dy * 0.01)))
+            self.turn = (self.turn[0] + dx * step,
+                         max(-math.pi, min(math.pi, self.turn[1] + dy * step)))
         else:
             if self.dragged:
                 self.om = None          # turned by hand: no longer held
-            self.yaw += dx * 0.01
+            self.yaw += dx * step
             self.pitch = max(-math.pi / 2,
-                             min(math.pi / 2, self.pitch + dy * 0.01))
+                             min(math.pi / 2, self.pitch + dy * step))
         self.press = (e.x, e.y)
         self.draw()
 
@@ -1245,6 +1365,30 @@ class StarMap:
 # ----------------------------------------------------------------------------
 
 
+# What the height map can draw, bottom to top: relief, samples, height lines,
+# survey pattern, water, railways, buildings; then the waypoints. Each as
+# (switch, label, on as shipped).
+HEIGHT_LAYERS = (("relief", "Filled relief", True),
+                 ("samples", "Survey samples", False),
+                 ("lines", "Height lines", True),
+                 ("course", "Survey pattern", False),
+                 ("lake", "Lakes, seas, rivers", True),
+                 ("rail", "Railways", True),
+                 ("building", "Buildings", True))
+HEIGHT_SWITCHES = HEIGHT_LAYERS + (
+    ("poi", "POI waypoints", True),
+    ("survey", "Survey waypoints", False),
+    ("poi_height", "POI heights", False))
+
+
+def height_switch_starts(cfg):
+    """{switch: on} the height map starts with: as set in Settings, else as
+    shipped."""
+    chosen = cfg.get("heightmap_switches") or {}
+    return {name: bool(chosen.get(name, on))
+            for name, _, on in HEIGHT_SWITCHES}
+
+
 class HeightMapTab:
     """The surveyed ground around you, flat and at full detail: one 100 m
     cell to a pixel at the start, grey where nothing has been measured."""
@@ -1293,21 +1437,15 @@ class HeightMapTab:
                                 highlightthickness=0)
         self.legend.pack(anchor="w", pady=(8, 4))
         self.legend_key = None      # what the legend's bar was drawn for
-        # What to draw, bottom to top: relief, samples, height lines, survey
-        # pattern, water, railways, buildings, waypoints.
+        on = height_switch_starts(state.cfg)
         self.show = {}
-        for name, text, on in (("relief", "Filled relief", True),
-                               ("samples", "Survey samples", False),
-                               ("lines", "Height lines", True),
-                               ("course", "Survey pattern", True),
-                               ("lake", "Lakes, seas, rivers", True),
-                               ("rail", "Railways", True),
-                               ("building", "Buildings", True)):
-            self.show[name] = tk.BooleanVar(value=on)
+        for name, text, _ in HEIGHT_LAYERS:
+            self.show[name] = tk.BooleanVar(value=on[name])
             ttk.Checkbutton(side, text=text, variable=self.show[name],
                             command=self.draw).pack(anchor="w")
-        self.types = type_switches(side, ("poi", "survey"), self.draw)
-        self.show["poi_height"] = tk.BooleanVar(value=True)
+        self.types = type_switches(side, [t for t in TYPE_LABELS if on[t]],
+                                   self.draw)
+        self.show["poi_height"] = tk.BooleanVar(value=on["poi_height"])
         ttk.Checkbutton(side, text="POI heights",
                         variable=self.show["poi_height"],
                         command=self.draw).pack(anchor="w")
@@ -1349,13 +1487,46 @@ class HeightMapTab:
             self.centre = heightmap.local_frame(ends[-1])[0]
         self.draw()
 
+    # The switch that shows each kind of trace.
+    TRACE_SWITCH = {"railway": "rail", "lake": "lake", "sea": "lake",
+                    "waterway": "lake", "building": "building"}
+
+    def show_trace(self, name):
+        """Show on height map, from the Surveys tab: open the trace's body,
+        its layer switched on, and centre on it, held as Go to holds."""
+        with self.state.lock:
+            t = next((t for t in self.state.traces if t["name"] == name),
+                     None)
+            pts = [tuple(p) for p in t["points"]] if t else []
+        if not pts or t["planet"] is None:
+            return
+        if t["planet"] != self.body:
+            self.body_var.set(t["planet"])
+            self.open(t["planet"])
+        self.show[self.TRACE_SWITCH.get(t["kind"], "rail")].set(True)
+        mid = tuple(sum(p[i] for p in pts) / len(pts) for i in range(3))
+        with self.state.lock:
+            self.held = (self.state.system, self.state.planet)
+        self.offset = (0.0, 0.0)
+        self.centre = heightmap.local_frame(mid)[0]
+        self.draw()
+
+    def set_switches(self, on):
+        """Set switches by name ({name: on}, as HEIGHT_SWITCHES names them)
+        from Settings, and redraw as a click on them would."""
+        for name, value in on.items():
+            (self.types if name in self.types else self.show)[name].set(value)
+        self.draw()
+
     def goto_choices(self):
         """The open body's waypoints, for Go to. The list shows names, which
         repeat (many places are a Cave), so goto_ids says which waypoint each
-        line is, by its place in the list."""
+        line is, by its place in the list. A to Z, ignoring case."""
         wps = of_types(snapshot(self.state)[0], self.types)
         names = {w["id"]: w["name"] for w in wps}
-        self.goto_ids = [i for i, _ in starmap.body_points(wps, self.body)]
+        self.goto_ids = sorted((i for i, _ in starmap.body_points(wps,
+                                                                 self.body)),
+                               key=lambda i: names[i].lower())
         values = [names[i] for i in self.goto_ids]
         if list(self.goto.cget("values")) != values:
             self.goto.config(values=values)
@@ -1992,7 +2163,7 @@ class HeightMapTab:
 
 class WaypointEditor:
     COLUMNS = (("name", 220), ("type", 70), ("sub", 120), ("qt", 40),
-               ("system", 80), ("body", 110),
+               ("private", 70), ("system", 80), ("body", 110),
                ("around", 120),
                ("lat", 80), ("lon", 85), ("height", 280), ("saved", 170),
                ("note", 200))
@@ -2085,25 +2256,54 @@ class WaypointEditor:
         self.body_var.set(body)
         self.refresh()
 
+    def to_share(self, title, verb):
+        """(waypoints, private ones left out) for Copy or Export, or None
+        to stop. Private waypoints are left out, except one selected on its
+        own: that one is shared to someone chosen, once OK'd."""
+        chosen = self.chosen()
+        if len(chosen) == 1 and chosen[0].get("private"):
+            if ask_buttons(title, f"'{chosen[0]['name']}' is a private "
+                           f"waypoint. {verb} it anyway?", self.frame,
+                           ("OK", "Cancel")) != "OK":
+                return None
+            return chosen, 0
+        wps = self.scl.exportable(chosen)
+        return wps, len(chosen) - len(wps)
+
     def copy(self):
+        got = self.to_share("Copy waypoint", "Copy")
+        if got is None:
+            return
+        wps, left = got
         _, bodies = snapshot(self.state)
         placed = {sys: starmap.placed_bodies(bodies, sys)
                   for sys in starmap.SYSTEMS}
         texts = []
-        for w in self.chosen():
+        for w in wps:
             around = starmap.attached_body(w, placed.get(w.get("system"), {}))
             texts.append(self.scl.waypoint_text(w, around))
         if not texts:
+            if left:
+                with self.state.lock:
+                    self.state.flash("nothing copied: all private")
             return
         self.frame.clipboard_clear()
         self.frame.clipboard_append("\n\n".join(texts))
         with self.state.lock:
             self.state.flash(f"copied {len(texts)} waypoint"
-                             + ("s" if len(texts) > 1 else ""))
+                             + ("s" if len(texts) > 1 else "")
+                             + (f", {left} private left out" if left else ""))
 
     def export(self):
-        wps = self.chosen()
+        got = self.to_share("Export waypoint", "Export")
+        if got is None:
+            return
+        wps, left = got
         if not wps:
+            if left:
+                show_message("Export waypoints",
+                             "Nothing to export: they are all private.",
+                             parent=self.frame)
             return
         path = filedialog.asksaveasfilename(
             parent=self.frame, title="Export waypoints",
@@ -2115,11 +2315,45 @@ class WaypointEditor:
         try:
             self.scl.export_json(path, wps)
         except OSError as exc:
-            messagebox.showerror("Export waypoints", str(exc),
-                                 parent=self.frame)
+            show_message("Export waypoints", str(exc), parent=self.frame)
             return
         with self.state.lock:
-            self.state.flash(f"exported {len(wps)} to {os.path.basename(path)}")
+            self.state.flash(f"exported {len(wps)} to {os.path.basename(path)}"
+                             + (f", {left} private left out" if left else ""))
+
+    def restore(self, parent):
+        """Put back waypoints deleted earlier, from the backups of
+        waypoints.json, picked by name in ask_restore."""
+        st, scl = self.state, self.scl
+        wps, _ = snapshot(st)
+        found = scl.deleted_waypoints(wps)
+        if not found:
+            show_message("Restore deleted waypoints",
+                         "No deleted waypoints in the backups: the last "
+                         f"{scl.BACKUP_KEEP} saves of waypoints.json hold "
+                         "none that is gone now.", parent=parent)
+            return
+        rows = [(wid, w.get("name", "?"), TYPE_LABELS.get(w.get("type"), ""),
+                 w.get("sub", ""), w.get("system", "?"), w.get("planet", "?"),
+                 w.get("saved", ""), since) for wid, w, since in found]
+        keys = ask_restore(parent, "waypoints", "waypoints.json",
+                           (("name", 190), ("type", 70), ("sub", 120),
+                            ("system", 75), ("body", 110), ("saved", 165),
+                            ("gone since", 165)), rows)
+        if not keys:
+            return
+        by_id = {wid: w for wid, w, _ in found}
+        with st.lock:
+            back = scl.restore_waypoints(st.waypoints,
+                                         [by_id[k] for k in keys])
+            if back:
+                scl.save_json(scl.WAYPOINT_FILE, st.waypoints)
+            if scl.sync_subs(st.waypoints):     # a SUB deleted since
+                scl.save_json(scl.SUBTYPES_FILE, subtypes.current())
+            st.flash(f"restored {len(back)} waypoint"
+                     + ("s" if len(back) != 1 else ""))
+        self.refresh()
+        self.nav.refresh_tabs()
 
     def import_file(self, parent=None):
         """Import waypoints from a shared file, its dialogs over `parent`
@@ -2134,8 +2368,7 @@ class WaypointEditor:
         try:
             good, bad = scl.read_import_file(path)
         except (OSError, ValueError) as exc:
-            messagebox.showerror("Import waypoints", str(exc),
-                                 parent=parent)
+            show_message("Import waypoints", str(exc), parent=parent)
             return
         now = time.strftime("%Y-%m-%d %H:%M:%S")
         added, replaced, declined = [], [], []
@@ -2174,7 +2407,7 @@ class WaypointEditor:
                 scl.save_json(scl.SUBTYPES_FILE, subtypes.current())
             st.flash(f"imported {len(added) + len(replaced)} waypoints")
         self.refresh()
-        messagebox.showinfo("Import waypoints", scl.import_summary(
+        show_message("Import waypoints", scl.import_summary(
             os.path.basename(path), added, replaced, declined, bad),
             parent=parent)
 
@@ -2203,6 +2436,7 @@ class WaypointEditor:
         note = (w.get("note") or "").splitlines()
         return (w["name"], TYPE_LABELS.get(w.get("type"), ""),
                 w.get("sub", ""), "yes" if w.get("qt") else "no",
+                "yes" if w.get("private") else "no",
                 w.get("system", "unknown"), w["planet"],
                 around or "", lat, lon,
                 self.scl.describe_height(w), w.get("saved", ""),
@@ -2222,7 +2456,8 @@ class WaypointEditor:
                 var.set("all")
         seen = (tuple((w["id"], w["name"], w["planet"], w.get("note"),
                        w.get("parent"),
-                       w.get("type"), w.get("sub"), w.get("qt"))
+                       w.get("type"), w.get("sub"), w.get("qt"),
+                       w.get("private"))
                       for w in wps),
                 tuple((sys, tuple(p)) for sys, p in placed.items()),
                 self.sys_var.get(), self.body_var.get(), wtype,
@@ -2249,18 +2484,338 @@ class WaypointEditor:
 
 
 
+class SurveysTab:
+    """Every survey kept: each traced line (railway, lake, sea, waterway,
+    building, in traces.json) and each body's height map (all its cells,
+    in heightmap.json: a cell does not remember which survey measured it,
+    so one height survey cannot be told from another). Right-click for
+    the menu; deleted ones come back from Settings > Survey."""
+
+    COLUMNS = (("name", 140), ("label", 200), ("kind", 100), ("body", 100),
+               ("started", 165), ("size", 235))
+
+    def __init__(self, parent, state, scl, nav):
+        self.state, self.scl, self.nav = state, scl, nav
+        self.frame = tk.Frame(parent, bg=BG)
+        self.seen = None
+        tk.Label(self.frame, font=mono(9), fg=DIM, bg=BG, justify="left",
+                 anchor="w",
+                 text="Your traces, and each body's height map: every height "
+                      "survey on a body adds to the one map, so it is kept "
+                      "and deleted whole.\nRight-click for the menu; "
+                      "deleted ones come back from Settings > Survey."
+                 ).pack(side="top", fill="x", pady=(0, 6))
+        self.tree = ttk.Treeview(self.frame, show="headings",
+                                 selectmode="extended",
+                                 columns=[n for n, _ in self.COLUMNS])
+        for name, width in self.COLUMNS:
+            self.tree.heading(name, text=name.upper())
+            set_column(self.tree, name, width, stretch=name == "label")
+        scroll = ttk.Scrollbar(self.frame, orient="vertical",
+                               command=self.tree.yview)
+        self.tree.configure(yscrollcommand=scroll.set)
+        scroll.pack(side="right", fill="y")
+        self.tree.pack(fill="both", expand=True)
+        self.tree.bind("<Button-3>", self.popup)
+        self.menu = tk.Menu(self.tree, tearoff=False, font=mono(), bg=PANEL,
+                            fg=FG, activebackground="#1d4f3a")
+
+    # Rows are keyed "trace:<name>" or "map:<body>".
+
+    def refresh(self):
+        with self.state.lock:
+            ts = [(t["name"], t["kind"], t.get("planet"), t.get("label", ""),
+                   t.get("started"), len(t["points"]))
+                  for t in self.state.traces]
+            maps = {b: len(r["cells"]) for b, r in self.state.heightmap.items()}
+        seen = (tuple(ts), tuple(sorted(maps.items())))
+        if seen == self.seen:
+            return
+        self.seen = seen
+        with self.state.lock:
+            lengths = {t["name"]: traces.length(t) for t in self.state.traces}
+        rows = [(f"map:{b}", (b or "", 0, ""), ("height map", "",
+                 "height map", b, "", f"{n:,} cells"))
+                for b, n in maps.items()]
+        for name, kind, body, label, started, n in ts:
+            when = (time.strftime("%Y-%m-%d %H:%M", time.localtime(started))
+                    if started else "")
+            rows.append((f"trace:{name}", (body or "", 1, kind, name), (
+                name, label, kind, body or "?", when,
+                f"{n:,} points, {self.scl.fmt_dist(lengths.get(name, 0))}")))
+        chosen = self.tree.selection()
+        self.tree.delete(*self.tree.get_children())
+        # By body, its height map first, then its traces by kind and name.
+        for iid, _, values in sorted(rows, key=lambda r: r[1]):
+            self.tree.insert("", "end", iid=iid, values=values)
+        chosen = [i for i in chosen if self.tree.exists(i)]
+        if chosen:
+            self.tree.selection_set(chosen)
+
+    def popup(self, event):
+        row = self.tree.identify_row(event.y)
+        if not row:
+            return
+        if row not in self.tree.selection():
+            self.tree.selection_set(row)
+        self.tree.update_idletasks()
+        self.menu.delete(0, "end")
+        sel = self.tree.selection()
+        at = (event.x_root, event.y_root)
+        if len(sel) == 1:               # one: its own menu first
+            kind, _, key = sel[0].partition(":")
+            if kind == "map":
+                self.nav.body_menu(self.menu, key, "surveys", at)
+            else:
+                self.menu.add_command(
+                    label="Show on height map",
+                    command=lambda: self.nav.trace_to_height(key))
+                values = self.tree.item(sel[0], "values")
+                if values[2] == "building":
+                    self.nav.building_menu(self.menu, key, values[1], at)
+            self.menu.add_separator()
+        self.menu.add_command(label="Delete...", command=self.delete)
+        self.menu.tk_popup(*at)
+
+    def delete(self):
+        """Delete the selected traces and height maps, once asked."""
+        sel = self.tree.selection()
+        if not sel:
+            return
+        lines = []
+        for iid in sel:
+            name, label, kind, body, _, size = self.tree.item(iid, "values")
+            lines.append(f"  {body} height map ({size})" if iid.startswith(
+                "map:") else f"  {name}{' ' + label if label else ''} "
+                             f"({kind}, {body})")
+        if not ask_yes_no(
+                "Delete surveys",
+                f"Delete {'this' if len(sel) == 1 else f'these {len(sel)}'}?"
+                "\n\n" + "\n".join(lines) + "\n\nA height map goes whole: "
+                "every cell surveyed on that body. They can be put back from "
+                "Settings > Survey while they are still in the backups.",
+                parent=self.frame):
+            return
+        names = [i[6:] for i in sel if i.startswith("trace:")]
+        bodies = [i[4:] for i in sel if i.startswith("map:")]
+        gone = (self.scl.delete_traces(self.state, names)
+                + self.scl.delete_heightmaps(self.state, bodies))
+        kept = [k for k in names + bodies if k not in gone]
+        with self.state.lock:
+            self.state.flash(f"deleted {len(gone)} survey"
+                             + ("s" if len(gone) != 1 else ""))
+        if kept:
+            show_message("Delete surveys", "Not deleted, still running: "
+                         + ", ".join(kept) + ".\nEnd it in the overlay "
+                         "first.", parent=self.frame)
+        self.refresh()
+        self.nav.refresh_tabs()
+
+    def restore(self, parent):
+        """Put back traces and height maps deleted earlier, from the backups
+        of traces.json and heightmap.json, picked by name in ask_restore."""
+        st, scl = self.state, self.scl
+        with st.lock:
+            have_traces = [dict(t) for t in st.traces]
+            have_maps = set(st.heightmap)
+        found = ([("t", n, t, s) for n, t, s in scl.deleted_traces(have_traces)]
+                 + [("m", b, r, s)
+                    for b, r, s in scl.deleted_heightmaps(have_maps)])
+        if not found:
+            show_message("Restore deleted surveys",
+                         "No deleted surveys in the backups: the last "
+                         f"{scl.BACKUP_KEEP} saves of traces.json and of "
+                         "heightmap.json hold none that is gone now.",
+                         parent=parent)
+            return
+        rows = []
+        for i, (what, key, rec, since) in enumerate(found):
+            if what == "m":
+                rows.append((str(i), "height map", "", "height map", key, "",
+                             f"{len(rec['cells']):,} cells", since))
+            else:
+                started = rec.get("started")
+                rows.append((str(i), key, rec.get("label", ""), rec["kind"],
+                             rec.get("planet") or "?",
+                             time.strftime("%Y-%m-%d %H:%M",
+                                           time.localtime(started))
+                             if started else "",
+                             f"{len(rec['points']):,} points", since))
+        keys = ask_restore(parent, "surveys", "traces.json and heightmap.json",
+                           (("name", 120), ("label", 190), ("kind", 100),
+                            ("body", 100), ("started", 165), ("size", 130),
+                            ("gone since", 165)), rows)
+        if not keys:
+            return
+        picked = [found[int(k)] for k in keys]
+        back = (scl.restore_traces(st, [r for w, _, r, _ in picked
+                                        if w == "t"])
+                + scl.restore_heightmaps(st, [(k, r) for w, k, r, _ in picked
+                                              if w == "m"]))
+        with st.lock:
+            st.flash(f"restored {len(back)} survey"
+                     + ("s" if len(back) != 1 else ""))
+        self.refresh()
+        self.nav.refresh_tabs()
+
+
+def survey_kinds(scl):
+    """Settings > Survey: each kind of survey as (title, what it does and
+    records, [(config key, label, choices)] that can be set). The limits
+    quoted are read from the code, so the text keeps up with them."""
+    fast = scl.TRACE_MAX_SPEED
+    squares = " or ".join(f"{s:g}" for s in survey.PATTERNS.values() if s)
+    misread = (f"A fix that climbed or dropped over {scl.TRACE_MAX_CLIMB:g} "
+               "m/s, or moved faster than {} m/s, is taken for a misread.")
+    return [
+        ("Height survey (SURVEY > free fly or a square)",
+         "Records the ground height under you, flying or walking. Free fly "
+         "goes where you like; a square winds out clockwise from the target, "
+         f"legs due N, E, S or W, lines {squares} m apart.\n"
+         "Records: the mean height of each ~100 m cell (heightmap.json), a "
+         "survey-NNN waypoint at the first spot, the square to resume "
+         "(survey.json). A position that jumped faster than "
+         f"{scl.SURVEY_MAX_SPEED / 1000:g} km/s is dropped.",
+         [("survey_max_height_m", "Record below (m over the sphere)",
+           (1000, 2000, 3000, 4000, 5000, 6000))]),
+        ("Railway (SURVEY > trace a railway)",
+         "Fly or ride along a track; only where it runs matters, not its "
+         "height.\nRecords: railway-NNN in traces.json, a point every "
+         f"{traces.STEP_M:g} m or more, drawn as the railroad symbol. "
+         + misread.format(f"{fast['railway']:g}"), []),
+        ("Lake (SURVEY > survey a lake)",
+         "Start low over the water, then follow the shore all the way round; "
+         "END LAKE.\nRecords: lake-NNN: its level (your camera's height at "
+         "the first fix, less the setting below) and the route; all between "
+         "the start and the route is water. "
+         + misread.format(f"{fast['lake']:g}"),
+         [("water_below_cam_m", "Water below camera (m)",
+           (0, 0.5, 1, 2, 3, 5, 10))]),
+        ("Sea (SURVEY > survey a sea)",
+         "A lake too big to skim slowly: the same level (the lake's Water "
+         "below camera) and the same water, flown faster.\nRecords: sea-NNN. "
+         + misread.format(f"{fast['sea']:g}"), []),
+        ("Waterway (SURVEY > survey a waterway)",
+         "A river or canal: fly along its middle from one end to the other; "
+         "END TRACE.\nRecords: waterway-NNN, drawn as water this wide, to "
+         "scale. Each keeps the width it started with (width_m in "
+         "traces.json). " + misread.format(f"{fast['waterway']:g}"),
+         [("waterway_width_m", "Width of a new one (m)",
+           (5, 10, 20, 30, 50, 100, 200))]),
+        ("Building (SURVEY > survey a building)",
+         "Walk round it on foot in first person, close along the walls; END "
+         "BUILDING, then name it.\nRecords: building-NNN, a point every "
+         f"{traces.BUILDING_STEP_M:g} m, drawn squared off and pulled in by "
+         "the offset (kept as offset_m). Faster than "
+         f"{fast['building']:g} m/s (over at most "
+         f"{scl.TRACE_MAX_GAP['building']:g} s) is a misread; "
+         f"{scl.TRACE_LOST_DROPS} in a row is LOST TRACK.",
+         [("building_wall_offset_m", "Wall offset of a new one (m)",
+           (0, 0.25, 0.5, 0.75, 1, 1.5))]),
+    ]
+
+
 class SettingsTab:
     """What is done to the program's data as a whole rather than to one
-    waypoint: importing a file of waypoints someone shared, and the SUB
-    categories a waypoint can be given."""
+    waypoint, a tab per section: how the star map turns, what the height
+    map's switches start as, importing a file of waypoints or reports
+    someone shared, the SUB categories a waypoint can be given, and each
+    kind of survey with the settings it has."""
 
     NO_ICON = "(plain pin)"
+    SECTIONS = ("Star map", "Height map", "Waypoints", "Reports", "Survey",
+                "Other")
 
     def __init__(self, parent, state, scl, nav, editor):
         self.state, self.scl, self.nav = state, scl, nav
         self.frame = tk.Frame(parent, bg=BG)
         self.seen = None
-        box = tk.LabelFrame(self.frame, text=" Waypoints ", font=mono(),
+        # One section to a tab, as the main window's.
+        self.sections = ttk.Notebook(self.frame)
+        self.sections.pack(fill="both", expand=True)
+        page = {}
+        for name in self.SECTIONS:
+            page[name] = tk.Frame(self.sections, bg=BG)
+            self.sections.add(page[name], text=name)
+        tk.Label(page["Other"], text="Nothing to set here yet.", font=mono(),
+                 fg=DIM, bg=BG).pack(anchor="nw", padx=8, pady=8)
+
+        survey_page = scrolled(page["Survey"])
+        self.restore_box(survey_page, "surveys",
+                         "traces.json and heightmap.json",
+                         lambda: nav.surveys.restore(self.frame),
+                         row=0, column=0, columnspan=2)
+        # Each kind of survey in a box, two to a row: what it does and
+        # records, and what can be set for it (in use from its next start).
+        for k, (title, text, settings) in enumerate(survey_kinds(scl)):
+            box = tk.LabelFrame(survey_page, text=f" {title} ",
+                                font=mono(), fg=ACCENT, bg=BG, bd=2,
+                                relief="groove", padx=10, pady=4)
+            box.grid(row=k // 2 + 1, column=k % 2, sticky="nsew", padx=4,
+                     pady=3)
+            tk.Label(box, text=text, font=mono(9), fg=DIM, bg=BG,
+                     justify="left", anchor="w", wraplength=px(540)).pack(
+                anchor="w", fill="x")
+            for key, label, choices in settings:
+                row = tk.Frame(box, bg=BG)
+                row.pack(anchor="w", pady=(4, 0))
+                tk.Label(row, text=label + ":", font=mono(), fg=FG,
+                         bg=BG).pack(side="left", padx=(0, 6))
+                var = tk.StringVar(value=f"{state.cfg[key]:g}")
+                pick = ttk.Combobox(row, textvariable=var, state="readonly",
+                                    width=6, values=[f"{c:g}" for c in choices])
+                pick.pack(side="left")
+                pick.bind("<<ComboboxSelected>>",
+                          lambda e, k=key, v=var: scl.save_setting(
+                              state, k, float(v.get())))
+        for col in (0, 1):
+            survey_page.columnconfigure(col, weight=1, uniform="kind")
+
+        box = tk.LabelFrame(page["Star map"], text=" Turning ", font=mono(),
+                            fg=ACCENT, bg=BG, bd=2, relief="groove",
+                            padx=10, pady=8)
+        box.pack(anchor="nw", fill="x", padx=4, pady=4)
+        row = tk.Frame(box, bg=BG)
+        row.pack(anchor="w")
+        tk.Label(row, text="Turning slows when zoomed in:", font=mono(),
+                 fg=FG, bg=BG).pack(side="left", padx=(0, 6))
+        slowdown = tk.StringVar(
+            value=f"{state.cfg['starmap_zoom_slowdown']:g}")
+        pick = ttk.Combobox(row, textvariable=slowdown, state="readonly",
+                            width=5, values=("0", "0.25", "0.5", "0.75", "1",
+                                             "1.5", "2"))
+        pick.pack(side="left")
+        pick.bind("<<ComboboxSelected>>", lambda e: scl.save_setting(
+            state, "starmap_zoom_slowdown", float(slowdown.get())))
+        tk.Label(box, font=mono(9), fg=DIM, bg=BG, justify="left",
+                 text="In a planet's or moon's view, a drag turns it less "
+                      "the closer you are zoomed.\n0 turns the same at every "
+                      "zoom; at 1 the ground under the mouse keeps pace with "
+                      "it; above 1 slower still."
+                 ).pack(anchor="w", pady=(6, 0))
+
+        box = tk.LabelFrame(page["Height map"], text=" Switches ", font=mono(),
+                            fg=ACCENT, bg=BG, bd=2, relief="groove",
+                            padx=10, pady=8)
+        box.pack(anchor="nw", fill="x", padx=4, pady=4)
+        tk.Label(box, font=mono(9), fg=DIM, bg=BG, justify="left",
+                 text="What each switch starts as. A change here is made "
+                      "on the height map at once too."
+                 ).pack(anchor="w", pady=(0, 6))
+        grid = tk.Frame(box, bg=BG)
+        grid.pack(anchor="w")
+        on = height_switch_starts(state.cfg)
+        self.starts = {}
+        half = (len(HEIGHT_SWITCHES) + 1) // 2
+        for k, (name, text, _) in enumerate(HEIGHT_SWITCHES):
+            self.starts[name] = tk.BooleanVar(value=on[name])
+            ttk.Checkbutton(grid, text=text, variable=self.starts[name],
+                            command=lambda n=name: self.save_starts(n)).grid(
+                row=k % half, column=k // half, sticky="w", padx=(0, 24))
+        ttk.Button(box, text="Reset to shipped",
+                   command=self.reset_starts).pack(anchor="w", pady=(6, 0))
+
+        box = tk.LabelFrame(page["Waypoints"], text=" Import ", font=mono(),
                             fg=ACCENT, bg=BG, bd=2, relief="groove",
                             padx=10, pady=8)
         box.pack(anchor="nw", fill="x", padx=4, pady=4)
@@ -2272,7 +2827,28 @@ class SettingsTab:
                       "you.\nOne within 1,000 m of one of yours asks first."
                  ).pack(anchor="w", pady=(6, 0))
 
-        box = tk.LabelFrame(self.frame, text=" SUB categories ", font=mono(),
+        self.restore_box(page["Waypoints"], "waypoints", "waypoints.json",
+                         lambda: editor.restore(self.frame))
+
+        box = tk.LabelFrame(page["Reports"], text=" Import ", font=mono(),
+                            fg=ACCENT, bg=BG, bd=2, relief="groove",
+                            padx=10, pady=8)
+        box.pack(anchor="nw", fill="x", padx=4, pady=4)
+        # nav.reports is only set once every tab exists: looked up on click.
+        ttk.Button(box, text="Import reports...",
+                   command=lambda: nav.reports.import_file(self.frame)).pack(
+            anchor="w")
+        tk.Label(box, font=mono(9), fg=DIM, bg=BG, justify="left",
+                 text="Adds the analysis reports from a file someone exported "
+                      "for you.\nOne for a body you have a report for, or a "
+                      "place within 20 km of one of yours, asks first."
+                 ).pack(anchor="w", pady=(6, 0))
+
+        self.restore_box(page["Reports"], "reports", "bodies.json",
+                         lambda: nav.reports.restore(self.frame))
+
+        box = tk.LabelFrame(page["Waypoints"], text=" SUB categories ",
+                            font=mono(),
                             fg=ACCENT, bg=BG, bd=2, relief="groove",
                             padx=10, pady=8)
         box.pack(anchor="nw", fill="both", expand=True, padx=4, pady=4)
@@ -2299,6 +2875,40 @@ class SettingsTab:
                       "A rename or delete\ncarries over to the\nwaypoints "
                       "with it.\n\nRestore built-ins adds\nback any you "
                       "deleted.").pack(anchor="w", pady=(6, 0))
+
+    def restore_box(self, page, what, file, command, **grid):
+        """The Restore box for deleted `what` kept in backups of `file`:
+        packed in `page`, or gridded there with `grid` given. `command`
+        runs on click (the tabs it calls on exist only by then)."""
+        box = tk.LabelFrame(page, text=" Restore ", font=mono(), fg=ACCENT,
+                            bg=BG, bd=2, relief="groove", padx=10, pady=8)
+        if grid:
+            box.grid(sticky="ew", padx=4, pady=4, **grid)
+        else:
+            box.pack(anchor="nw", fill="x", padx=4, pady=4)
+        ttk.Button(box, text=f"Restore deleted {what}...",
+                   command=command).pack(side="left", anchor="n")
+        tk.Label(box, font=mono(9), fg=DIM, bg=BG, justify="left",
+                 text=f"The {what} you deleted that are still in the backups "
+                      f"of {file} (its last {self.scl.BACKUP_KEEP} saves), by "
+                      "name, to put back as they were.",
+                 wraplength=px(860)).pack(side="left", padx=(12, 0))
+
+    def save_starts(self, name):
+        """Keep how every switch starts, and set switch `name` on the height
+        map now as well."""
+        self.scl.save_setting(self.state, "heightmap_switches",
+                              {n: v.get() for n, v in self.starts.items()})
+        self.nav.height.set_switches({name: self.starts[name].get()})
+
+    def reset_starts(self):
+        """Every height map switch back to how it starts as shipped, here
+        and on the height map."""
+        self.scl.save_setting(self.state, "heightmap_switches", {})
+        on = height_switch_starts(self.state.cfg)
+        for name, value in on.items():
+            self.starts[name].set(value)
+        self.nav.height.set_switches(on)
 
     def refresh(self):
         """The SUB list, redrawn when it or the waypoints' use of it changes."""
@@ -2347,7 +2957,7 @@ class SettingsTab:
         try:
             self.scl.add_sub(self.state, *got)
         except ValueError as exc:
-            messagebox.showerror("Add a SUB", str(exc), parent=self.frame)
+            show_message("Add a SUB", str(exc), parent=self.frame)
             return
         self.after_change(subtypes.current()[-1][0])
 
@@ -2363,7 +2973,7 @@ class SettingsTab:
         try:
             self.scl.edit_sub(self.state, old, *got)
         except ValueError as exc:
-            messagebox.showerror("Edit a SUB", str(exc), parent=self.frame)
+            show_message("Edit a SUB", str(exc), parent=self.frame)
             return
         self.after_change(subtypes.current()[at][0])
 
@@ -2372,7 +2982,7 @@ class SettingsTab:
         if name is None:
             return
         n = self.scl.sub_users(self.state, name)
-        if not messagebox.askyesno(
+        if not ask_yes_no(
                 "Delete a SUB", f"Delete the SUB '{name}'?" + (
                     f"\n\n{n} waypoint{'' if n == 1 else 's'} "
                     f"{'has' if n == 1 else 'have'} it, and will have no "
@@ -2435,6 +3045,7 @@ def ask_sub(parent, title, name, icon, icons, no_icon):
         side="left", padx=(6, 0))
     entry.bind("<Return>", ok)
     win.bind("<Escape>", lambda e: win.destroy())
+    place_near(win)
     win.deiconify()
     entry.focus_set()
     entry.select_range(0, "end")
@@ -2448,6 +3059,7 @@ def ask_conflict(parent, text, can_keep=True):
     "replace", apply_to_all). Closing the window is No. Without `can_keep`
     there is no Yes: both cannot be kept."""
     win = tk.Toplevel(parent, bg=BG)
+    win.withdraw()                  # placed before it is seen
     win.title("Import")
     win.transient(parent.winfo_toplevel())
     answer = {"action": "no"}
@@ -2472,9 +3084,57 @@ def ask_conflict(parent, text, can_keep=True):
             continue
         ttk.Button(row, text=label, command=lambda a=action: choose(a)).pack(
             side="left", padx=(6, 0))
+    place_near(win)
+    win.deiconify()
     win.grab_set()
     win.wait_window()
     return answer["action"], to_all.get()
+
+
+def ask_restore(parent, what, file, columns, rows):
+    """Restore deleted `what` (reports, waypoints, surveys) found in the
+    backups of `file`: `rows` as (key, *values for `columns`) in a list to
+    pick from, by the pointer. Returns the keys picked, or None if
+    cancelled (X, closing it or Escape)."""
+    win = tk.Toplevel(parent, bg=BG)
+    win.withdraw()                  # placed before it is seen
+    win.title(f"Restore deleted {what}")
+    win.transient(parent.winfo_toplevel())
+    answer = {}
+    tk.Label(win, font=mono(9), fg=DIM, bg=BG, justify="left",
+             text=f"{what.capitalize()} found in the backups of {file} that "
+                  "are gone now.\nPick one or more (Ctrl-click, "
+                  "Shift-click) and RESTORE: each comes back as it was."
+             ).pack(anchor="w", padx=10, pady=(10, 6))
+    tree = ttk.Treeview(win, show="headings", selectmode="extended",
+                        columns=[n for n, _ in columns],
+                        height=min(15, max(3, len(rows))))
+    for name, width in columns:
+        tree.heading(name, text=name.upper())
+        tree.column(name, width=px(width), stretch=name == "name")
+    for key, *values in rows:
+        tree.insert("", "end", iid=key, values=values)
+    tree.pack(fill="both", expand=True, padx=10)
+    buttons = tk.Frame(win, bg=BG)
+    buttons.pack(anchor="e", padx=10, pady=10)
+
+    def ok(_e=None):
+        if tree.selection():
+            answer["keys"] = list(tree.selection())
+            win.destroy()
+
+    ttk.Button(buttons, text="RESTORE", command=ok).pack(side="left")
+    ttk.Button(buttons, text="X", width=3, command=win.destroy).pack(
+        side="left", padx=(6, 0))
+    tree.bind("<Double-1>", ok)
+    win.bind("<Return>", ok)
+    win.bind("<Escape>", lambda e: win.destroy())
+    place_near(win)
+    win.deiconify()
+    tree.focus_set()
+    win.grab_set()
+    win.wait_window()
+    return answer.get("keys")
 
 
 AROUND_AUTO = "auto (by distance)"     # Shown around: the nearest body
@@ -2482,8 +3142,8 @@ AROUND_AUTO = "auto (by distance)"     # Shown around: the nearest body
 
 def ask_waypoint(parent, w, names, around, no_sub, at=None):
     """Edit... for waypoint `w`: its name (typed, or one in `names`), SUB,
-    QT, note and, if `around` is a list (deep space only), the body it is
-    shown around, in a window by the screen point `at`. `no_sub` is the
+    QT, private, note and, if `around` is a list (deep space only), the body
+    it is shown around, in a window by the screen point `at`. `no_sub` is the
     SUB list's "not said" (scl.NO_SUB). Returns the fields
     as scl.update_waypoint takes them, or None if cancelled (closing it, X
     or Escape)."""
@@ -2516,7 +3176,10 @@ def ask_waypoint(parent, w, names, around, no_sub, at=None):
     qt = tk.BooleanVar(value=bool(w.get("qt")))
     ttk.Checkbutton(win, text="QT - can be jumped to", variable=qt).grid(
         row=3, column=1, sticky="w", pady=3)
-    row = 4
+    private = tk.BooleanVar(value=bool(w.get("private")))
+    ttk.Checkbutton(win, text="Private - never exported",
+                    variable=private).grid(row=4, column=1, sticky="w", pady=3)
+    row = 5
     parent_var = None
     if around is not None:
         label(row, "Shown around")
@@ -2539,7 +3202,8 @@ def ask_waypoint(parent, w, names, around, no_sub, at=None):
         answer.update(name=name.get(),
                       sub="" if sub.get() == no_sub else sub.get(),
                       qt=qt.get(), note=note.get("1.0", "end"),
-                      parent=None if pick == AROUND_AUTO else pick)
+                      parent=None if pick == AROUND_AUTO else pick,
+                      private=private.get())
         win.destroy()
 
     ttk.Button(buttons, text="OK", command=ok).pack(side="left")
@@ -2607,11 +3271,14 @@ def ask_name(parent, title, heading, current, given, at=None,
 # ----------------------------------------------------------------------------
 
 
-def place_title(key, rec):
-    """What to call an analysed place in the list."""
-    if rec.get("scope") == "space":
-        return f"{rec.get('label') or 'place in space'}  [{key[6:]}]"
-    return key
+def place_title(rec, columns):
+    """What to call an analysed place in one line, from its
+    scl.report_columns: a body's name; a place in space's name and type, or
+    its type and coordinates if unnamed."""
+    name, kind, at = columns
+    if rec.get("scope") != "space":
+        return name
+    return f"{name} ({kind})" if name else f"{kind}  [{at} Mm]"
 
 
 class ReportViewer:
@@ -2629,16 +3296,19 @@ class ReportViewer:
                                      state="readonly", values=("all",))
         self.sys_pick.pack(side="left")
         self.sys_pick.bind("<<ComboboxSelected>>", lambda e: self.refresh())
-        ttk.Button(bar, text="IMPORT", command=self.import_file).pack(
-            side="right")
+        # Import is in the Settings tab.
 
+        # Short enough to leave the report its width: coordinates in Mm and
+        # the date only; the report has both in full.
+        columns = (("name", 170), ("type", 150), ("system", 70), ("kind", 80),
+                   ("coordinates", 160), ("analysed", 100))
         self.tree = ttk.Treeview(self.frame, show="headings",
                                  selectmode="extended",
-                                 columns=("place", "system", "kind", "analysed"))
-        for name, width in (("place", 300), ("system", 80), ("kind", 85),
-                            ("analysed", 150)):
-            self.tree.heading(name, text=name.upper())
-            set_column(self.tree, name, width, stretch=name == "place")
+                                 columns=[n for n, _ in columns])
+        for name, width in columns:
+            self.tree.heading(name, text="COORDINATES (Mm)"
+                              if name == "coordinates" else name.upper())
+            set_column(self.tree, name, width, stretch=name == "name")
         self.tree.pack(side="left", fill="y")
         self.tree.bind("<<TreeviewSelect>>", lambda e: self.show_selected())
         self.tree.bind("<Button-3>", self.popup)
@@ -2651,12 +3321,17 @@ class ReportViewer:
         self.report = text_box(right, 16, readonly=True)
         self.report.config(wrap="none")
         self.report.pack(fill="both", expand=True)
-        tk.Label(right, text="Your notes", font=mono(), fg=DIM, bg=BG).pack(
-            anchor="w", pady=(6, 0))
-        self.notes = text_box(right, 8)
+        tk.Label(right, text="Your notes (saved as you type)", font=mono(),
+                 fg=DIM, bg=BG).pack(anchor="w", pady=(6, 0))
+        self.notes = text_box(right, 8, readonly=True)
         self.notes.pack(fill="x")
-        ttk.Button(right, text="SAVE NOTES", command=self.save_notes).pack(
-            anchor="e", pady=(4, 0))
+        # The report the box holds the notes of, the save waiting for a
+        # pause in typing, and the report whose notes have had their one
+        # backup since it was picked.
+        self.notes_key, self.notes_job, self.notes_backed = None, None, None
+        self.notes.bind("<<Modified>>", self.notes_changed)
+        self.notes.bind("<FocusOut>", lambda e: self.flush_notes())
+        self.notes.bind("<Destroy>", lambda e: self.flush_notes())
 
     def selected(self):
         """The one selected place; None when none or several are."""
@@ -2667,6 +3342,11 @@ class ReportViewer:
         """The selected (key, report) pairs, in list order."""
         _, bodies = snapshot(self.state)
         return [(k, bodies[k]) for k in self.tree.selection() if k in bodies]
+
+    def title(self, key, rec):
+        """place_title for one report, named from the waypoints now."""
+        wps, _ = snapshot(self.state)
+        return place_title(rec, self.scl.report_columns(key, rec, wps))
 
     def popup(self, event):
         row = self.tree.identify_row(event.y)
@@ -2683,7 +3363,33 @@ class ReportViewer:
             self.menu.add_separator()
         self.menu.add_command(label="Copy", command=self.copy)
         self.menu.add_command(label="Export...", command=self.export)
+        self.menu.add_command(label="Delete...", command=self.delete)
         self.menu.tk_popup(event.x_root, event.y_root)
+
+    def delete(self):
+        """Delete the selected reports, once asked."""
+        chosen = self.chosen()
+        if not chosen:
+            return
+        names = "\n".join("  " + self.title(k, rec) for k, rec in chosen)
+        what = ("this report" if len(chosen) == 1
+                else f"these {len(chosen)} reports")
+        if not ask_yes_no(
+                "Delete reports",
+                f"Delete {what}, with your notes?\n\n"
+                f"{names}\n\nA planet or moon goes back to not analysed: off "
+                "the star map until you ANALYSE it again. Waypoints stay.",
+                parent=self.frame):
+            return
+        st, scl = self.state, self.scl
+        with st.lock:
+            gone = scl.delete_reports(st.bodies, [k for k, _ in chosen])
+            scl.save_json(scl.BODIES_FILE, st.bodies)
+            st.flash(f"deleted {len(gone)} report"
+                     + ("s" if len(gone) != 1 else ""))
+        self.refresh()
+        self.show_selected()            # nothing selected now: notes cleared
+        self.nav.refresh_tabs()
 
     def select(self, key):
         """Select a place's report and scroll to it, showing every system."""
@@ -2699,7 +3405,7 @@ class ReportViewer:
         return self.scl.place_report_lines(self.state, key)
 
     def copy(self):
-        texts = [self.scl.report_text(place_title(k, rec), rec,
+        texts = [self.scl.report_text(self.title(k, rec), rec,
                                       self.lines_for(k) or [])
                  for k, rec in self.chosen()]
         if not texts:
@@ -2725,15 +3431,52 @@ class ReportViewer:
         try:
             self.scl.export_json(path, reports)
         except OSError as exc:
-            messagebox.showerror("Export reports", str(exc), parent=self.frame)
+            show_message("Export reports", str(exc), parent=self.frame)
             return
         with self.state.lock:
             self.state.flash(f"exported {len(reports)} to "
                              f"{os.path.basename(path)}")
 
-    def import_file(self):
+    def restore(self, parent):
+        """Put back reports deleted earlier, from the backups of
+        bodies.json, picked by name in ask_restore."""
+        st, scl = self.state, self.scl
+        wps, bodies = snapshot(st)
+        found = scl.deleted_reports(bodies)
+        if not found:
+            show_message("Restore deleted reports",
+                         "No deleted reports in the backups: the last "
+                         f"{scl.BACKUP_KEEP} saves of bodies.json hold none "
+                         "that is gone now.", parent=parent)
+            return
+        rows = []
+        for key, rec, since in found:
+            name, kind, _ = scl.report_columns(key, rec, wps)
+            rows.append((key, name or "(no name)", kind,
+                         rec.get("system", "?"), rec.get("analysed", ""),
+                         since))
+        keys = ask_restore(parent, "reports", "bodies.json",
+                           (("name", 190), ("type", 165), ("system", 70),
+                            ("analysed", 165), ("gone since", 165)), rows)
+        if not keys:
+            return
+        by_key = {k: rec for k, rec, _ in found}
+        with st.lock:
+            back = scl.restore_reports(st.bodies,
+                                       [(k, by_key[k]) for k in keys])
+            if back:
+                scl.save_json(scl.BODIES_FILE, st.bodies)
+            st.flash(f"restored {len(back)} report"
+                     + ("s" if len(back) != 1 else ""))
+        self.refresh()
+        self.nav.refresh_tabs()
+
+    def import_file(self, parent=None):
+        """Import reports from a shared file, its dialogs over `parent`
+        (the tab it is started from; the Settings tab)."""
+        parent = parent or self.frame
         path = filedialog.askopenfilename(
-            parent=self.frame, title="Import reports",
+            parent=parent, title="Import reports",
             filetypes=[("Reports", "*.json"), ("All files", "*.*")])
         if not path:
             return
@@ -2741,7 +3484,7 @@ class ReportViewer:
         try:
             good, bad = scl.read_report_file(path)
         except (OSError, ValueError) as exc:
-            messagebox.showerror("Import reports", str(exc), parent=self.frame)
+            show_message("Import reports", str(exc), parent=parent)
             return
         now = time.strftime("%Y-%m-%d %H:%M")
         added, replaced, declined = [], [], []
@@ -2756,7 +3499,7 @@ class ReportViewer:
                 action = always if always != "yes" or can_keep else None
                 if action is None:
                     action, to_all = ask_conflict(
-                        self.frame,
+                        parent,
                         scl.report_conflict_text(key, rec, same, nearby),
                         can_keep)
                     if to_all:
@@ -2778,31 +3521,36 @@ class ReportViewer:
                 scl.save_json(scl.BODIES_FILE, st.bodies)
             st.flash(f"imported {len(added) + len(replaced)} reports")
         self.refresh()
-        messagebox.showinfo("Import reports", scl.import_summary(
+        show_message("Import reports", scl.import_summary(
             os.path.basename(path), added, replaced, declined, bad),
-            parent=self.frame)
+            parent=parent)
 
     def refresh(self):
-        _, bodies = snapshot(self.state)
+        wps, bodies = snapshot(self.state)
         systems = sorted({v.get("system", "?") for v in bodies.values()})
         if self.sys_var.get() not in systems:
             self.sys_var.set("all")
         pick = self.sys_var.get()
+        # Names come from the waypoints: a rename there shows here.
+        cols = {k: self.scl.report_columns(k, v, wps) for k, v in
+                bodies.items() if pick == "all" or v.get("system", "?") == pick}
         seen = (tuple((k, v.get("analysed"), v.get("label")) for k, v in
-                      bodies.items()), pick)
+                      bodies.items()), pick, tuple(cols.items()))
         if seen != self.seen:
             self.seen = seen
             self.sys_pick.config(values=["all"] + systems)
             chosen = self.tree.selection()
             self.tree.delete(*self.tree.get_children())
-            shown = {k: v for k, v in bodies.items()
-                     if pick == "all" or v.get("system", "?") == pick}
-            for key, rec in sorted(shown.items(), key=lambda kv: (
-                    kv[1].get("system", ""), kv[1].get("scope") == "space",
-                    kv[0])):
+            # By system, bodies first; places in space by type, then name.
+            for key in sorted(cols, key=lambda k: (
+                    bodies[k].get("system", ""),
+                    bodies[k].get("scope") == "space",
+                    cols[k][1] if bodies[k].get("scope") == "space" else "",
+                    cols[k][0].lower(), k)):
+                rec, (name, kind, at) = bodies[key], cols[key]
                 self.tree.insert("", "end", iid=key, values=(
-                    place_title(key, rec), rec.get("system", "?"),
-                    rec.get("kind", "?"), rec.get("analysed", "")))
+                    name, kind, rec.get("system", "?"), rec.get("kind", "?"),
+                    at, rec.get("analysed", "")[:10]))
             chosen = [k for k in chosen if self.tree.exists(k)]
             if chosen:
                 self.tree.selection_set(chosen)
@@ -2817,23 +3565,56 @@ class ReportViewer:
         set_text(self.report, "\n".join(lines))
 
     def show_selected(self):
+        """The selected report's notes in the box: typed into with one
+        selected, closed with none or several. Notes still waiting to be
+        saved go to the report they were typed for first."""
+        self.flush_notes()
         key = self.selected()
         _, bodies = snapshot(self.state)
+        self.notes_key, self.notes_backed = key, None
+        self.notes.config(state="normal" if key in bodies else "disabled")
         set_text(self.notes, (bodies.get(key) or {}).get("notes", ""))
         self.show_report()
 
-    def save_notes(self):
-        key = self.selected()
-        st, scl = self.state, self.scl
-        with st.lock:
-            if key is None:
-                st.flash("select one place first")
-                return
+    NOTES_SAVE_MS = 1000        # saved this long after typing stops
+
+    def notes_changed(self, _e=None):
+        """Typed into (or filled by show_selected): save after a pause."""
+        if not self.notes.edit_modified():
+            return
+        self.notes.edit_modified(False)     # or the next change is not told
+        if self.notes_job is not None:
+            self.frame.after_cancel(self.notes_job)
+        self.notes_job = self.frame.after(self.NOTES_SAVE_MS, self.save_notes)
+
+    def flush_notes(self):
+        """Save now any notes still waiting for the pause."""
+        if self.notes_job is not None:
             try:
-                scl.set_report_notes(st.bodies, key,
-                                     self.notes.get("1.0", "end"))
-            except ValueError as exc:
-                st.flash(str(exc))
-                return
-            scl.save_json(scl.BODIES_FILE, st.bodies)
-            st.flash(f"notes saved on {key}")
+                self.frame.after_cancel(self.notes_job)
+            except tk.TclError:             # closing: save all the same
+                pass
+            self.save_notes()
+
+    def save_notes(self):
+        """Save the box into its report's notes, if they changed. Only the
+        first save since the report was picked keeps a backup: see
+        scl.save_json."""
+        self.notes_job = None
+        key, st, scl = self.notes_key, self.state, self.scl
+        try:
+            text = self.notes.get("1.0", "end")
+        except tk.TclError:                 # the window is already gone
+            return
+        with st.lock:
+            rec = st.bodies.get(key)
+            if rec is None or rec.get("notes", "") == text.strip():
+                return                      # deleted, or nothing new
+            scl.set_report_notes(st.bodies, key, text)
+            scl.save_json(scl.BODIES_FILE, st.bodies,
+                          backup=self.notes_backed != key)
+            self.notes_backed = key
+            wps = list(st.waypoints)
+        st_title = place_title(rec, scl.report_columns(key, rec, wps))
+        with st.lock:
+            st.flash(f"notes saved on {st_title}")
