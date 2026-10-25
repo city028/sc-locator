@@ -83,9 +83,21 @@ TRACE_MAX_CLIMB = 100.0                  # m/s
 # is flown fast for an overview (railway-001: ~350 m/s, up to 650); a lake is
 # skimmed slowly (lake-002, microTech 2026-10-18: ~5 m/s, at most 51), where a
 # misread 600 m off the shore came in at 154 m/s. A sea is too big to skim
-# that slowly, so a misread like that one gets through there.
+# that slowly, so a misread like that one gets through there. A building is
+# walked: even a sprint stays well under 20 m/s.
+#
+# A building is walked: 8 m/s is a sprint. It is also judged over at most
+# TRACE_MAX_GAP seconds since the last point, however long ago that was:
+# building-004 (Wala, 2026-10-25) stood still 5 s at the start, so a 77 m
+# misread (a 2 read as 9 in the km row) passed at 20 m/s x 5 s, became the
+# reference, and the right fixes after it were dropped as jumps.
 TRACE_MAX_SPEED = {"railway": SURVEY_MAX_SPEED, "lake": 100.0,
-                   "sea": 1000.0, "waterway": 200.0}               # m/s
+                   "sea": 1000.0, "waterway": 200.0,
+                   "building": 8.0}                                # m/s
+TRACE_MAX_GAP = {"building": 4.0}                                  # s
+# This many fixes dropped in a row and the overlay says the trace has lost
+# track: every fix is now judged against a point it has walked away from.
+TRACE_LOST_DROPS = 5
 # A survey starting this close to a survey waypoint does not add another.
 SURVEY_MARK_SPACING_M = 5000.0
 
@@ -153,6 +165,10 @@ DEFAULT_CONFIG = {
     # A waterway is drawn this wide (to scale) on the height map. Each one
     # keeps the width it started with, as width_m in traces.json.
     "waterway_width_m": 30.0,
+    # A building is walked round this far out from its walls, and its outline
+    # pulled in this much. Each one keeps the offset it started with, as
+    # offset_m in traces.json.
+    "building_wall_offset_m": 0.5,
     "stale_after": 3.0,                # seconds before a fix is flagged stale
     "default_radius": 1000000.0,         # used when the zone is not in BODY_RADII
     "min_move": 20.0,                    # metres moved before heading is updated
@@ -1727,6 +1743,7 @@ class State:
         self.trace_last = None   # (pos, time) of its last point
         self.trace_held = None   # (planet, pos, time): first fix, unconfirmed
         self.trace_why = None    # why the last fix added no point, or None
+        self.trace_drops = 0     # fixes dropped in a row since the last point
         self.traces_dirty = False
         self.traces_saved = 0.0
         self.checked_pos = None  # (planet, pos, time) the heights last backed
@@ -3327,8 +3344,11 @@ def start_trace(state, kind):
         state.trace = traces.new_trace(kind, name, time.time())
         if kind == "waterway":
             state.trace["width_m"] = state.cfg["waterway_width_m"]
+        if kind == "building":
+            state.trace["offset_m"] = state.cfg["building_wall_offset_m"]
         state.traces.append(state.trace)
         state.trace_last = state.trace_why = state.trace_held = None
+        state.trace_drops = 0
         state.flash(f"tracing {name}")
     state.log(f"trace on: {name}")
 
@@ -3354,8 +3374,13 @@ def trace_fix(state, planet, radius, pos, now):
     not. sea-001 (microTech, 2026-10-18) started on y read with a minus sign,
     858 km off at the right height: every fix for 13 minutes was dropped as
     a jump from it, and the sea was lost.
+
+    A kind in TRACE_MAX_GAP is judged over no more than that many seconds
+    since its last point, so standing still does not let a misread through.
+    Fixes dropped in a row are counted in trace_drops (see TRACE_LOST_DROPS).
     """
-    limit = TRACE_MAX_SPEED[state.trace["kind"]]
+    kind = state.trace["kind"]
+    limit = TRACE_MAX_SPEED[kind]
     if not state.trace["points"]:
         held, state.trace_held = state.trace_held, (planet, pos, now)
         if held is None or held[0] != planet or trace_jump(
@@ -3365,9 +3390,16 @@ def trace_fix(state, planet, radius, pos, now):
             return
         state.trace_held = None
         trace_add(state, *held, radius)
-    why = trace_jump(*state.trace_last, pos, now, limit)
+    last, then = state.trace_last
+    if kind in TRACE_MAX_GAP:
+        then = max(then, now - TRACE_MAX_GAP[kind])
+    why = trace_jump(last, then, pos, now, limit)
     if why is None:
         why = trace_add(state, planet, pos, now, radius)
+    if why is None:
+        state.trace_drops = 0
+    elif why.startswith("dropped"):
+        state.trace_drops += 1
     state.trace_why = why
     state.log(f"trace {state.trace['name']}: {why or 'added'}")
 
@@ -3412,6 +3444,45 @@ def stop_trace(state):
                         f"{fmt_dist(traces.length(t))}")
         state.traces_dirty = True
     state.log(f"trace off: {t['name']}, {len(t['points'])} points")
+    save_traces(state, force=True)
+
+
+def cancel_trace(state):
+    """Stop tracing and throw the trace away: one that has gone wrong."""
+    with state.lock:
+        t, state.trace = state.trace, None
+        if t is None:
+            return
+        state.traces.remove(t)
+        state.flash(f"{t['name']} cancelled")
+        state.traces_dirty = True
+    state.log(f"trace cancelled: {t['name']}, {len(t['points'])} points")
+    save_traces(state, force=True)
+
+
+def building_labels(all_traces):
+    """The names given to buildings so far, to pick from: many share one
+    (there is a Mining Control at every mining area)."""
+    return sorted({t["label"] for t in all_traces
+                   if t["kind"] == "building" and t.get("label")},
+                  key=str.lower)
+
+
+def label_trace(state, name, label):
+    """Give the trace `name` its `label`, a name for what it is that need not
+    be unique (building-001 stays its own). An empty label removes it."""
+    label = " ".join(label.split())
+    with state.lock:
+        t = next((t for t in state.traces if t["name"] == name), None)
+        if t is None:
+            return
+        if label:
+            t["label"] = label
+            state.flash(f"{name}: {label}")
+        else:
+            t.pop("label", None)
+        state.traces_dirty = True
+    state.log(f"trace {name} labelled {label!r}")
     save_traces(state, force=True)
 
 
@@ -3644,7 +3715,13 @@ def survey_parts(state):
     """
     with state.lock:
         if state.trace is not None:
-            return trace_parts(state.trace, state.trace_why)
+            parts = trace_parts(state.trace, state.trace_why)
+            n = state.trace_drops
+            if n < TRACE_LOST_DROPS:
+                return parts
+            # Lost track: in the middle, bold, where it catches the eye.
+            return (parts[0], f"LOST TRACK: {n} fixes dropped in a row\n"
+                              "CANCEL and start again", parts[2], TURN_COLOUR)
         if not state.survey:
             return "", "", "", None
         cells = heightmap.cell_count(state.heightmap, state.planet)
@@ -3687,6 +3764,17 @@ def trace_parts(trace, why):
                 f"{why or 'last fix added'}\n"
                 "END TRACE when you reach its end",
                 None)
+    if trace["kind"] == "building":
+        bottom = (f"{why or 'last fix added'}\n"
+                  "END BUILDING closes it back to the start")
+        # Round: say so, bold, or the walk goes on past the start (Pad 2).
+        if trace["points"] and traces.lap_end(trace["points"]) is not None:
+            return ("BUILDING" + top,
+                    "BACK AT THE START\npress END BUILDING now", bottom,
+                    TURN_COLOUR)
+        return ("BUILDING" + top,
+                "first person, walk close along the wall\n"
+                "all the way round, every corner", bottom, None)
     return ("TRACE" + top,
             "fly along it, right over it\n"
             "about 30 m/s: a point every ~60 m",
@@ -4411,6 +4499,11 @@ def run_overlay(state, cfg):
                    for rows in (1, 2, SURVEY_ROWS - 3)]
     for lbl in survey_lbls:
         lbl.pack(fill="x", padx=10)
+    # Under them while tracing only: throw away a trace that has gone wrong.
+    # Here, as the button rows are full. refresh packs and forgets it.
+    cancel_row = tk.Frame(survey_block, bg=BG)
+    button(cancel_row, "CANCEL", lambda: fire("cancel", cancel_trace)(),
+           bg="#FF9B9B").pack(side="left")
 
     # Shown only while there is a target; refresh packs and forgets it.
     target_block = tk.Frame(panel, bg=BG)
@@ -4470,6 +4563,39 @@ def run_overlay(state, cfg):
     # Cancelling has to be possible with the mouse alone: Escape needs the
     # keyboard, and typing needs F held for a cursor.
     button(name_row, "X", lambda: end_rename(), width=2,
+           bg="#6A7785").pack(side="left", padx=(6, 0))
+
+    # Shown after END BUILDING: what the building is. Not unique (there is a
+    # Mining Control at every mining area), so the names given before are
+    # offered under the arrow. OK or Enter keeps it; X or Escape, no name.
+    bname_row = tk.Frame(panel, bg=BG)
+    tk.Label(bname_row, text="name", font=("Consolas", 10), fg=DIM,
+             bg=BG).pack(side="left")
+    bname_var = tk.StringVar()
+    bname_entry = tk.Entry(bname_row, textvariable=bname_var, width=17,
+                           font=("Consolas", 11), bg=FIELD, fg="#DCE6F0",
+                           insertbackground="#DCE6F0", relief="flat")
+    bname_entry.pack(side="left", padx=6)
+    bname_menu = tk.Menu(root, tearoff=False, font=("Consolas", 10),
+                         bg=FIELD, fg="#DCE6F0", activebackground="#1d4f3a")
+
+    def show_bname_menu():
+        bname_menu.delete(0, "end")
+        with state.lock:
+            names = building_labels(state.traces)
+        if not names:
+            bname_menu.add_command(label="(none given yet)", state="disabled")
+        for n in names:
+            bname_menu.add_command(label=n,
+                                   command=lambda n=n: bname_var.set(n))
+        bname_menu.tk_popup(bname_btn.winfo_rootx(),
+                            bname_btn.winfo_rooty() + bname_btn.winfo_height())
+
+    bname_btn = button(bname_row, "▼", show_bname_menu, width=2)
+    bname_btn.pack(side="left")
+    button(bname_row, "OK", lambda: fire("name building", do_bname)(),
+           width=3).pack(side="left", padx=(6, 0))
+    button(bname_row, "X", lambda: end_bname(), width=2,
            bg="#6A7785").pack(side="left", padx=(6, 0))
 
     # Grouped by body, so the list is longer than the waypoint count and a
@@ -4623,6 +4749,29 @@ def run_overlay(state, cfg):
         name_var.set("")
         listbox.focus_set()
         set_no_activate(root, True)
+
+    naming = {"trace": None}    # the building the name field is naming
+
+    def start_bname(name):
+        naming["trace"] = name
+        bname_var.set("")
+        bname_row.pack(fill="x", padx=10, pady=(0, 6), before=btn_row)
+        # Typing takes focus, as EDIT does; end_bname gives it back.
+        set_no_activate(root, False)
+        root.focus_force()
+        bname_entry.focus_set()
+
+    def end_bname():
+        bname_row.pack_forget()
+        naming["trace"] = None
+        bname_var.set("")
+        listbox.focus_set()
+        set_no_activate(root, True)
+
+    def do_bname(st):
+        if naming["trace"] is not None:
+            label_trace(st, naming["trace"], bname_var.get())
+        end_bname()
 
     def do_start_rename(st):
         chosen = selected_name()
@@ -4836,7 +4985,12 @@ def run_overlay(state, cfg):
 
     def on_survey():
         if state.trace is not None:
+            ended = state.trace
             fire("trace", stop_trace)()
+            # Kept (not dropped as too short): ask what it is.
+            if ended["kind"] == "building" and any(
+                    t is ended for t in state.traces):
+                start_bname(ended["name"])
             return
         if state.survey:
             fire("survey", stop_survey)()
@@ -4847,8 +5001,8 @@ def run_overlay(state, cfg):
                              survey_btn.winfo_rooty()
                              + survey_btn.winfo_height())
 
-    # Wide enough for "END SURVEY", so swapping the label cannot resize it.
-    survey_btn = button(btn_row2, "SURVEY", on_survey, width=10)
+    # Wide enough for "END BUILDING", so swapping the label cannot resize it.
+    survey_btn = button(btn_row2, "SURVEY", on_survey, width=12)
     survey_btn.pack(side="left", padx=(6, 0))
     button(btn_row2, "QUIT", lambda: root.destroy(), width=5,
            bg="#6A7785").pack(side="right")
@@ -4881,6 +5035,7 @@ def run_overlay(state, cfg):
         # Anything typed by accident goes with it, and focus leaves the field
         # so a held key cannot keep filling it while the pin is all that shows.
         end_rename()
+        end_bname()                 # the building stays, without a name
         set_transparent(True)
         reposition()
         state.log("panel closed")
@@ -4891,6 +5046,8 @@ def run_overlay(state, cfg):
     fix_lbl.bind("<ButtonPress-3>", lambda e: collapse())
     name_entry.bind("<Return>", lambda e: fire("rename", do_rename)())
     name_entry.bind("<Escape>", lambda e: end_rename())
+    bname_entry.bind("<Return>", lambda e: fire("name building", do_bname)())
+    bname_entry.bind("<Escape>", lambda e: end_bname())
 
     # Dragging moves the window by its readout, not by the pin: the pin's left
     # button is the save, so a drag started there would save before it moved.
@@ -4978,6 +5135,11 @@ def run_overlay(state, cfg):
                     survey_block.pack(fill="x", after=fix_lbl)
                 else:
                     survey_block.pack_forget()
+            if (state.trace is not None) != bool(cancel_row.winfo_manager()):
+                if state.trace is not None:
+                    cancel_row.pack(fill="x", padx=10, pady=(2, 4))
+                else:
+                    cancel_row.pack_forget()
             *texts, directions = survey_parts(state)
             for lbl, text in zip(survey_lbls, texts):
                 lbl.config(text=text, fg=colour, font=("Consolas", 11))
@@ -5003,7 +5165,7 @@ def run_overlay(state, cfg):
             tracing = state.trace       # once: END can clear it meanwhile
             survey_btn.config(
                 text=(f"END {tracing['kind'].upper()}"
-                      if tracing["kind"] in traces.WATER else "END TRACE")
+                      if tracing["kind"] in traces.CLOSED else "END TRACE")
                 if tracing is not None
                 else "END SURVEY" if state.survey else "SURVEY")
             # Toast: what a save or an edit just reported replaces the health

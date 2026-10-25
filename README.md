@@ -412,7 +412,7 @@ height map shows them, the star map only when you tick **Survey waypoints**.
   Each tile covers tens of km, so the globe shows where you have been.
 - **Height map** tab: the ground around you at full detail, coloured by
   height from green through tan to white. Grey is ground nobody measured. It
-  follows you while **follow me** is ticked; drag to move, wheel to zoom (12.5 m
+  follows you while **follow me** is ticked; drag to move, wheel to zoom (0.4 m
   to 800 m a pixel). Switches on the left turn each layer on or off:
   - **Filled relief**: the ground between your flight lines filled in and
     shaded as if lit from the upper left. It only reaches 400 m from a
@@ -422,8 +422,8 @@ height map shows them, the star map only when you tick **Survey waypoints**.
     height in metres.
   - **Survey pattern**: the square course, dashed (see below).
   - **POI waypoints** / **Survey waypoints**: your waypoints on that body of
-    each type, each with the ground height where it was saved. Only survey
-    waypoints at first.
+    each type, each with the ground height where it was saved. Both are on
+    at first.
 
   A **Go to** list centres the map on a waypoint of the types shown.
 
@@ -485,6 +485,37 @@ misread and dropped. The height map draws it as water, to scale,
 was started with, as `width_m` in `traces.json`, so one can be corrected
 there.
 
+#### Surveying a building
+
+**SURVEY** > **survey a building** records a walk round a building, a point
+every metre, as `building-001`, `building-002` and so on. Walk in **first
+person** (in third person the HUD gives the camera's position, behind you),
+close along the wall, all the way round and into every corner, then press
+**END BUILDING**. Fixes that moved faster than 8 m/s since the last point
+(judged over at most 4 s, so standing still does not loosen it) are dropped
+as misreads. If five fixes in a row are dropped the overlay says **LOST
+TRACK**: press **CANCEL** and walk it again. Once you are back where you
+started the overlay says **BACK AT THE START**: press **END BUILDING**
+then. A walk that goes on round past its start is cut where it got back
+there, so the extra does no harm, but it is kept in `traces.json`.
+
+After **END BUILDING** a **name** field opens: type what the building is,
+or pick a name given before from the **▼** list, and press **OK** or Enter.
+Names need not be unique (there is a Mining Control at every mining area);
+`building-001` stays its own. **X** or Escape leaves it unnamed. The name is
+kept as `label` in `traces.json`. On the height map it is printed on the
+building where it fits inside the walls; where it does not, it shows next
+to the pointer while the pointer is over the building.
+
+The height map draws it squared off, tan with a dark outline as on a paper
+map (switch **Buildings**; zoom right in, down to 0.4 m a pixel, to see the
+detail): only right angles, turned to the building's walls, with steps
+under 2 m smoothed out. The outline is pulled in `building_wall_offset_m`
+(0.5 m unless you change it) from where you walked. Each building keeps the
+offset it was started with, as `offset_m` in `traces.json`, so one can be
+corrected there. The walk itself is kept as walked, so it can be squared
+again if the method changes. Expect it right to about a metre.
+
 ### Automatic backups
 
 Every time `waypoints.json`, `bodies.json`, `heightmap.json`, `traces.json` or
@@ -506,6 +537,8 @@ versions of each file are kept. If something goes wrong, copy one back.
 | **SURVEY** / **END SURVEY** | record the ground's height under you into the height map, or stop and save |
 | **END TRACE** | stop tracing a railway (started from the **SURVEY** menu) and save it |
 | **END LAKE** | stop surveying a lake (started from the **SURVEY** menu) and save it |
+| **END BUILDING** | stop surveying a building (started from the **SURVEY** menu) and save it |
+| **CANCEL** | shown under the survey block while tracing: stop and throw the trace away |
 | **CLOSE** | collapse the panel back to the pin |
 | **QUIT** | exit the program |
 
@@ -561,6 +594,7 @@ program is closed. The ones you are most likely to change:
 | `survey_max_height_m` | `5000` | height (m) over the reference sphere above which survey records nothing |
 | `water_below_cam_m` | `2` | how far (m) below your camera the water is when a lake survey starts |
 | `waterway_width_m` | `30` | how wide (m) a new waterway is drawn on the height map |
+| `building_wall_offset_m` | `0.5` | how far (m) outside the walls you walk round a building; its outline is pulled in this much |
 | `min_move` | `20.0` | metres you must move before your heading updates |
 | `game_process` | `["starcitizen.exe"]` | process names that count as the game running |
 | `read_rows_only` | `true` | read only the HUD rows the locator uses once their layout is known (about twice as fast); `false` reads every row every time |
@@ -585,7 +619,7 @@ All next to the `.exe`:
 | `stations.json` | cached station list from UEX |
 | `heightmap.json` | ground heights from survey mode, per body |
 | `survey.json` | the last survey square, to resume it |
-| `traces.json` | railways you traced and lakes you surveyed |
+| `traces.json` | railways you traced, water and buildings you surveyed |
 | `bak/` | automatic backups of the files above |
 
 To move to a new PC, copy the whole folder. To share waypoints or reports with

@@ -42,6 +42,8 @@ RAIL, RAIL_GAP = "#000000", "#FAF7F2"
 ROUTE = "#FF5CD6"
 # Lakes: light blue water and a darker blue shore line, as on a paper map.
 WATER, SHORE = (169, 212, 239), (42, 122, 184)
+# Buildings: tan with a dark outline, as on a large-scale paper map.
+BUILDING, BUILDING_EDGE = "#F2C49B", "#3A2A1E"
 
 SUN_PX, PLANET_PX, MOON_PX = 14, 9, 5
 SYSTEM_PITCH = math.radians(60)     # the system map's default view: tilted
@@ -986,7 +988,9 @@ class HeightMapTab:
     """The surveyed ground around you, flat and at full detail: one 100 m
     cell to a pixel at the start, grey where nothing has been measured."""
 
-    ZOOMS = (6.25, 12.5, 25.0, 50.0, 100.0, 200.0, 400.0, 800.0)  # m a pixel
+    # m a pixel; the closest ones are for buildings, tens of metres across
+    ZOOMS = (0.390625, 0.78125, 1.5625, 3.125, 6.25, 12.5, 25.0, 50.0, 100.0,
+             200.0, 400.0, 800.0)
     RELIEF_BLOCK = 4        # px a side of the filled view's blocks
     SETTLE_MS = 250         # quiet this long after a drag or zoom: full draw
 
@@ -1026,23 +1030,24 @@ class HeightMapTab:
         self.legend.pack(anchor="w", pady=(8, 4))
         self.legend_key = None      # what the legend's bar was drawn for
         # What to draw, bottom to top: relief, samples, height lines, survey
-        # pattern, railways, waypoints.
+        # pattern, water, railways, buildings, waypoints.
         self.show = {}
         for name, text, on in (("relief", "Filled relief", True),
                                ("samples", "Survey samples", False),
                                ("lines", "Height lines", True),
                                ("course", "Survey pattern", True),
                                ("lake", "Lakes, seas, rivers", True),
-                               ("rail", "Railways", True)):
+                               ("rail", "Railways", True),
+                               ("building", "Buildings", True)):
             self.show[name] = tk.BooleanVar(value=on)
             ttk.Checkbutton(side, text=text, variable=self.show[name],
                             command=self.draw).pack(anchor="w")
-        self.types = type_switches(side, ("survey",), self.draw)
+        self.types = type_switches(side, ("poi", "survey"), self.draw)
         tk.Label(side, font=mono(9), fg=DIM, bg=BG, justify="left",
                  anchor="w",
-                 text="SURVEY in the overlay\nrecords the ground "
-                      "under you.\ngrey: not measured\nbrown: contour lines\n"
-                      "number by a pin: its\nground height\n"
+                 text="SURVEY records the ground.\n"
+                      "grey: not measured\nbrown: contour lines\n"
+                      "pin number: ground height\n"
                       "dashes: survey course\n"
                       "ticked line: railway\n"
                       "blue: water, its level\n"
@@ -1170,19 +1175,29 @@ class HeightMapTab:
         return rec["radius"] if rec else self.scl.BODY_RADII.get(self.body, 1.0)
 
     def look(self):
-        """What the map depends on, to redraw only when it changes. Lock held."""
+        """What the map depends on, to redraw only when it changes. Lock held.
+
+        Where you are is in it twice: [2] only while the map follows you,
+        which centres it; [5] whenever you are on this body, so your + moves
+        while the map is held by Go to or not following. With only [2], the
+        + froze on a held map until you left the body. The body's waypoints
+        are in it too, so one saved where you stand shows at once.
+        """
         st = self.state
         if self.held is not None and moved_on(self.held,
                                               (st.system, st.planet)):
             self.held = None
-        on_it = (self.follow.get() and self.held is None
-                 and st.planet == self.body)
+        here = st.planet == self.body and st.pos
+        on_it = self.follow.get() and self.held is None and here
         plan = st.survey_saved
         return (self.body, heightmap.cell_count(st.heightmap, self.body),
-                tuple(st.pos) if on_it and st.pos else None,
+                tuple(st.pos) if on_it else None,
                 plan and (plan["origin"], plan["leg"], plan["joined"]),
-                sum(len(t["points"]) for t in st.traces
-                    if t["planet"] == self.body))
+                tuple((len(t["points"]), t.get("label")) for t in st.traces
+                      if t["planet"] == self.body),
+                tuple(st.pos) if here else None,
+                tuple((w["name"], w.get("type"), w.get("x"), w.get("y"))
+                      for w in st.waypoints if w.get("planet") == self.body))
 
     def refresh(self):
         with self.state.lock:
@@ -1263,6 +1278,12 @@ class HeightMapTab:
             rivers = [(list(t["points"]), t["width_m"]) for t in st.traces
                       if t["planet"] == self.body
                       and t["kind"] == "waterway" and len(t["points"]) >= 2]
+            # One walked before offset_m was kept takes today's setting.
+            buildings = [(list(t["points"]), t.get(
+                "offset_m", st.cfg["building_wall_offset_m"]), t.get("label"))
+                for t in st.traces if t["planet"] == self.body
+                and t["kind"] == "building"
+                and len(t["points"]) >= traces.LEAST["building"]]
             # A QT-no target here: the overland leg from where you jump to.
             route = None
             tgt = next((q for q in st.waypoints if q["name"] == st.target),
@@ -1333,6 +1354,8 @@ class HeightMapTab:
                 self.draw_lakes(lake_xys, rivers, frame, radius, w, h)
             if self.show["rail"].get():
                 self.draw_rails(rails, frame, radius, w, h)
+            if self.show["building"].get():
+                self.draw_buildings(buildings, frame, radius, w, h)
             if route:
                 self.draw_route(*route, frame, radius, w, h)
 
@@ -1547,6 +1570,49 @@ class HeightMapTab:
                               joinstyle="round")
                 for x0, y0, x1, y1 in traces.ticks(px):
                     c.create_line(x0, y0, x1, y1, fill=RAIL, width=2)
+
+    def draw_buildings(self, buildings, frame, radius, w, h):
+        """Buildings walked round, squared off (traces.square): tan with a
+        dark outline, as on a large-scale paper map. A building's name is
+        printed on it where it fits inside the walls; where it does not, it
+        shows by the pointer while the pointer is over the building (names
+        printed past the walls piled up and buried the map)."""
+        c = self.canvas
+        for points, offset, label in buildings:
+            xys = self.on_map(points, frame, radius)
+            if not xys:
+                continue
+            px = [(w / 2 + x / self.mpp, h / 2 - y / self.mpp)
+                  for x, y in traces.square(xys, offset)]
+            xs, ys = [p[0] for p in px], [p[1] for p in px]
+            if max(xs) < 0 or min(xs) > w or max(ys) < 0 or min(ys) > h:
+                continue
+            outline = c.create_polygon(*[v for p in px for v in p],
+                                       fill=BUILDING, outline=BUILDING_EDGE,
+                                       width=1)
+            if not label:
+                continue
+            t = c.create_text(sum(xs) / len(xs), sum(ys) / len(ys),
+                              text=label, fill=BUILDING_EDGE, font=mono(8))
+            x0, y0, x1, y1 = c.bbox(t)
+            if all(traces.inside_ring(x, y, px)
+                   for x, y in ((x0, y0), (x1, y0), (x1, y1), (x0, y1))):
+                continue
+            c.delete(t)
+            c.tag_bind(outline, "<Enter>",
+                       lambda e, label=label: self.show_name(e, label))
+            c.tag_bind(outline, "<Leave>", lambda e: c.delete("name"))
+
+    def show_name(self, e, label):
+        """A building's name by the pointer, as the pointer comes over it."""
+        c = self.canvas
+        c.delete("name")
+        t = c.create_text(e.x + 14, e.y - 12, text=label, anchor="w",
+                          fill=BUILDING_EDGE, font=mono(9), tags="name")
+        x0, y0, x1, y1 = c.bbox(t)
+        c.tag_lower(c.create_rectangle(x0 - 3, y0 - 1, x1 + 3, y1 + 1,
+                                       fill=BUILDING, outline=BUILDING_EDGE,
+                                       tags="name"), t)
 
     def draw_route(self, hop, points, frame, radius, w, h):
         """The overland leg to a QT-no target: a dashed line from `hop`, the

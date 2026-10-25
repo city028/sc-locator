@@ -1499,6 +1499,94 @@ waterway are not left out of the relief as a lake's are: at 30 m it is
 narrower than a 100 m cell. The height map switch is now "Lakes, seas,
 rivers". Not yet flown in game.
 
+**Building survey (built 2026-10-25).** A trace of kind `building`, walked
+round on foot in first person, a point every 1 m (`BUILDING_STEP_M`),
+`TRACE_MAX_SPEED` 20 m/s. building-001 (Wala, ArcCorp Mining Area 061):
+64 points in 1 min 46 s, ~146 m round, points ~2 m apart at walking pace
+(a fix every 1.3-1.7 s), so corners are cut 1-2 m. Positions came from the
+`Zone: wala Pos:` row (0.1 m) as `CamPos` is often missing on foot. Long
+walls straight to ±0.5 m, the east wall ±0.15 m. Three fixes dropped as
+jumps, none at a corner. Ground under it varied 1.8 m: irrelevant, these
+stand on legs.
+
+`traces.square` squares the walk at draw time, from the raw points: the
+walls' direction is the length-weighted mean of the step angles modulo
+90 deg (4 theta on the circle); steps are split by the axis they mostly run
+along into walls standing at their weighted mean; the shortest wall under
+`BUILDING_MIN_M` (2 m) is dropped and its neighbours joined, until none
+is; walls are pulled in `offset_m` (inside = left of travel if the walk is
+anticlockwise); corners are where walls meet. Corners come from walls
+meeting, so the cut corners do not matter. building-001 gives 12 corners at
+19.2 deg, 730 m2, matching the in-game map (main block 11 x 41 m, wings
+10 x 10 and 10 x 16 m, stairs as a 2.7 m notch). The user confirmed about a
+metre is all that is wanted, and that the in-game map's outlines are
+walkable areas, not walls. A ±0.4 m wobble on a synthetic walk moves
+corners up to ~0.7 m.
+
+The height map's closest zoom went from 6.25 to 0.39 m a pixel (a 40 m
+building is ~100 px there). The new Buildings switch pushed the legend text
+off the bottom of a 760 px window, so it lost three lines: "tan: building"
+(the switch says it), and two shortened.
+
+**building-004 went haywire (2026-10-25).** On foot `CamPos` is never read
+(all four walks are 0.1 m km-row values), and the km row's x misread one
+digit: `-21.1274km` as `-21.1974` for 16 s (8 points, 70 m off) and as
+`-21.1174` on other frames (10 m). The jump check allowed 20 m/s times the
+seconds since the last *kept* point; standing 5 s at the start made that
+100 m, so the 77 m misread was kept, became the reference, and the right
+fixes after it were dropped as jumps while later misreads that agreed with
+it were kept. Now: `TRACE_MAX_SPEED["building"]` 8 m/s, and
+`TRACE_MAX_GAP["building"]` 4 s caps the seconds it is judged over (32 m
+at most). Five drops in a row (`TRACE_LOST_DROPS`) put LOST TRACK in the
+overlay's middle lines in TURN_COLOUR, and a CANCEL button (survey block,
+tracing only, as the button rows are full) throws the trace away. 10 m
+flips still pass: they are within walking range. The real fix is reading
+`CamPos` on foot. building-004 was deleted from `traces.json`. The SURVEY
+button went from 10 to 12 characters: "END BUILDING" had been clipped.
+
+**Building names (2026-10-25).** A building can carry a `label`, a name for
+what it is that need not be unique (the user: "Mining Control" is found at
+every mining area); `name` (building-001) stays the unique id. END BUILDING
+opens a name row in the overlay (as EDIT's, taking focus while it is open):
+an Entry plus a ▼ button popping a tk.Menu of `building_labels` (names
+given so far), not a ttk.Combobox, as the overlay uses plain tk throughout.
+An empty name, X, Escape or closing the panel leaves it unnamed. Checked by
+driving the overlay from a script (right-click the pin, press END BUILDING,
+type, Enter); the ▼ list was not, as tk_popup blocks until dismissed.
+
+On the height map names were first printed on every building from 0.78 m a
+pixel in, on a tan patch, biggest first and skipping overlaps; the user
+found them too big, burying the map. Now a name is printed only where its
+box fits inside the building's outline (`traces.inside_ring` on its four
+corners), at any zoom; otherwise the outline gets `<Enter>`/`<Leave>` tag
+bindings that show it by the pointer (canvas items tagged `name`).
+
+**Walking on past the start (Pad 2, 2026-10-25).** building-004 "Pad 2 -
+Wrong": one full lap (back within 0.7 m of the start at point 35 of 51),
+then on up the west side and along the top. Joined back from the far
+corner, the closing step cut a 28 m diagonal across the pad: 12 corners,
+572 m2. `traces.lap_end` finds where a walk is back at its start (once
+over `LAP_AWAY_M` 8 m away, the closest point of the first return within
+`LAP_CLOSE_M` 4 m) and `square` cuts the walk there: 8 corners, 366 m2.
+The raw walk is kept whole. The overlay's middle lines say BACK AT THE
+START in TURN_COLOUR once `lap_end` finds the lap. The tighter jump check
+did its job on this walk: 7 position misreads and a height misread dropped.
+
+**Height map not updating (2026-10-25).** Reported after building surveys:
+your + stopped moving and a waypoint just saved (Elevator, a Cargo
+Elevator POI) did not show. The map only redraws when `look()` changes,
+and it held your position only while the map follows you: after Go to,
+SHOW ON HEIGHT MAP or a pin's Show on height map (`held`, kept until you
+leave the body) nothing redrew, so the + froze. Waypoints were not in it
+at all, so a new one waited for some other change. `look()` now also
+holds where you are whenever you are on the body ([5]; [2] still alone
+decides the centring), the body's waypoints, and each trace's name. The
+Elevator itself was also hidden by the POI waypoints switch, off by
+default. Not a crash: squaring every partial walk of all seven buildings
+raised nothing. Checked in a test window with the real traces and
+waypoints: following, the map moves under the +; held, the + moves 13 px
+per 5 m at 0.39 m a pixel; a waypoint added standing still shows.
+
 **Jumping to the height map (2026-10-17).** SHOW ON HEIGHT MAP in the
 Waypoints tab, and a right-click menu on star map pins (Show on height map,
 Show details), call `HeightMapTab.show_waypoint`: it opens the waypoint's
