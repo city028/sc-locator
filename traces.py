@@ -38,10 +38,17 @@ from building_wall_offset_m when it starts and kept on the trace) from
 where the walk went. Its height does not matter: these structures stand on
 legs over uneven ground. About a metre is all it needs to be right to
 (building-001, Wala, 2026-10-25: squared, it matched the in-game map).
+
+Lakes, seas or waterways of one kind that overlap can be merged into one
+(see merge): its points are all of theirs, run after run, and `breaks` says
+where each next run starts (see parts), so no line is drawn from the end of
+one to the start of the next.
 """
 import math
 
 import numpy as np
+
+import heightmap
 
 # What can be traced, and how the SURVEY menu offers it.
 KINDS = {"railway": "trace a railway", "lake": "survey a lake",
@@ -51,6 +58,7 @@ LEAST = {"railway": 2, "lake": 3, "sea": 3,   # points it takes to be kept
          "waterway": 2, "building": 3}
 WATER = ("lake", "sea")     # kinds with a level, whose fan is water
 CLOSED = WATER + ("building",)  # kinds that close back to the start
+MERGES = WATER + ("waterway",)  # kinds that can be merged
 STEP_M = 25.0           # a fix closer than this to the last point adds nothing
 BUILDING_STEP_M = 1.0   # and for a building, walked: a point every ~1 m
 BUILDING_MIN_M = 2.0    # a building's walls shorter than this are smoothed out
@@ -94,10 +102,110 @@ def add_point(trace, planet, pos):
     return None
 
 
-def length(trace):
-    """Metres along the trace, point to point."""
+def parts(trace):
+    """The trace's points as the runs they were flown in: one, or after a
+    merge one per run merged into it."""
     pts = trace["points"]
-    return sum(math.dist(p, q) for p, q in zip(pts, pts[1:]))
+    cut = [0] + trace.get("breaks", []) + [len(pts)]
+    return [pts[a:b] for a, b in zip(cut, cut[1:])]
+
+
+def length(trace):
+    """Metres along the trace, point to point within each run."""
+    return sum(math.dist(p, q) for pts in parts(trace)
+               for p, q in zip(pts, pts[1:]))
+
+
+def line_gap(a, b):
+    """How close (m) the line of map points `a` comes to line `b`: 0 where
+    they cross."""
+    a, b = np.asarray(a, float), np.asarray(b, float)
+
+    def to_segments(p, s):
+        q0, d = s[:-1], s[1:] - s[:-1]
+        sq = np.maximum((d * d).sum(1), 1e-12)
+        t = np.clip(((p[:, None] - q0) * d).sum(2) / sq, 0.0, 1.0)
+        off = p[:, None] - (q0 + t[..., None] * d)
+        return np.hypot(off[..., 0], off[..., 1]).min()
+
+    def side(o, u, v):          # > 0 left of o -> u, < 0 right of it
+        return ((u[..., 0] - o[..., 0]) * (v[..., 1] - o[..., 1])
+                - (u[..., 1] - o[..., 1]) * (v[..., 0] - o[..., 0]))
+
+    p0, p1, q0, q1 = a[:-1, None], a[1:, None], b[None, :-1], b[None, 1:]
+    if ((side(p0, p1, q0) * side(p0, p1, q1) < 0)
+            & (side(q0, q1, p0) * side(q0, q1, p1) < 0)).any():
+        return 0.0
+    return min(to_segments(a, b), to_segments(b, a))
+
+
+def overlap(a, b, frame, radius):
+    """Do traces a and b, of one kind, overlap? Water: a point of one lies
+    in the other's water. A waterway: the two lines come within half their
+    widths of each other."""
+    ra, rb = ([[heightmap.to_map(p, frame, radius) for p in run]
+               for run in parts(t)] for t in (a, b))
+    if a["kind"] in WATER:
+        for points, runs in ((ra, rb), (rb, ra)):
+            xs, ys = zip(*(xy for run in points for xy in run))
+            if any(inside(xs, ys, run).any() for run in runs):
+                return True
+        return False
+    reach = (a["width_m"] + b["width_m"]) / 2
+    return any(line_gap(p, q) <= reach for p in ra for q in rb)
+
+
+def merge_problem(ts, radius):
+    """Why traces `ts` cannot be merged into one, or None if they can: two
+    or more of one kind that merges (MERGES), on one body, each overlapping
+    one of the others."""
+    if len(ts) < 2:
+        return "pick two or more"
+    kinds = sorted({t["kind"] for t in ts})
+    if len(kinds) > 1:
+        return "not all of one kind (" + ", ".join(kinds) + ")"
+    if kinds[0] not in MERGES:
+        return f"a {kinds[0]} cannot be merged"
+    if len({t["planet"] for t in ts}) > 1:
+        return "not all on one body"
+    frame = heightmap.local_frame(ts[0]["points"][0])
+    for t in ts:
+        if any(heightmap.to_map(p, frame, radius) is None
+               for p in t["points"]):
+            return f"{t['name']} is too far from {ts[0]['name']}"
+    joined, left = [ts[0]], ts[1:]
+    while left:
+        t = next((t for t in left if any(overlap(t, j, frame, radius)
+                                         for j in joined)), None)
+        if t is None:
+            return (", ".join(t["name"] for t in left) + " overlap"
+                    + ("s" if len(left) == 1 else "") + " none of the others")
+        joined.append(t)
+        left.remove(t)
+    return None
+
+
+def merge(ts, level=None):
+    """One trace from traces `ts` that merge_problem passes. The first by
+    name is kept, with its name, start and width; the label is the first
+    there is. Its points are all of theirs, in that order, and `breaks`
+    where each next run starts. A lake's or sea's level is `level`, or the
+    first one's when None."""
+    ts = sorted(ts, key=lambda t: t["name"])
+    out = dict(ts[0])
+    points, breaks = [], []
+    for t in ts:
+        for run in parts(t):
+            if points:
+                breaks.append(len(points))
+            points += [list(p) for p in run]
+    out["points"], out["breaks"] = points, breaks
+    label = next((t["label"] for t in ts if t.get("label")), None)
+    if label:
+        out["label"] = label
+    if level is not None:
+        out["level"] = level
+    return out
 
 
 def fan(route):

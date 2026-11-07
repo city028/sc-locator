@@ -1712,14 +1712,14 @@ class HeightMapTab:
             frame = (heightmap.local_frame(self.centre)
                      if self.centre is not None else None)
             rec = st.heightmap.get(self.body)
-            lakes = [(list(t["points"]), t.get("level")) for t in st.traces
+            lakes = [(traces.parts(t), t.get("level")) for t in st.traces
                      if t["planet"] == self.body and t["kind"] in traces.WATER
                      and len(t["points"]) >= traces.LEAST[t["kind"]]]
             # Contours and relief are worked out for twice the map each way
             # and kept until the survey, a lake or the zoom changes or you
             # pan off them. Only what is switched on is worked out.
             key = (self.body, self.seen[1], self.mpp,
-                   sum(len(p) for p, _ in lakes))
+                   sum(len(q) for p, _ in lakes for q in p))
 
             def stale(kept):
                 if not frame:
@@ -1751,9 +1751,10 @@ class HeightMapTab:
                     and st.survey_saved["origin"] is not None else None)
             rails = [list(t["points"]) for t in st.traces
                      if t["planet"] == self.body and t["kind"] == "railway"]
-            rivers = [(list(t["points"]), t["width_m"]) for t in st.traces
+            rivers = [(run, t["width_m"]) for t in st.traces
                       if t["planet"] == self.body
-                      and t["kind"] == "waterway" and len(t["points"]) >= 2]
+                      and t["kind"] == "waterway" and len(t["points"]) >= 2
+                      for run in traces.parts(t)]
             # One walked before offset_m was kept takes today's setting.
             buildings = [(list(t["points"]), t.get(
                 "offset_m", st.cfg["building_wall_offset_m"]), t.get("label"),
@@ -1775,9 +1776,10 @@ class HeightMapTab:
                         n))
         # Over a lake the HUD's ground is neither the bed nor the surface
         # (NOTES.md): the cells there shape no contour, shade or colour.
-        lake_xys = [(xys, level) for xys, level in (
-            (self.on_map(points, frame, radius), level)
-            for points, level in lakes) if xys] if frame else []
+        # Each lake as its runs on the map (one, or more once merged).
+        lake_xys = [(runs, level) for runs, level in (
+            ([self.on_map(run, frame, radius) for run in runs], level)
+            for runs, level in lakes) if None not in runs] if frame else []
         around = self.outside(around, lake_xys)
         near = self.outside(near, lake_xys)
         interval = heightmap.contour_interval(body_lo, body_hi)
@@ -1981,8 +1983,9 @@ class HeightMapTab:
             return cells
         xs, ys = np.array([c[0] for c in cells]), np.array([c[1] for c in cells])
         wet = np.zeros(len(cells), bool)
-        for xys, _ in lake_xys:
-            wet |= traces.inside(xs, ys, xys)
+        for runs, _ in lake_xys:
+            for xys in runs:
+                wet |= traces.inside(xs, ys, xys)
         return [c for c, w in zip(cells, wet.tolist()) if not w]
 
     def draw_lakes(self, lake_xys, rivers, frame, radius, w, h):
@@ -2005,13 +2008,16 @@ class HeightMapTab:
                            width=max(2, round(width_m / self.mpp)),
                            joint="curve")
         labels = []
-        for xys, level in lake_xys:
-            px = [(w / 2 + x / self.mpp, h / 2 - y / self.mpp) for x, y in xys]
-            xs, ys = [p[0] for p in px], [p[1] for p in px]
+        for runs, level in lake_xys:
+            pxs = [[(w / 2 + x / self.mpp, h / 2 - y / self.mpp)
+                    for x, y in xys] for xys in runs]
+            xs = [p[0] for px in pxs for p in px]
+            ys = [p[1] for px in pxs for p in px]
             if max(xs) < 0 or min(xs) > w or max(ys) < 0 or min(ys) > h:
                 continue
-            for tri in traces.fan(px):
-                paint.polygon(tri, fill=255)
+            for px in pxs:
+                for tri in traces.fan(px):
+                    paint.polygon(tri, fill=255)
             if level is not None:
                 labels.append((sum(xs) / len(xs), sum(ys) / len(ys), level))
         wet = np.array(mask) > 0
@@ -2574,6 +2580,8 @@ class SurveysTab:
                 if values[2] == "building":
                     self.nav.building_menu(self.menu, key, values[1], at)
             self.menu.add_separator()
+        elif all(i.startswith("trace:") for i in sel):
+            self.menu.add_command(label="Merge...", command=self.merge)
         self.menu.add_command(label="Delete...", command=self.delete)
         self.menu.tk_popup(*at)
 
@@ -2608,6 +2616,55 @@ class SurveysTab:
             show_message("Delete surveys", "Not deleted, still running: "
                          + ", ".join(kept) + ".\nEnd it in the overlay "
                          "first.", parent=self.frame)
+        self.refresh()
+        self.nav.refresh_tabs()
+
+    def merge(self):
+        """Merge the selected traces into one, once asked: of one kind, on
+        one body, overlapping (traces.merge_problem). Lakes or seas whose
+        levels differ are asked which level to keep."""
+        names = [i[6:] for i in self.tree.selection() if i.startswith("trace:")]
+        st = self.state
+        with st.lock:
+            ts = sorted((dict(t) for t in st.traces if t["name"] in names),
+                        key=lambda t: t["name"])
+            running = st.trace["name"] if st.trace else None
+            rec = st.heightmap.get(ts[0]["planet"]) if ts else None
+        if not ts:
+            return
+        radius = ((rec or {}).get("radius")
+                  or self.scl.BODY_RADII.get(ts[0]["planet"], 1e6))
+        problem = (f"{running} is still running; end it in the overlay first"
+                   if running in names else traces.merge_problem(ts, radius))
+        if problem:
+            show_message("Merge surveys", f"Not merged: {problem}.",
+                         parent=self.frame)
+            return
+        keep = ts[0]["name"]
+        lines = [f"  {t['name']}{' ' + t['label'] if t.get('label') else ''}"
+                 + (f", level {t['level']:,.1f} m" if "level" in t else "")
+                 + (f", {t['width_m']:g} m wide" if "width_m" in t else "")
+                 for t in ts]
+        text = (f"Merge these into {keep}?\n\n" + "\n".join(lines)
+                + "\n\nThe others are deleted. They can be put back from "
+                "Settings > Survey while they are still in the backups, but "
+                f"{keep} stays merged.")
+        if len({t.get("width_m") for t in ts}) > 1:
+            text += f"\n{keep} keeps its width, {ts[0]['width_m']:g} m."
+        levels = list(dict.fromkeys(t["level"] for t in ts if "level" in t))
+        level = None
+        if len(levels) > 1:
+            buttons = [f"Keep {v:,.1f} m" for v in levels]
+            got = ask_buttons("Merge surveys", text + "\n\nWhich level to "
+                              "keep?", self.frame, buttons + ["Cancel"])
+            if got not in buttons:
+                return
+            level = levels[buttons.index(got)]
+        elif not ask_yes_no("Merge surveys", text, parent=self.frame):
+            return
+        merged = self.scl.merge_traces(st, names, level)
+        with st.lock:
+            st.flash(f"merged into {merged}" if merged else "not merged")
         self.refresh()
         self.nav.refresh_tabs()
 

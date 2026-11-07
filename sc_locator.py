@@ -3097,6 +3097,28 @@ def delete_traces(state, names):
     return [t["name"] for t in gone]
 
 
+def merge_traces(state, names, level=None):
+    """Merge the traces named into one (traces.merge), in the place of the
+    one kept, and save; the others are gone as delete_traces leaves them.
+    Returns the merged one's name, or None if one is being traced now or
+    is no longer there."""
+    with state.lock:
+        running = state.trace["name"] if state.trace else None
+        ts = [t for t in state.traces if t["name"] in names]
+        if running in names or len(ts) != len(set(names)) or len(ts) < 2:
+            return None
+        merged = traces.merge(ts, level)
+        at = next(i for i, t in enumerate(state.traces)
+                  if t["name"] == merged["name"])
+        state.traces[at] = merged
+        for t in ts:
+            if t["name"] != merged["name"]:
+                state.traces.remove(t)
+        state.traces_dirty = True
+    save_traces(state, force=True)
+    return merged["name"]
+
+
 def deleted_traces(all_traces, backups=None):
     """Traces in the kept backups of traces.json that are gone now:
     [(name, trace, gone since)], as deleted_reports. A name is given out
