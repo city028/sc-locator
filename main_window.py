@@ -993,7 +993,10 @@ class StarMap:
             self.follow_me(me)
         with self.state.lock:
             cells = heightmap.cell_count(self.state.heightmap, self.body)
-        seen = (tuple((w["id"], w["name"], w["planet"]) for w in wps),
+        # The SUB too: its icon is the pin (2026-11-08, a new SUB showed
+        # the old icon until something else changed).
+        seen = (tuple((w["id"], w["name"], w["planet"], w.get("sub"))
+                      for w in wps),
                 tuple((k, tuple(v.get("centre") or ())) for k, v in bodies.items()),
                 cells, me)
         self.ticks += 1
@@ -1686,8 +1689,8 @@ class HeightMapTab:
                 tuple((len(t["points"]), t.get("label")) for t in st.traces
                       if t["planet"] == self.body),
                 tuple(st.pos) if here else None,
-                tuple((w["id"], w["name"], w.get("type"), w.get("x"),
-                       w.get("y"))
+                tuple((w["id"], w["name"], w.get("type"), w.get("sub"),
+                       w.get("x"), w.get("y"))
                       for w in st.waypoints if w.get("planet") == self.body))
 
     def refresh(self):
