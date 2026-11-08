@@ -1978,7 +1978,91 @@ zoom 200), and skipping the image when no surveyed ground is in view, so
 other views cost nothing. Contours, lakes and railways could be projected
 the same way as lines.
 
+## Merging lakes, seas and waterways (2026-11-07)
+
+lake-001/002 overlapped ~95% (the same lake surveyed twice, levels 1229.9
+and 1232.0 m); sea-001/002 overlapped 311 of 344 km2 with levels 407.7 and
+0.6 m (one start was not on the water); waterway-001/002 cross (21 m apart
+at closest, 30 m wide) but their ends are 322 m apart. So a merge cannot
+join the points into one route: a lake's fan from its first point could
+paint land past a headland, and two waterways joined end to start draw a
+line that is not there. A merged trace keeps all its points with `breaks`,
+where each next run starts (`traces.parts`); fans, rivers and lengths go
+run by run. The overlap check: a lake's or sea's point inside the other's
+water, waterways within half their widths (crossing segments included).
+The height map already painted overlapping lakes as one patch of water, so
+a merge gives one name, one row and one level label.
+
+## One list of survey kinds; lines and areas (2026-11-07)
+
+Every kind is one row in `traces.KINDS`: group (line or area), menu entry,
+fewest points, point spacing, max speed and gap, level, merge, named,
+height map switch, and for one drawn by pattern its style, colour and
+width (an area also its fill and symbol). WATER, CLOSED and MERGES are
+derived from it. SURVEY offers the rows by group. Lines and areas drawn
+by pattern are worked out by `traces.pattern` in screen pixels, as the
+railway ticks are: Tk's own dash option is unreliable on Windows over 1 px
+wide. An area's border is turned so its inside is on the left
+(`traces.inward`), so a hostile area's ticks point in whichever way it was
+flown; it is closed back to its start, a lap past it cut where it came
+closest (`traces.ring`, 300 m, as a building's 8/4 m but for flying). An
+area being flown has one point at first: drawing it as a polygon broke the
+height map's draw, so lines and areas are drawn from their least points.
+
+## The screen reader stopped: a locked log file (2026-11-07)
+
+Three times the overlay went to "fix going stale" for good, with nothing in
+the log (building-008 for 115 s, until END). The console had it: the log's
+append raised PermissionError while RealTimeSync's FreeFileSync copied
+`session.log`; the reader's error handler logged the error, which raised
+again and ended the reader's thread. `make_logger` now holds lines it cannot
+write and writes them, with a note, once it can. A watchdog
+(`StepWatch`, `watch_reader`) logs where the reader is when one step of a
+frame (game check, grab, OCR read, update) takes 15 s, or that its thread
+has ended, and the overlay says "screen reader stuck". It found this cause
+on its first outing ("in update: its thread is gone").
+
+## Lost track after a slow frame; rejoin and resume (2026-11-07)
+
+building-011: one frame took 8 s to read (contrast cuts tried in turn), the
+walk went on ~40 m, and every fix after was dropped: a building allows 8
+m/s over at most 4 s since its last point, 32 m, however long the gap. The
+cap stops a misread getting in while standing still (building-004), but it
+also meant a walk that got 32 m ahead without a fix could never catch up.
+Now two dropped fixes that agree pick the trace up (`trace_rejoin`): the
+second within the cap of the first, the first reachable from the last
+point over the real time since it, and the two apart (a misread repeats
+on a still image). Replayed on building-011's logged positions, it picked
+up at the second fix; walking the rest of it, it picked up 19 times
+after 1-8 drops, bridges of 32-65 m, none at a misread (those, 15 and 62
+km off, fail the reach). SURVEY also resumes the trace started last
+(`resume_trace`): nothing added until a fix is back near its end
+(`trace_back`), and CANCEL takes it back to the points it had.
+
+## Buildings drawn as walked (2026-11-08)
+
+building-011 (1.5 km, arms at several angles) squared into staircases and
+slivers. Tried three ways on its walk: squared, the walk smoothed
+(Douglas-Peucker, 3 m), and walls snapped to 45 deg off the main ones;
+the 45 deg one still missed arms that are not at 45 deg. The smoothed
+walk is a choice per building (`shape`: "walked", `traces.outline`); the
+wall direction in Show details is still the squared one's. The smoothing
+is iterative: a recursive one could pass Python's recursion limit on a
+long walk, and one run on the walk closed back to its start collapsed it
+to a point (both ends the same), so it runs on the open walk.
+
+## Maps missed a SUB change (2026-11-08)
+
+The height map and the star map redraw by themselves only when what they
+compare of the waypoints changes. The height map compared id, name, type
+and position, the star map id, name and body; neither the SUB, so a new
+SUB kept the old icon until a zoom redrew it. Both compare the SUB now.
+
 ## Still open
+
+- Two errors from the screen reader's side, each costing one frame:
+  `Coordinate 'lower' is less than 'upper'` (a crop, seen on two days)
+  and `cannot write empty image`. Not investigated.
 
 - `HDG` is course over ground, not facing — wrong whenever hovering, strafing
   or reversing. Still mislabelled on the overlay.

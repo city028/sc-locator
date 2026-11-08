@@ -139,6 +139,7 @@ When the panel is closed, only the pin is shown. Its colour tells you the state:
 | amber | fix going stale (no good reading for a few seconds) | look away from bright light behind the HUD text |
 | blue | HUD is up but no body in range (between planets) | normal in deep space |
 | red | capture error | run with `--log` and check the log |
+| red | screen reader stuck (one step of reading a frame took 15 s or more) | check the log and the console it was started from |
 
 - **Left-click the pin** to save a waypoint where you are. It works in flight.
   The result ("saved hurston-004" or the reason it refused) shows beside the
@@ -371,14 +372,22 @@ quits the program.
   deleted reports...** in Settings > Reports lists, by name, every report
   still in the backups of `bodies.json` (its last 30 saves) that is gone
   now; pick and **RESTORE** to put them back as they were, notes and all.
-- **Surveys**: every survey kept: each trace (railway, lake, sea, waterway,
-  building) with its label, body, start, points and length, and each
+- **Surveys**: every survey kept: each trace (railway, waterway, a line,
+  lake, sea, building, an area) with its label, body, start, points and
+  length, and each
   body's **height map** with its cells. Every height survey on a body adds
   to that one map (a cell does not remember which survey measured it), so
   a height map is kept and deleted whole. Right-click a row: a trace has
   **Show on height map** (centred on it, its layer switched on), a
-  building also **Show details** and **Rename...**; a height map has its
-  body's menu. **Delete...** works on every selected row, once asked; a
+  building also **Show details**, **Rename...** and **Draw as walked** /
+  **Draw squared**, a line or an area **Rename...**; a height map has its
+  body's menu. Select two or more lakes, seas or waterways and pick
+  **Merge...** to make them one: they must be of one kind, on one body,
+  and each overlap one of the others (a lake's or sea's point in the
+  other's water, waterways crossing or within their widths). The first by
+  name is kept; where levels differ you are asked which to keep. The others
+  are deleted as Delete does, but the kept one stays merged.
+  **Delete...** works on every selected row, once asked; a
   trace or height survey still running is not deleted. Deleted ones come
   back from **Restore deleted surveys...** in Settings > Survey, while they
   are in the backups of `traces.json` and `heightmap.json` (their last 30
@@ -399,7 +408,8 @@ quits the program.
     **Restore deleted reports...** (see Reports above).
   - **Survey**: **Restore deleted surveys...** (see Surveys above), and
     every kind of survey (height survey and its patterns,
-    railway, lake, sea, waterway, building), what each does and records,
+    railway, lake, sea, waterway, lines, building, areas), what each does
+    and records,
     and the limits it drops misreads by. Four can be set here, from the
     next survey on: **Record below** (`survey_max_height_m`), the lake's
     and sea's **Water below camera** (`water_below_cam_m`), a new
@@ -541,9 +551,25 @@ the survey when the area is big enough. The square is saved at every corner,
 and the next **SURVEY** offers to resume it at the leg you stopped on or to
 skip ahead past the legs already flown.
 
+#### Lines and areas
+
+Besides the height survey, **SURVEY** offers two menus of traces, which
+record where you go rather than heights:
+
+- **trace a line**: something the line itself says: railway, waterway,
+  road, trail or path, border, hostile border, restricted line, pipeline,
+  power line or cable. Fly, ride or drive from one end to the other and
+  press **END TRACE**.
+- **survey an area**: something about what is inside: lake, sea,
+  building, built-up area, hostile area, swamp, restricted zone, landing
+  zone. Go all the way round and back to where you started.
+
+The last trace you started can be picked up again: see **Resuming a
+survey** below.
+
 #### Tracing a railway
 
-**SURVEY** > **trace a railway** records a line instead of heights: fly (or
+**SURVEY** > **trace a line** > **railway** records a line instead of heights: fly (or
 ride the train) along a track and every fix adds a point to it, `railway-001`,
 `railway-002` and so on. Height does not matter, only where you go; fly right
 over the track at about 30 m/s for a point every ~60 m. The panel shows the
@@ -558,9 +584,9 @@ height map's body list too.
 
 #### Surveying a lake
 
-**SURVEY** > **survey a lake** maps a lake from the route you fly round it:
+**SURVEY** > **survey an area** > **lake** maps a lake from the route you fly round it:
 
-1. Get as low over the water as you can and pick **survey a lake**. The first
+1. Get as low over the water as you can and pick **lake**. The first
    fix sets the lake's level: your camera's height, less 2 m
    (`water_below_cam_m`). The HUD cannot give it: over a lake its ground
    height is neither the bed nor the surface.
@@ -574,11 +600,13 @@ level, as on a paper map (switch **Lakes**); heights measured inside a lake
 are left out of its height lines and shading. Start somewhere you can see
 the whole shore you will follow across the water: a headland the start
 cannot see past is counted as water. Lakes that overlap merge, so a big one
-can be done in parts, `lake-001`, `lake-002` and so on.
+can be done in parts, `lake-001`, `lake-002` and so on, and merged into
+one in the Surveys tab. A **sea** (**survey an area** > **sea**) is a lake
+too big to skim slowly: the same level and water, flown faster.
 
 #### Surveying a waterway
 
-**SURVEY** > **survey a waterway** maps a river or canal: fly to one end,
+**SURVEY** > **trace a line** > **waterway** maps a river or canal: fly to one end,
 pick it, fly along the middle of the water and press **END TRACE** at the
 other end. Keep under 200 m/s: a fix that moved faster is taken for a
 misread and dropped. The height map draws it as water, to scale,
@@ -587,16 +615,61 @@ misread and dropped. The height map draws it as water, to scale,
 was started with, as `width_m` in `traces.json`, so one can be corrected
 there.
 
+#### Drawing lines: roads, borders and more
+
+**SURVEY** > **trace a line** > **road**, **trail or path**, **border**,
+**hostile border**, **restricted line**, **pipeline** or **power line or
+cable** records a line like a railway: fly, ride or drive along it and
+press **END TRACE** at the end. A **name** field then opens, as for a
+building (below): call it what it is, such as "Nine Tails camp". Each kind
+is drawn its own way on the height map (switch **Roads, borders,
+lines**), its name beside its middle:
+
+| kind | drawn as |
+|---|---|
+| road | solid, brown |
+| trail or path | dashes, brown |
+| border | dash dot, black |
+| hostile border | solid red with ticks on your left as you flew it: fly it with the hostile side on your left |
+| restricted line | dash plus, red |
+| pipeline | dash dot dot, grey |
+| power line or cable | dots, grey |
+
+#### Surveying an area: hostile areas, swamps and more
+
+**SURVEY** > **survey an area** > **built-up area**, **hostile area**,
+**swamp**, **restricted zone** or **landing zone**: fly along its border all
+the way round, back to where you started. The overlay shows **AREA** and
+the button **END AREA**; once you have been more than 300 m away and come
+back within 300 m of the start it says **BACK AT THE START**. Press **END
+AREA**: it closes back to the start (a lap flown on past it is cut where you
+came closest), and a **name** field opens. The height map (switch **Hostile
+areas, swamps, zones**) draws it from its third point on:
+
+| kind | drawn as |
+|---|---|
+| built-up area | grey wash, thin outline |
+| hostile area | light red wash, red border with its ticks pointing in |
+| swamp | light green wash with marsh tufts, green dashed border |
+| restricted zone | red dash plus border, no wash |
+| landing zone | blue dashed border, no wash |
+
+The washes are see-through, so the ground and height lines still show.
+
 #### Surveying a building
 
-**SURVEY** > **survey a building** records a walk round a building, a point
+**SURVEY** > **survey an area** > **building** records a walk round a building, a point
 every metre, as `building-001`, `building-002` and so on. Walk in **first
 person** (in third person the HUD gives the camera's position, behind you),
 close along the wall, all the way round and into every corner, then press
 **END BUILDING**. Fixes that moved faster than 8 m/s since the last point
 (judged over at most 4 s, so standing still does not loosen it) are dropped
 as misreads. If five fixes in a row are dropped the overlay says **LOST
-TRACK**: press **CANCEL** and walk it again. Once you are back where you
+TRACK**: keep walking. As soon as two dropped fixes agree with each other
+(and the first could have been reached at walking speed since the last
+point) the trace picks up there again and says **rejoined after N dropped
+fixes**; a slow frame read while you walked on 40 m used to lose the whole
+walk. This works for every kind of trace. Once you are back where you
 started the overlay says **BACK AT THE START**: press **END BUILDING**
 then. A walk that goes on round past its start is cut where it got back
 there, so the extra does no harm, but it is kept in `traces.json`.
@@ -621,6 +694,23 @@ under 2 m smoothed out. The outline is pulled in `building_wall_offset_m`
 offset it was started with, as `offset_m` in `traces.json`, so one can be
 corrected there. The walk itself is kept as walked, so it can be squared
 again if the method changes. Expect it right to about a metre.
+
+A building with arms and walls at many angles squares badly. Right-click
+it (on the height map or in the Surveys tab) and pick **Draw as walked**:
+the outline is then the walk itself, wobbles under 3 m smoothed out and
+every angle kept (not pulled in by the offset). **Draw squared** puts it
+back. The choice is kept as `shape` in `traces.json`, and **Show details**
+gives the area of the shape drawn.
+
+#### Resuming a survey
+
+**SURVEY** offers **resume** and the name of the trace you started last,
+under the two trace menus: a building you had to stop, say. Nothing is
+added until you are back near where it ended: until then the overlay says
+**walk back to where it ended** and how far, and those fixes do not count
+towards LOST TRACK. Then carry on and press END as usual; a trace that
+already has a name is not asked again. **CANCEL** on a resumed trace takes
+it back to the points it had, rather than throwing it away.
 
 ### Automatic backups
 
@@ -767,6 +857,12 @@ set `monitor` first.
 was misread for that frame; press save again a second later. If it happens on
 every frame where the ground is below sea level (frozen seas), update to
 v1.0.1 or later.
+
+**The pin turns red: "screen reader stuck".** One step of reading the HUD
+(the game check, the screen grab, the OCR read or the update) has taken 15 s
+or more. With `--log`, the log says which step and where in the code it
+was; if it says the reader's thread has ended, the error that ended it is
+in the console the program was started from. Restart the program.
 
 **Nothing appears over the game.** The game must be in Borderless Window.
 
