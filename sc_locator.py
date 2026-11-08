@@ -39,6 +39,7 @@ import shutil
 import sys
 import threading
 import time
+import traceback
 import uuid
 from difflib import SequenceMatcher
 from pathlib import Path
@@ -83,22 +84,8 @@ SURVEY_MAX_SPEED = 3000.0                # m/s
 # Fastest a trace point may climb or drop since the last one. The metro
 # changed height at ~20 m/s; a misread digit, by kilometres in seconds.
 TRACE_MAX_CLIMB = 100.0                  # m/s
-# Fastest a trace point may have moved since the last one, by kind. A railway
-# is flown fast for an overview (railway-001: ~350 m/s, up to 650); a lake is
-# skimmed slowly (lake-002, microTech 2026-10-18: ~5 m/s, at most 51), where a
-# misread 600 m off the shore came in at 154 m/s. A sea is too big to skim
-# that slowly, so a misread like that one gets through there. A building is
-# walked: even a sprint stays well under 20 m/s.
-#
-# A building is walked: 8 m/s is a sprint. It is also judged over at most
-# TRACE_MAX_GAP seconds since the last point, however long ago that was:
-# building-004 (Wala, 2026-10-25) stood still 5 s at the start, so a 77 m
-# misread (a 2 read as 9 in the km row) passed at 20 m/s x 5 s, became the
-# reference, and the right fixes after it were dropped as jumps.
-TRACE_MAX_SPEED = {"railway": SURVEY_MAX_SPEED, "lake": 100.0,
-                   "sea": 1000.0, "waterway": 200.0,
-                   "building": 8.0}                                # m/s
-TRACE_MAX_GAP = {"building": 4.0}                                  # s
+# The fastest a trace point may have moved, by kind: max_speed and max_gap
+# in traces.KINDS.
 # This many fixes dropped in a row and the overlay says the trace has lost
 # track: every fix is now judged against a point it has walked away from.
 TRACE_LOST_DROPS = 5
@@ -1823,6 +1810,67 @@ class FreezeWatch:
         return out
 
 
+# A step of the screen reader's frame (the game check, the grab, the OCR read,
+# the update) this long is stuck. On building-008 (microTech, 2026-11-07) the
+# reader logged nothing for 115 s while the hotkeys still worked, so the
+# overlay only said the fix was going stale and the log could not say why.
+STUCK_SECONDS = 15.0
+
+
+class StepWatch:
+    """Which step of a frame the screen reader is in, and since when, so a
+    watchdog in another thread (watch_reader) can tell when it is stuck in
+    one and say where. Only the step and the time are shared, under a lock.
+    """
+
+    def __init__(self, after=STUCK_SECONDS):
+        self.after = after
+        self.lock = threading.Lock()
+        self.step = None        # None: waiting between frames, never stuck
+        self.since = None
+        self.thread = None      # the reader's thread id, for its stack
+        self.stuck = False
+
+    def enter(self, step, now):
+        """The reader starts `step`, or None to wait for the next frame.
+        Returns a line to log when it had been reported stuck, else None."""
+        with self.lock:
+            out = (f"screen reader moving again after "
+                   f"{now - self.since:.0f} s in {self.step}"
+                   if self.stuck else None)
+            self.step, self.since, self.stuck = step, now, False
+            self.thread = threading.get_ident()
+        return out
+
+    def check(self, now):
+        """The step the reader has been in for `after` seconds, the first
+        time it has, or None."""
+        with self.lock:
+            if (self.step is None or self.stuck
+                    or now - self.since < self.after):
+                return None
+            self.stuck = True
+            return self.step
+
+
+def watch_reader(state, stop, every=1.0):
+    """The screen reader's watchdog, in a thread of its own: logs once when
+    the reader is stuck in a step (state.reader), with where in the code its
+    thread is, and the overlay says so while it is (health)."""
+    while not stop.wait(every):
+        step = state.reader.check(time.time())
+        if step is None:
+            continue
+        frame = sys._current_frames().get(state.reader.thread)
+        where = " < ".join(f"{f.name} ({os.path.basename(f.filename)}:"
+                           f"{f.lineno})" for f in reversed(
+                               traceback.extract_stack(frame)[-6:])) \
+            if frame else ("its thread has ended: the error that ended it "
+                           "is in the console")
+        state.log(f"screen reader stuck {state.reader.after:.0f} s in "
+                  f"{step}: {where}")
+
+
 # ----------------------------------------------------------------------------
 # Shared state
 # ----------------------------------------------------------------------------
@@ -1831,6 +1879,7 @@ class FreezeWatch:
 class State:
     def __init__(self, cfg, waypoints):
         self.lock = threading.Lock()
+        self.reader = StepWatch()   # where the screen reader is in a frame
         self.cfg = cfg
         self.waypoints = waypoints
         self.planet = None
@@ -1892,6 +1941,9 @@ class State:
         self.trace_held = None   # (planet, pos, time): first fix, unconfirmed
         self.trace_why = None    # why the last fix added no point, or None
         self.trace_drops = 0     # fixes dropped in a row since the last point
+        self.trace_rejoin = None  # (planet, pos, time): the last fix dropped
+        self.trace_kept = None   # points a resumed trace had, else None
+        self.trace_back = False  # resumed, and not back where it ended yet
         self.traces_dirty = False
         self.traces_saved = 0.0
         self.checked_pos = None  # (planet, pos, time) the heights last backed
@@ -2489,17 +2541,38 @@ def game_running(wanted, listing=None):
     return any(n.lower() in names for n in wanted)
 
 
+LOG_HOLD_LINES = 10_000     # lines held at most while the log is locked
+
+
 def make_logger(path):
-    """Append-only diagnostic log, or a no-op when --log was not given."""
+    """Append-only diagnostic log, or a no-op when --log was not given.
+
+    A line that cannot be written, as while another program has the file
+    open (a sync tool copying it, a virus scan), is held and written with the
+    next one that can be, so logging never fails its caller. On 2026-11-07 a
+    PermissionError here, raised again by the screen reader's own error
+    handler, ended the reader's thread three times: the overlay just said the
+    fix was going stale, for good.
+    """
     if not path:
         return lambda msg: None
     lock = threading.Lock()
+    held = []                   # lines not written yet, oldest first
 
     def log(msg):
         line = "%s %s\n" % (time.strftime("%H:%M:%S"), msg)
         with lock:
-            with open(path, "a", encoding="utf-8") as fh:
-                fh.write(line)
+            out = held + ([f"{line[:9]}log file was locked: the {len(held)} "
+                           f"lines above, from {held[0][:8]}, were held\n"]
+                          if held else []) + [line]
+            try:
+                with open(path, "a", encoding="utf-8") as fh:
+                    fh.writelines(out)
+            except OSError:
+                held.append(line)
+                del held[:-LOG_HOLD_LINES]
+                return
+            held.clear()
 
     log("--- run started ---")
     return log
@@ -2809,8 +2882,8 @@ def body_details_text(body, system, report, wps, cells, all_traces,
 
 
 def building_details_text(t, facts):
-    """Show details for a building: its names, the squared outline
-    (traces.building_facts) and the walk it came from."""
+    """Show details for a building: its names, its outline, squared or as
+    walked (traces.building_facts), and the walk it came from."""
     head = t.get("label") or t["name"]
     lines = [head + (f" ({t['name']})" if t.get("label") else ""),
              f"{(t.get('planet') or 'unknown').title()}",
@@ -2822,7 +2895,9 @@ def building_details_text(t, facts):
              f"Walls {90.0 - facts['angle']:.0f} deg west of north",
              f"Walked {fmt_dist(traces.length(t))} round, "
              f"{len(t['points'])} points, outline "
-             f"{t.get('offset_m', 0.0):g} m in from the walk"]
+             + (f"as walked, smoothed to {traces.WALKED_TOL_M:g} m"
+                if t.get("shape") == "walked" else
+                f"{t.get('offset_m', 0.0):g} m in from the walk")]
     if t.get("started") is not None:
         lines.append("Walked on " + time.strftime(
             "%Y-%m-%d %H:%M", time.localtime(t["started"])))
@@ -3828,9 +3903,34 @@ def start_trace(state, kind):
             state.trace["offset_m"] = state.cfg["building_wall_offset_m"]
         state.traces.append(state.trace)
         state.trace_last = state.trace_why = state.trace_held = None
-        state.trace_drops = 0
+        state.trace_rejoin = state.trace_kept = None
+        state.trace_drops, state.trace_back = 0, False
         state.flash(f"tracing {name}")
     state.log(f"trace on: {name}")
+
+
+def last_trace(all_traces):
+    """The trace started last, which SURVEY offers to resume, or None."""
+    return max(all_traces, key=lambda t: t.get("started") or 0, default=None)
+
+
+def resume_trace(state, name):
+    """Go on with trace `name` from where it ended. Its next point is judged
+    against its last, as any other, so walk back there first: until then
+    nothing is added and the overlay says how far it is (trace_back). CANCEL
+    takes it back to the points it had rather than throwing it away."""
+    with state.lock:
+        t = next((t for t in state.traces if t["name"] == name), None)
+        if t is None or state.trace is not None or not t["points"]:
+            return
+        state.trace = t
+        state.trace_last = (tuple(t["points"][-1]), time.time())
+        state.trace_why = "walk back to where it ended"
+        state.trace_held = state.trace_rejoin = None
+        state.trace_drops, state.trace_back = 0, True
+        state.trace_kept = len(t["points"])
+        state.flash(f"resuming {name}")
+    state.log(f"trace resumed: {name}, {len(t['points'])} points")
 
 
 def trace_fix(state, planet, radius, pos, now):
@@ -3846,8 +3946,8 @@ def trace_fix(state, planet, radius, pos, now):
     The position is judged against the last point instead. One whose height
     over the centre changed faster than TRACE_MAX_CLIMB is a misread: a 0
     read as 6 moves the fix ~6 km and, at New Babbage, ~3 km up or down. One
-    that moved faster than its kind's TRACE_MAX_SPEED is too (a dropped minus
-    sign keeps the height).
+    that moved faster than its kind's max_speed (traces.KINDS) is too (a
+    dropped minus sign keeps the height).
 
     The first fix has no point before it to be judged against, so it is held
     until the next one agrees with it, and replaced by that one if it does
@@ -3855,12 +3955,16 @@ def trace_fix(state, planet, radius, pos, now):
     858 km off at the right height: every fix for 13 minutes was dropped as
     a jump from it, and the sea was lost.
 
-    A kind in TRACE_MAX_GAP is judged over no more than that many seconds
+    A kind with a max_gap is judged over no more than that many seconds
     since its last point, so standing still does not let a misread through.
-    Fixes dropped in a row are counted in trace_drops (see TRACE_LOST_DROPS).
+    Fixes dropped in a row are counted in trace_drops (see TRACE_LOST_DROPS),
+    and two of them that agree pick the trace up again (trace_rejoin).
+
+    A resumed trace adds nothing until a fix is back near where it ended:
+    the others say how far that is, and are not counted as dropped.
     """
-    kind = state.trace["kind"]
-    limit = TRACE_MAX_SPEED[kind]
+    kind = traces.KINDS[state.trace["kind"]]
+    limit = kind["max_speed"]
     if not state.trace["points"]:
         held, state.trace_held = state.trace_held, (planet, pos, now)
         if held is None or held[0] != planet or trace_jump(
@@ -3870,18 +3974,54 @@ def trace_fix(state, planet, radius, pos, now):
             return
         state.trace_held = None
         trace_add(state, *held, radius)
-    last, then = state.trace_last
-    if kind in TRACE_MAX_GAP:
-        then = max(then, now - TRACE_MAX_GAP[kind])
+    last, since = state.trace_last
+    then = since if kind["max_gap"] is None else max(since,
+                                                    now - kind["max_gap"])
     why = trace_jump(last, then, pos, now, limit)
-    if why is None:
+    if why is not None and state.trace_back:
+        why = f"walk back to where it ended: {math.dist(pos, last):,.0f} m"
+    elif why is not None:
+        why = trace_rejoin(state, planet, radius, pos, now, kind, since) or why
+    else:
+        state.trace_back = False
         why = trace_add(state, planet, pos, now, radius)
-    if why is None:
+    if why is None or why.startswith("rejoined"):
         state.trace_drops = 0
+        state.trace_rejoin = None
     elif why.startswith("dropped"):
         state.trace_drops += 1
     state.trace_why = why
     state.log(f"trace {state.trace['name']}: {why or 'added'}")
+
+
+def trace_rejoin(state, planet, radius, pos, now, kind, since):
+    """After a dropped fix: pick the trace up again where this fix and the
+    one dropped before it agree, the way a first fix is confirmed. Returns
+    what to say if it did, else None, and this fix is the one the next must
+    agree with. Call with the lock held.
+
+    The first of the two must be reachable from the last point at the kind's
+    speed over the real time since it (`since`), not only over max_gap: on
+    building-011 (microTech, 2026-11-07) one frame took 8 s to read, the
+    walk went on ~40 m, past the 32 m that 4 s at 8 m/s allows, and every
+    fix after was dropped. A misread does not do this: the next fix does not
+    agree with it. Nor does one repeated on a still image: the two must be
+    apart.
+    """
+    cand, state.trace_rejoin = state.trace_rejoin, (planet, pos, now)
+    if cand is None or cand[0] != planet or tuple(cand[1]) == tuple(pos):
+        return None
+    limit, gap = kind["max_speed"], kind["max_gap"]
+    then = cand[2] if gap is None else max(cand[2], now - gap)
+    last = state.trace_last[0]
+    if (trace_jump(cand[1], then, pos, now, limit) is not None
+            or trace_jump(last, since, cand[1], cand[2], limit) is not None):
+        return None
+    n = state.trace_drops
+    trace_add(state, *cand, radius)
+    trace_add(state, planet, pos, now, radius)
+    return (f"rejoined after {n} dropped fixes, "
+            f"{math.dist(last, cand[1]):,.0f} m on")
 
 
 def trace_jump(last, then, pos, now, limit):
@@ -3911,12 +4051,12 @@ def trace_add(state, planet, pos, now, radius):
 
 def stop_trace(state):
     """Stop tracing and save. A trace of fewer points than its kind needs
-    (traces.LEAST: two for a line, three for a lake) is dropped."""
+    (least in traces.KINDS: two for a line, three for a lake) is dropped."""
     with state.lock:
         t, state.trace = state.trace, None
         if t is None:
             return
-        if len(t["points"]) < traces.LEAST[t["kind"]]:
+        if len(t["points"]) < traces.KINDS[t["kind"]]["least"]:
             state.traces.remove(t)
             state.flash(f"{t['name']} dropped: too short")
         else:
@@ -3928,23 +4068,29 @@ def stop_trace(state):
 
 
 def cancel_trace(state):
-    """Stop tracing and throw the trace away: one that has gone wrong."""
+    """Stop tracing and throw the trace away: one that has gone wrong. A
+    resumed one goes back to the points it had (trace_kept)."""
     with state.lock:
         t, state.trace = state.trace, None
         if t is None:
             return
-        state.traces.remove(t)
-        state.flash(f"{t['name']} cancelled")
+        kept, state.trace_kept = state.trace_kept, None
+        if kept is None:
+            state.traces.remove(t)
+            state.flash(f"{t['name']} cancelled")
+        else:
+            del t["points"][kept:]
+            state.flash(f"{t['name']} back to its {kept} points")
         state.traces_dirty = True
     state.log(f"trace cancelled: {t['name']}, {len(t['points'])} points")
     save_traces(state, force=True)
 
 
-def building_labels(all_traces):
-    """The names given to buildings so far, to pick from: many share one
-    (there is a Mining Control at every mining area)."""
+def trace_labels(all_traces, kind):
+    """The names given to traces of `kind` so far, to pick from: many
+    share one (there is a Mining Control at every mining area)."""
     return sorted({t["label"] for t in all_traces
-                   if t["kind"] == "building" and t.get("label")},
+                   if t["kind"] == kind and t.get("label")},
                   key=str.lower)
 
 
@@ -3963,6 +4109,24 @@ def label_trace(state, name, label):
             t.pop("label", None)
         state.traces_dirty = True
     state.log(f"trace {name} labelled {label!r}")
+    save_traces(state, force=True)
+
+
+def shape_building(state, name, shape):
+    """Draw building `name` "squared" or "walked" (traces.outline), and
+    save. Squared, the way every building starts, keeps no key."""
+    with state.lock:
+        t = next((t for t in state.traces if t["name"] == name), None)
+        if t is None:
+            return
+        if shape == "walked":
+            t["shape"] = shape
+        else:
+            t.pop("shape", None)
+        state.flash(f"{name}: drawn "
+                    + ("as walked" if shape == "walked" else shape))
+        state.traces_dirty = True
+    state.log(f"trace {name} shaped {shape}")
     save_traces(state, force=True)
 
 
@@ -4084,7 +4248,7 @@ def link_station(state, name):
 
 
 def health(state):
-    """"ok" | "stale" | "error" | "off" | "nohud" | "space".
+    """"ok" | "stale" | "error" | "off" | "nohud" | "space" | "stuck".
 
     Takes the lock itself, so it must not be called from inside render();
     render reports the same thing through health_locked.
@@ -4102,6 +4266,10 @@ def health_locked(state):
     """
     if state.game_up is False:
         return "off"
+    # The reader stuck in a step (watch_reader): the fix only goes stale, but
+    # waiting for it to come back would not help.
+    if state.reader.stuck:
+        return "stuck"
     if state.status.startswith("error:"):
         return "error"
     if state.pos is None:
@@ -4201,7 +4369,8 @@ def survey_parts(state):
                 return parts
             # Lost track: in the middle, bold, where it catches the eye.
             return (parts[0], f"LOST TRACK: {n} fixes dropped in a row\n"
-                              "CANCEL and start again", parts[2], TURN_COLOUR)
+                              "keep going: two that agree pick it up",
+                    parts[2], TURN_COLOUR)
         if not state.survey:
             return "", "", "", None
         cells = heightmap.cell_count(state.heightmap, state.planet)
@@ -4255,12 +4424,32 @@ def trace_parts(trace, why):
         return ("BUILDING" + top,
                 "first person, walk close along the wall\n"
                 "all the way round, every corner", bottom, None)
+    if trace["kind"] in traces.CLOSED:      # an area drawn by pattern
+        bottom = (f"{why or 'last fix added'}\n"
+                  "END AREA closes it back to the start")
+        if trace["points"] and traces.lap_end(
+                trace["points"], traces.AREA_LAP_M,
+                traces.AREA_LAP_M) is not None:
+            return ("AREA" + top, "BACK AT THE START\npress END AREA now",
+                    bottom, TURN_COLOUR)
+        return ("AREA" + top,
+                "fly along its border, all the way round\n"
+                "back to where you started", bottom, None)
     return ("TRACE" + top,
             "fly along it, right over it\n"
             "about 30 m/s: a point every ~60 m",
             f"{why or 'last fix added'}\n"
             "END TRACE when you reach its end",
             None)
+
+
+def end_label(kind):
+    """What the SURVEY button says while tracing `kind`: END TRACE for a
+    line, END AREA for an area drawn by pattern, else END and the kind."""
+    k = traces.KINDS[kind]
+    if k["group"] == "line":
+        return "END TRACE"
+    return "END AREA" if "style" in k else f"END {kind.upper()}"
 
 
 def course_lines(plan, g):
@@ -4533,19 +4722,29 @@ def ocr_worker(state, cfg, stop):
     ladder = [cfg["contrast_cut"]] + [c for c in cfg["contrast_cuts"]
                                       if c != cfg["contrast_cut"]]
     watch = FreezeWatch()
+
+    def step(name):             # for watch_reader: None waits for a frame
+        line = state.reader.enter(name, time.time())
+        if line:
+            state.log(line)
+
     with open_capture() as sct:  # mss handles are per-thread, so create it here
         while not stop.is_set():
             t0 = time.time()
             # No game means no HUD, and a miss costs one Tesseract read per
             # contrast cut in the ladder. Skip the capture entirely rather than
             # OCRing an empty desktop several times a second.
+            step("game check")
             state.set_game_up(game_running(cfg["game_process"]))
             if state.game_up is False:
+                step(None)
                 stop.wait(max(0.05, cfg["idle_interval"] - (time.time() - t0)))
                 continue
             try:
+                step("screen grab")
                 raw = grab_region(sct, cfg)
                 res = sys_pos = None
+                step("OCR read")
                 for i, thr in enumerate(ladder):
                     text = read(preprocess(raw, cfg, thr))
                     # From the first cut that reads it. With no body in range
@@ -4558,6 +4757,7 @@ def ocr_worker(state, cfg, stop):
                                       f"{thr} worked - switching")
                             ladder.insert(0, ladder.pop(i))
                         break
+                step("update")
                 state.set_hud_visible(hud_visible(text))
                 row = next((ln for ln in text.splitlines()
                             if "root" in canon(ln)), "")
@@ -4572,6 +4772,7 @@ def ocr_worker(state, cfg, stop):
                              sys_pos)
             except Exception as exc:
                 state.set_error(str(exc))
+            step(None)
             stop.wait(max(0.05, cfg["interval"] - (time.time() - t0)))
 
 
@@ -4625,11 +4826,13 @@ PLACE_LABELS = ["planet", "moon", "orbital station", "Lagrange station",
                 "jump point", "mining base", "PIO", "other"]
 
 STATUS_COLOURS = {"ok": "#7CFFB2", "stale": "#FFC861", "error": "#FF6B6B",
-                  "nohud": "#FFC861", "off": "#6A7785", "space": "#8FB8FF"}
+                  "nohud": "#FFC861", "off": "#6A7785", "space": "#8FB8FF",
+                  "stuck": "#FF6B6B"}
 STATUS_TEXT = {
     "ok": "fix live",
     "stale": "fix going stale",
     "error": "capture error - see the log",
+    "stuck": "screen reader stuck - see the log",
     "nohud": "no HUD: press ~ then r_DisplayInfo 2",
     "off": "game not running",
     "space": "no body in range",
@@ -5050,8 +5253,9 @@ def run_overlay(state, cfg):
     button(name_row, "X", lambda: end_rename(), width=2,
            bg="#6A7785").pack(side="left", padx=(6, 0))
 
-    # Shown after END BUILDING: what the building is. Not unique (there is a
-    # Mining Control at every mining area), so the names given before are
+    # Shown after END BUILDING, or END TRACE of a kind that is named
+    # (traces.KINDS): what it is. Not unique (there is a Mining Control at
+    # every mining area), so the names given before to that kind are
     # offered under the arrow. OK or Enter keeps it; X or Escape, no name.
     bname_row = tk.Frame(panel, bg=BG)
     tk.Label(bname_row, text="name", font=("Consolas", 10), fg=DIM,
@@ -5067,7 +5271,7 @@ def run_overlay(state, cfg):
     def show_bname_menu():
         bname_menu.delete(0, "end")
         with state.lock:
-            names = building_labels(state.traces)
+            names = trace_labels(state.traces, naming["kind"])
         if not names:
             bname_menu.add_command(label="(none given yet)", state="disabled")
         for n in names:
@@ -5078,7 +5282,7 @@ def run_overlay(state, cfg):
 
     bname_btn = button(bname_row, "▼", show_bname_menu, width=2)
     bname_btn.pack(side="left")
-    button(bname_row, "OK", lambda: fire("name building", do_bname)(),
+    button(bname_row, "OK", lambda: fire("name trace", do_bname)(),
            width=3).pack(side="left", padx=(6, 0))
     button(bname_row, "X", lambda: end_bname(), width=2,
            bg="#6A7785").pack(side="left", padx=(6, 0))
@@ -5235,10 +5439,11 @@ def run_overlay(state, cfg):
         listbox.focus_set()
         set_no_activate(root, True)
 
-    naming = {"trace": None}    # the building the name field is naming
+    # The trace the name field is naming, and its kind.
+    naming = {"trace": None, "kind": None}
 
-    def start_bname(name):
-        naming["trace"] = name
+    def start_bname(name, kind):
+        naming["trace"], naming["kind"] = name, kind
         bname_var.set("")
         bname_row.pack(fill="x", padx=10, pady=(0, 6), before=btn_row)
         # Typing takes focus, as EDIT does; end_bname gives it back.
@@ -5447,19 +5652,36 @@ def run_overlay(state, cfg):
     # SURVEY asks which pattern to fly; END SURVEY just ends it.
     survey_menu = tk.Menu(root, tearoff=False, font=("Consolas", 10),
                           bg=FIELD, fg="#DCE6F0", activebackground="#1d4f3a")
+    # A menu per group of traces (traces.GROUPS), each kind in it.
+    trace_menus = {}
+    for group in traces.GROUPS:
+        trace_menus[group] = tk.Menu(survey_menu, tearoff=False,
+                                     font=("Consolas", 10), bg=FIELD,
+                                     fg="#DCE6F0", activebackground="#1d4f3a")
+    for kind, k in traces.KINDS.items():
+        trace_menus[k["group"]].add_command(
+            label=k["menu"], command=lambda kind=kind: picked(
+                "trace", lambda st: start_trace(st, kind)))
 
     def fill_survey_menu():
-        """The patterns, then the last square to resume, if there is one."""
+        """The patterns, the traces by group, the last trace to resume,
+        then the last square to resume, if there is one."""
         survey_menu.delete(0, "end")
         for pattern in survey.PATTERNS:
             survey_menu.add_command(
                 label=pattern, command=lambda p=pattern: picked(
                     "survey", lambda st: start_survey(st, p)))
         survey_menu.add_separator()
-        for kind, label in traces.KINDS.items():
+        for group, label in traces.GROUPS.items():
+            survey_menu.add_cascade(label=label, menu=trace_menus[group])
+        with state.lock:
+            last = last_trace(state.traces)
+        if last is not None:
             survey_menu.add_command(
-                label=label, command=lambda k=kind: picked(
-                    "trace", lambda st: start_trace(st, k)))
+                label=f"resume {last['name']}"
+                      + (f" ({last['label']})" if last.get("label") else ""),
+                command=lambda n=last["name"]: picked(
+                    "trace", lambda st: resume_trace(st, n)))
         with state.lock:
             plan = state.survey_saved
             if plan is None:
@@ -5481,9 +5703,11 @@ def run_overlay(state, cfg):
             ended = state.trace
             fire("trace", stop_trace)()
             # Kept (not dropped as too short): ask what it is.
-            if ended["kind"] == "building" and any(
-                    t is ended for t in state.traces):
-                start_bname(ended["name"])
+            # Not again for a resumed one that has a name already.
+            if traces.KINDS[ended["kind"]]["named"] and any(
+                    t is ended for t in state.traces) \
+                    and not ended.get("label"):
+                start_bname(ended["name"], ended["kind"])
             return
         if state.survey:
             fire("survey", stop_survey)()
@@ -5539,7 +5763,7 @@ def run_overlay(state, cfg):
     fix_lbl.bind("<ButtonPress-3>", lambda e: collapse())
     name_entry.bind("<Return>", lambda e: fire("rename", do_rename)())
     name_entry.bind("<Escape>", lambda e: end_rename())
-    bname_entry.bind("<Return>", lambda e: fire("name building", do_bname)())
+    bname_entry.bind("<Return>", lambda e: fire("name trace", do_bname)())
     bname_entry.bind("<Escape>", lambda e: end_bname())
 
     # Dragging moves the window by its readout, not by the pin: the pin's left
@@ -5657,9 +5881,7 @@ def run_overlay(state, cfg):
             analyse_btn.config(text="STOP" if analysing else "ANALYSE")
             tracing = state.trace       # once: END can clear it meanwhile
             survey_btn.config(
-                text=(f"END {tracing['kind'].upper()}"
-                      if tracing["kind"] in traces.CLOSED else "END TRACE")
-                if tracing is not None
+                text=end_label(tracing["kind"]) if tracing is not None
                 else "END SURVEY" if state.survey else "SURVEY")
             # Toast: what a save or an edit just reported replaces the health
             # line until it fades.
@@ -5737,6 +5959,7 @@ def cmd_run(args):
     state.log = make_logger(args.log)
     stop = threading.Event()
     threading.Thread(target=ocr_worker, args=(state, cfg, stop), daemon=True).start()
+    threading.Thread(target=watch_reader, args=(state, stop), daemon=True).start()
     threading.Thread(target=load_stations, args=(state,), daemon=True).start()
 
     if args.log:

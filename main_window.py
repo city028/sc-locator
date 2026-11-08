@@ -17,7 +17,7 @@ import tkinter.font as tkfont
 from tkinter import filedialog, ttk
 
 import numpy as np
-from PIL import Image, ImageDraw, ImageTk
+from PIL import Image, ImageColor, ImageDraw, ImageTk
 
 import heightmap
 import starmap
@@ -44,6 +44,8 @@ ROUTE = "#FF5CD6"
 WATER, SHORE = (169, 212, 239), (42, 122, 184)
 # Buildings: tan with a dark outline, as on a large-scale paper map.
 BUILDING, BUILDING_EDGE = "#F2C49B", "#3A2A1E"
+# How solid an area's wash is (0..255): the ground still shows through.
+ZONE_ALPHA = 70
 
 SUN_PX, PLANET_PX, MOON_PX = 14, 9, 5
 SYSTEM_PITCH = math.radians(60)     # the system map's default view: tilted
@@ -470,7 +472,7 @@ class Navigator:
         frame = heightmap.local_frame(t["points"][0])
         xys = [heightmap.to_map(q, frame, radius) for q in t["points"]]
         text = self.scl.building_details_text(
-            t, traces.building_facts(xys, offset))
+            t, traces.building_facts(xys, offset, t.get("shape", "squared")))
         details_window(self.nb, t.get("label") or name, text, at)
 
     # --- renaming -------------------------------------------------------
@@ -543,10 +545,13 @@ class Navigator:
             st.flash(f"deleted {w['name']}")
         self.refresh_tabs()
 
-    def rename_building(self, name, label, at=None):
+    def rename_trace(self, name, kind, label, at=None):
+        """Name a building or a line (a kind that is named, traces.KINDS),
+        from the names given before to that kind."""
         with self.state.lock:
-            given = self.scl.building_labels(self.state.traces)
-        new = ask_name(self.nb, "Building name", name, label or "", given, at)
+            given = self.scl.trace_labels(self.state.traces, kind)
+        new = ask_name(self.nb, traces.KINDS[kind]["menu"].capitalize()
+                       + " name", name, label or "", given, at)
         if new is not None and new != (label or ""):
             self.scl.label_trace(self.state, name, new)
             self.height.draw()
@@ -608,9 +613,20 @@ class Navigator:
         add = menu.add_command
         add(label="Show details", command=lambda: self.building_details(name,
                                                                         at))
-        add(label="Rename...", command=lambda: self.rename_building(name,
-                                                                    label, at))
+        add(label="Rename...", command=lambda: self.rename_trace(
+            name, "building", label, at))
+        # Squared suits most; one with arms and diagonals is drawn as walked.
+        with self.state.lock:
+            walked = any(t["name"] == name and t.get("shape") == "walked"
+                         for t in self.state.traces)
+        add(label="Draw squared" if walked else "Draw as walked",
+            command=lambda: self.shape_building(
+                name, "squared" if walked else "walked"))
         return True
+
+    def shape_building(self, name, shape):
+        self.scl.shape_building(self.state, name, shape)
+        self.height.draw()
 
 
 def scrolled(parent):
@@ -1374,6 +1390,8 @@ HEIGHT_LAYERS = (("relief", "Filled relief", True),
                  ("course", "Survey pattern", False),
                  ("lake", "Lakes, seas, rivers", True),
                  ("rail", "Railways", True),
+                 ("drawn", "Roads, borders, lines", True),
+                 ("zone", "Hostile areas, swamps, zones", True),
                  ("building", "Buildings", True))
 HEIGHT_SWITCHES = HEIGHT_LAYERS + (
     ("poi", "POI waypoints", True),
@@ -1407,6 +1425,7 @@ class HeightMapTab:
         self.mpp = 100.0
         self.press, self.seen, self.image = None, None, None
         self.water = None       # the lakes' image, held as self.image is
+        self.zone_wash = None   # and the areas' washes
         self.held = None    # as the star map's: set by Go to
         self.contours = None    # (key, frame, (half_w, half_h), lines): draw
         self.relief = None      # (key, frame, (half_w, half_h), relief_grid)
@@ -1487,10 +1506,6 @@ class HeightMapTab:
             self.centre = heightmap.local_frame(ends[-1])[0]
         self.draw()
 
-    # The switch that shows each kind of trace.
-    TRACE_SWITCH = {"railway": "rail", "lake": "lake", "sea": "lake",
-                    "waterway": "lake", "building": "building"}
-
     def show_trace(self, name):
         """Show on height map, from the Surveys tab: open the trace's body,
         its layer switched on, and centre on it, held as Go to holds."""
@@ -1503,7 +1518,7 @@ class HeightMapTab:
         if t["planet"] != self.body:
             self.body_var.set(t["planet"])
             self.open(t["planet"])
-        self.show[self.TRACE_SWITCH.get(t["kind"], "rail")].set(True)
+        self.show[traces.KINDS[t["kind"]]["switch"]].set(True)
         mid = tuple(sum(p[i] for p in pts) / len(pts) for i in range(3))
         with self.state.lock:
             self.held = (self.state.system, self.state.planet)
@@ -1714,7 +1729,8 @@ class HeightMapTab:
             rec = st.heightmap.get(self.body)
             lakes = [(traces.parts(t), t.get("level")) for t in st.traces
                      if t["planet"] == self.body and t["kind"] in traces.WATER
-                     and len(t["points"]) >= traces.LEAST[t["kind"]]]
+                     and len(t["points"])
+                     >= traces.KINDS[t["kind"]]["least"]]
             # Contours and relief are worked out for twice the map each way
             # and kept until the survey, a lake or the zoom changes or you
             # pan off them. Only what is switched on is worked out.
@@ -1751,6 +1767,16 @@ class HeightMapTab:
                     and st.survey_saved["origin"] is not None else None)
             rails = [list(t["points"]) for t in st.traces
                      if t["planet"] == self.body and t["kind"] == "railway"]
+            # Lines and areas drawn by pattern: (points, kind, label).
+            drawn, zones = [], []
+            for t in st.traces:
+                k = traces.KINDS[t["kind"]]
+                # An area being flown has one point at first (2026-11-07:
+                # a polygon of one point broke the draw).
+                if (t["planet"] == self.body and "style" in k
+                        and len(t["points"]) >= k["least"]):
+                    (drawn if k["group"] == "line" else zones).append(
+                        (list(t["points"]), k, t.get("label")))
             rivers = [(run, t["width_m"]) for t in st.traces
                       if t["planet"] == self.body
                       and t["kind"] == "waterway" and len(t["points"]) >= 2
@@ -1758,9 +1784,10 @@ class HeightMapTab:
             # One walked before offset_m was kept takes today's setting.
             buildings = [(list(t["points"]), t.get(
                 "offset_m", st.cfg["building_wall_offset_m"]), t.get("label"),
-                t["name"]) for t in st.traces if t["planet"] == self.body
+                t["name"], t.get("shape", "squared"))
+                for t in st.traces if t["planet"] == self.body
                 and t["kind"] == "building"
-                and len(t["points"]) >= traces.LEAST["building"]]
+                and len(t["points"]) >= traces.KINDS["building"]["least"]]
             # A QT-no target here: the overland leg from where you jump to.
             route = None
             tgt = self.scl.find_waypoint(st.waypoints, st.target)
@@ -1829,8 +1856,12 @@ class HeightMapTab:
                 self.draw_course(plan, frame, radius, w, h)
             if self.show["lake"].get():
                 self.draw_lakes(lake_xys, rivers, frame, radius, w, h)
+            if self.show["zone"].get():
+                self.draw_zones(zones, frame, radius, w, h)
             if self.show["rail"].get():
                 self.draw_rails(rails, frame, radius, w, h)
+            if self.show["drawn"].get():
+                self.draw_drawn(drawn, frame, radius, w, h)
             if self.show["building"].get():
                 self.draw_buildings(buildings, frame, radius, w, h)
             if route:
@@ -2060,21 +2091,106 @@ class HeightMapTab:
                 for x0, y0, x1, y1 in traces.ticks(px):
                     c.create_line(x0, y0, x1, y1, fill=RAIL, width=2)
 
+    def draw_drawn(self, drawn, frame, radius, w, h):
+        """Roads, borders and the other lines drawn by pattern, each in its
+        kind's style, colour and width (traces.KINDS), its name by its
+        middle."""
+        c = self.canvas
+        half_w, half_h = w / 2 * self.mpp, h / 2 * self.mpp
+        for points, kind, label in drawn:
+            xys = [xy for xy in (heightmap.to_map(p, frame, radius)
+                                 for p in points) if xy]
+            for run in heightmap.in_view(xys, half_w, half_h):
+                self.stroke([(w / 2 + x / self.mpp, h / 2 - y / self.mpp)
+                             for x, y in run], kind)
+            mid = heightmap.half_way(xys, 0) if label and xys else None
+            if mid is not None:
+                c.create_text(w / 2 + mid[0] / self.mpp + 8,
+                              h / 2 - mid[1] / self.mpp - 8, text=label,
+                              anchor="sw", fill=kind["colour"], font=mono(8))
+
+    def stroke(self, px, kind):
+        """A line of screen points in its kind's style (traces.pattern),
+        colour and width."""
+        c = self.canvas
+        colour, width = kind["colour"], kind["width"]
+        runs, dots = traces.pattern(px, kind["style"])
+        for r in runs:
+            c.create_line(*[v for p in r for v in p], fill=colour,
+                          width=width, joinstyle="round", capstyle="round")
+        r = max(1.5, 0.6 * width)     # a dot's radius
+        for x, y in dots:
+            c.create_oval(x - r, y - r, x + r, y + r, fill=colour,
+                          outline="")
+
+    def draw_zones(self, zones, frame, radius, w, h):
+        """Hostile areas, swamps and the other areas drawn by pattern: each
+        washed over with its kind's fill (see through, ZONE_ALPHA), its
+        border in its style with the inside on the left (a hostile area's
+        ticks point in), a swamp's tufts over it, its name in its middle.
+        Drawn over the lakes, under everything else."""
+        c = self.canvas
+        shown = []
+        for points, kind, label in zones:
+            xys = self.on_map(traces.ring(points), frame, radius)
+            if not xys:
+                continue
+            px = [(w / 2 + x / self.mpp, h / 2 - y / self.mpp)
+                  for x, y in xys]
+            xs, ys = [p[0] for p in px], [p[1] for p in px]
+            if max(xs) < 0 or min(xs) > w or max(ys) < 0 or min(ys) > h:
+                continue
+            shown.append((px, kind, label))
+        # The washes first, as one image, then everything over them.
+        self.zone_wash = None
+        if any(kind["fill"] for _, kind, _ in shown):
+            wash = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+            paint = ImageDraw.Draw(wash)
+            for px, kind, _ in shown:
+                if kind["fill"]:
+                    paint.polygon(px, fill=ImageColor.getrgb(kind["fill"])
+                                  + (ZONE_ALPHA,))
+            self.zone_wash = ImageTk.PhotoImage(wash)
+            c.create_image(0, 0, image=self.zone_wash, anchor="nw")
+            c.tag_raise("grid")
+        for px, kind, label in shown:
+            if kind["symbol"] == "tufts":
+                self.draw_tufts(px, kind["colour"], w, h)
+            border = traces.inward(px)
+            self.stroke(border + border[:1], kind)
+            if label:
+                c.create_text(sum(p[0] for p in px) / len(px),
+                              sum(p[1] for p in px) / len(px), text=label,
+                              fill=kind["colour"], font=mono(8))
+
+    def draw_tufts(self, px, colour, w, h):
+        """A swamp's tufts (traces.tuft) on a staggered grid, where they
+        fall inside the outline `px`."""
+        mask = Image.new("L", (w, h), 0)
+        ImageDraw.Draw(mask).polygon(px, fill=255)
+        inside = np.array(mask) > 0
+        step = traces.TUFT_EVERY_PX
+        for row, y in enumerate(np.arange(step / 2, h, step)):
+            for x in np.arange(step / 2 + (row % 2) * step / 2, w, step):
+                if inside[int(y), int(x)]:
+                    for seg in traces.tuft(x, y):
+                        self.canvas.create_line(*seg, fill=colour, width=1)
+
     def draw_buildings(self, buildings, frame, radius, w, h):
-        """Buildings walked round, squared off (traces.square): tan with a
-        dark outline, as on a large-scale paper map. A building's name is
-        printed on it where it fits inside the walls; where it does not, it
-        shows by the pointer while the pointer is over the building (names
-        printed past the walls piled up and buried the map). Right-click
-        one for its menu (see context_menu)."""
+        """Buildings walked round, squared off or as walked (traces.outline):
+        tan with a dark outline, as on a large-scale paper map. A building's
+        name is printed on it where it fits inside the walls; where it does
+        not, it shows by the pointer while the pointer is over the building
+        (names printed past the walls piled up and buried the map).
+        Right-click one for its menu (see context_menu)."""
         c = self.canvas
         self.building_items = {}
-        for points, offset, label, name in buildings:
+        for points, offset, label, name, shape in buildings:
             xys = self.on_map(points, frame, radius)
             if not xys:
                 continue
             px = [(w / 2 + x / self.mpp, h / 2 - y / self.mpp)
-                  for x, y in traces.square(xys, offset)]
+                  for x, y in traces.outline(xys, offset, shape)]
             xs, ys = [p[0] for p in px], [p[1] for p in px]
             if max(xs) < 0 or min(xs) > w or max(ys) < 0 or min(ys) > h:
                 continue
@@ -2579,6 +2695,11 @@ class SurveysTab:
                 values = self.tree.item(sel[0], "values")
                 if values[2] == "building":
                     self.nav.building_menu(self.menu, key, values[1], at)
+                elif traces.KINDS[values[2]]["named"]:
+                    self.menu.add_command(
+                        label="Rename...",
+                        command=lambda: self.nav.rename_trace(
+                            key, values[2], values[1], at))
             self.menu.add_separator()
         elif all(i.startswith("trace:") for i in sel):
             self.menu.add_command(label="Merge...", command=self.merge)
@@ -2720,10 +2841,20 @@ def survey_kinds(scl):
     """Settings > Survey: each kind of survey as (title, what it does and
     records, [(config key, label, choices)] that can be set). The limits
     quoted are read from the code, so the text keeps up with them."""
-    fast = scl.TRACE_MAX_SPEED
+    fast = {k: v["max_speed"] for k, v in traces.KINDS.items()}
     squares = " or ".join(f"{s:g}" for s in survey.PATTERNS.values() if s)
     misread = (f"A fix that climbed or dropped over {scl.TRACE_MAX_CLIMB:g} "
                "m/s, or moved faster than {} m/s, is taken for a misread.")
+
+    def where(kind):            # its place in the SURVEY menu
+        k = traces.KINDS[kind]
+        return f"SURVEY > {traces.GROUPS[k['group']]} > {k['menu']}"
+
+    drawn = [k for k in traces.KINDS.values()
+             if "style" in k and k["group"] == "line"]
+    zones = [k for k in traces.KINDS.values()
+             if "style" in k and k["group"] == "area"]
+
     return [
         ("Height survey (SURVEY > free fly or a square)",
          "Records the ground height under you, flying or walking. Free fly "
@@ -2735,12 +2866,12 @@ def survey_kinds(scl):
          f"{scl.SURVEY_MAX_SPEED / 1000:g} km/s is dropped.",
          [("survey_max_height_m", "Record below (m over the sphere)",
            (1000, 2000, 3000, 4000, 5000, 6000))]),
-        ("Railway (SURVEY > trace a railway)",
+        (f"Railway ({where('railway')})",
          "Fly or ride along a track; only where it runs matters, not its "
          "height.\nRecords: railway-NNN in traces.json, a point every "
          f"{traces.STEP_M:g} m or more, drawn as the railroad symbol. "
          + misread.format(f"{fast['railway']:g}"), []),
-        ("Lake (SURVEY > survey a lake)",
+        (f"Lake ({where('lake')})",
          "Start low over the water, then follow the shore all the way round; "
          "END LAKE.\nRecords: lake-NNN: its level (your camera's height at "
          "the first fix, less the setting below) and the route; all between "
@@ -2748,27 +2879,49 @@ def survey_kinds(scl):
          + misread.format(f"{fast['lake']:g}"),
          [("water_below_cam_m", "Water below camera (m)",
            (0, 0.5, 1, 2, 3, 5, 10))]),
-        ("Sea (SURVEY > survey a sea)",
+        (f"Sea ({where('sea')})",
          "A lake too big to skim slowly: the same level (the lake's Water "
          "below camera) and the same water, flown faster.\nRecords: sea-NNN. "
          + misread.format(f"{fast['sea']:g}"), []),
-        ("Waterway (SURVEY > survey a waterway)",
+        (f"Waterway ({where('waterway')})",
          "A river or canal: fly along its middle from one end to the other; "
          "END TRACE.\nRecords: waterway-NNN, drawn as water this wide, to "
          "scale. Each keeps the width it started with (width_m in "
          "traces.json). " + misread.format(f"{fast['waterway']:g}"),
          [("waterway_width_m", "Width of a new one (m)",
            (5, 10, 20, 30, 50, 100, 200))]),
-        ("Building (SURVEY > survey a building)",
+        (f"Lines (SURVEY > {traces.GROUPS['line']} > road, border ...)",
+         "Fly, ride or drive along it from one end to the other; END TRACE, "
+         "then name it. Each kind is drawn its own way: "
+         + ", ".join(f"{k['menu']} {k['style']}" for k in drawn)
+         + ". A hostile border's ticks are on your left as you fly it.\n"
+         "Records: <kind>-NNN in traces.json, a point every "
+         f"{traces.STEP_M:g} m or more. "
+         + misread.format(f"{traces.LINE['max_speed']:g}"), []),
+        (f"Building ({where('building')})",
          "Walk round it on foot in first person, close along the walls; END "
          "BUILDING, then name it.\nRecords: building-NNN, a point every "
          f"{traces.BUILDING_STEP_M:g} m, drawn squared off and pulled in by "
          "the offset (kept as offset_m). Faster than "
          f"{fast['building']:g} m/s (over at most "
-         f"{scl.TRACE_MAX_GAP['building']:g} s) is a misread; "
+         f"{traces.KINDS['building']['max_gap']:g} s) is a misread; "
          f"{scl.TRACE_LOST_DROPS} in a row is LOST TRACK.",
          [("building_wall_offset_m", "Wall offset of a new one (m)",
            (0, 0.25, 0.5, 0.75, 1, 1.5))]),
+        (f"Areas (SURVEY > {traces.GROUPS['area']} > hostile area, swamp "
+         "...)",
+         "Fly along its border all the way round, back to where you started; "
+         "END AREA, then name it. Each kind is drawn its own way: "
+         + ", ".join(f"{k['menu']} ("
+                     + ("washed over, " if k["fill"] else "")
+                     + f"border {k['style']}"
+                     + (f", {k['symbol']}" if k["symbol"] else "") + ")"
+                     for k in zones)
+         + ". A hostile area's ticks point inside.\nRecords: <kind>-NNN in "
+         f"traces.json, a point every {traces.STEP_M:g} m or more; a lap "
+         "flown on past the start is cut where it came back within "
+         f"{traces.AREA_LAP_M:g} m of it. "
+         + misread.format(f"{traces.AREA['max_speed']:g}"), []),
     ]
 
 

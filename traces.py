@@ -22,7 +22,7 @@ the height map, whose own heights inside it are ignored (the HUD's ground
 over a lake is neither the bed nor the surface).
 
 A sea is a lake too big to skim slowly: the same level and the same fan,
-only flown faster (see TRACE_MAX_SPEED in sc_locator.py).
+only flown faster (see max_speed in KINDS).
 
 A waterway (a river or a canal) is flown along its middle from one end to
 the other. It is drawn as water, a line `width_m` wide to scale, set from
@@ -44,28 +44,128 @@ Lakes, seas or waterways of one kind that overlap can be merged into one
 where each next run starts (see parts), so no line is drawn from the end of
 one to the start of the next.
 """
+import bisect
 import math
 
 import numpy as np
 
 import heightmap
 
-# What can be traced, and how the SURVEY menu offers it.
-KINDS = {"railway": "trace a railway", "lake": "survey a lake",
-         "sea": "survey a sea", "waterway": "survey a waterway",
-         "building": "survey a building"}
-LEAST = {"railway": 2, "lake": 3, "sea": 3,   # points it takes to be kept
-         "waterway": 2, "building": 3}
-WATER = ("lake", "sea")     # kinds with a level, whose fan is water
-CLOSED = WATER + ("building",)  # kinds that close back to the start
-MERGES = WATER + ("waterway",)  # kinds that can be merged
 STEP_M = 25.0           # a fix closer than this to the last point adds nothing
 BUILDING_STEP_M = 1.0   # and for a building, walked: a point every ~1 m
+
+# The SURVEY menu's two groups: a line says something about the line itself,
+# an area about what is inside it, and closes back to its start.
+GROUPS = {"line": "trace a line", "area": "survey an area"}
+# Every kind that can be traced, in the order its group's menu offers it:
+#   group      "line" or "area" (GROUPS)
+#   menu       its entry in that menu
+#   least      points it takes to be kept
+#   step       m: a fix closer than this to the last point adds nothing
+#   max_speed  m/s: a point that moved faster since the last is a misread
+#   max_gap    s: judged over no more than this since the last point, or None
+#   level      True: it has a water level, and its fan is water
+#   merge      True: overlapping ones can be merged (see merge)
+#   named      True: asked for a name (its label) when it ends
+#   switch     the height map switch that shows it
+# and a line or area drawn by pattern (no drawing of its own) also has
+#   style      how it (an area: its border) is drawn (STYLES), colour and
+#              width (px)
+# and such an area also
+#   fill       the colour it is washed over with, or None for its border only
+#   symbol     "tufts" (a swamp's) dotted over it, or None
+# A railway is flown fast for an overview (railway-001: ~350 m/s, up to 650),
+# so it takes a height survey's limit (SURVEY_MAX_SPEED in sc_locator.py). A
+# lake is skimmed slowly (lake-002, microTech 2026-10-18: ~5 m/s, at most
+# 51), where a misread 600 m off the shore came in at 154 m/s. A sea is too
+# big to skim that slowly, so a misread like that one gets through there. A
+# building is walked: 8 m/s is a sprint.
+# It is also judged over at most max_gap since the last point, however long
+# ago that was: building-004 (Wala, 2026-10-25) stood still 5 s at the start,
+# so a 77 m misread (a 2 read as 9 in the km row) passed at 20 m/s x 5 s,
+# became the reference, and the right fixes after it were dropped as jumps.
+# The lines drawn by pattern are flown, ridden or driven like a railway.
+LINE = {"group": "line", "least": 2, "step": STEP_M, "max_speed": 3000.0,
+        "max_gap": None, "level": False, "merge": False, "named": True,
+        "switch": "drawn"}
+# The areas drawn by pattern are flown round their border, back to the start.
+AREA = dict(LINE, group="area", least=3, switch="zone")
+KINDS = {
+    "railway": {"group": "line", "menu": "railway", "least": 2,
+                "step": STEP_M, "max_speed": 3000.0, "max_gap": None,
+                "level": False, "merge": False, "named": False,
+                "switch": "rail"},
+    "waterway": {"group": "line", "menu": "waterway", "least": 2,
+                 "step": STEP_M, "max_speed": 200.0, "max_gap": None,
+                 "level": False, "merge": True, "named": False,
+                 "switch": "lake"},
+    "road": dict(LINE, menu="road", style="solid", colour="#8B4A1C",
+                 width=3),
+    "trail": dict(LINE, menu="trail or path", style="dashes",
+                  colour="#8B4A1C", width=2),
+    "border": dict(LINE, menu="border", style="dash dot", colour="#000000",
+                   width=2),
+    "hostile-border": dict(LINE, menu="hostile border", style="ticks",
+                           colour="#C62828", width=2),
+    "restricted-line": dict(LINE, menu="restricted line", style="dash plus",
+                            colour="#C62828", width=2),
+    "pipeline": dict(LINE, menu="pipeline", style="dash dot dot",
+                     colour="#5A6672", width=2),
+    "power-line": dict(LINE, menu="power line or cable", style="dots",
+                       colour="#5A6672", width=2),
+    "lake": {"group": "area", "menu": "lake", "least": 3,
+             "step": STEP_M, "max_speed": 100.0, "max_gap": None,
+             "level": True, "merge": True, "named": False, "switch": "lake"},
+    "sea": {"group": "area", "menu": "sea", "least": 3,
+            "step": STEP_M, "max_speed": 1000.0, "max_gap": None,
+            "level": True, "merge": True, "named": False, "switch": "lake"},
+    "building": {"group": "area", "menu": "building", "least": 3,
+                 "step": BUILDING_STEP_M, "max_speed": 8.0, "max_gap": 4.0,
+                 "level": False, "merge": False, "named": True,
+                 "switch": "building"},
+    "built-up-area": dict(AREA, menu="built-up area", style="solid",
+                          colour="#616161", width=1, fill="#9E9E9E",
+                          symbol=None),
+    "hostile-area": dict(AREA, menu="hostile area", style="ticks",
+                         colour="#C62828", width=2, fill="#E57373",
+                         symbol=None),
+    "swamp": dict(AREA, menu="swamp", style="dashes", colour="#2E7D5B",
+                  width=1, fill="#A5D6A7", symbol="tufts"),
+    "restricted-zone": dict(AREA, menu="restricted zone", style="dash plus",
+                            colour="#C62828", width=2, fill=None,
+                            symbol=None),
+    "landing-zone": dict(AREA, menu="landing zone", style="dashes",
+                         colour="#1565C0", width=2, fill=None, symbol=None),
+}
+WATER = tuple(k for k, v in KINDS.items() if v["level"])
+CLOSED = tuple(k for k, v in KINDS.items() if v["group"] == "area")
+MERGES = tuple(k for k, v in KINDS.items() if v["merge"])
 BUILDING_MIN_M = 2.0    # a building's walls shorter than this are smoothed out
+WALKED_TOL_M = 3.0      # and one drawn as walked, wobbles narrower than this
 LAP_AWAY_M = 8.0        # a walk this far from its start has set off round
 LAP_CLOSE_M = 4.0       # and back this close to it has been all the way round
+AREA_LAP_M = 300.0      # as those two, for an area flown round its border
+TUFT_EVERY_PX = 28.0    # a swamp's tufts this far apart
 TICK_EVERY_PX = 40.0    # ticks this far apart along the drawn line
 TICK_HALF_PX = 6.0      # and reaching this far either side of it
+# A line drawn by pattern: whether a solid line runs under it, then what
+# repeats along it, each a mark and the px it takes along the line. A dash
+# is drawn that long; a dot, a plus or a tick sits where it falls, and a gap
+# is left empty. A hostile border's ticks stand on the left of the way it
+# was flown: fly it with the hostile side on your left.
+STYLES = {
+    "solid": (True, ()),
+    "dots": (False, (("dot", 0), ("gap", 8))),
+    "dashes": (False, (("dash", 12), ("gap", 6))),
+    "dash dot": (False, (("dash", 12), ("gap", 5), ("dot", 0), ("gap", 5))),
+    "dash dot dot": (False, (("dash", 12), ("gap", 5), ("dot", 0),
+                             ("gap", 5), ("dot", 0), ("gap", 5))),
+    "dash plus": (False, (("dash", 12), ("gap", 7), ("plus", 0),
+                          ("gap", 7))),
+    "ticks": (True, (("gap", 5), ("tick", 0), ("gap", 5))),
+}
+MARK_HALF_PX = 4.0      # a plus reaches this far each way
+TICK_SIDE_PX = 6.0      # a hostile border's tick sticks out this far
 
 
 def new_trace(kind, name, now, planet=None):
@@ -87,16 +187,15 @@ def add_point(trace, planet, pos):
     """Add a fix to the trace. Returns why it was not added, or None.
 
     A fix on another body is refused: one trace stays on one body. One
-    within STEP_M (BUILDING_STEP_M for a building) of the last point is too,
-    so hovering adds nothing.
+    within its kind's step (KINDS) of the last point is too, so hovering
+    adds nothing.
     """
     if trace["planet"] is None:
         trace["planet"] = planet
     if planet != trace["planet"]:
         return f"not added: the trace is on {trace['planet']}"
     pts = trace["points"]
-    step = BUILDING_STEP_M if trace["kind"] == "building" else STEP_M
-    if pts and math.dist(pts[-1], pos) < step:
+    if pts and math.dist(pts[-1], pos) < KINDS[trace["kind"]]["step"]:
         return "not added: too close to the last point"
     pts.append([round(c, 2) for c in pos])
     return None
@@ -246,22 +345,45 @@ def inside_ring(x, y, ring):
     return out
 
 
-def lap_end(route):
+def lap_end(route, away_m=LAP_AWAY_M, close_m=LAP_CLOSE_M):
     """Where a walk round a building is back at its start: the index of its
-    closest point to the start once it has been LAP_AWAY_M away and come
-    back within LAP_CLOSE_M, or None if it has not got round yet. Points
+    closest point to the start once it has been `away_m` away and come
+    back within `close_m`, or None if it has not got round yet. Points
     may be map (x, y) or planet-frame (x, y, z)."""
     start, away, best = route[0], False, None
     for i, p in enumerate(route):
         d = math.dist(p, start)
         if not away:
-            away = d > LAP_AWAY_M
-        elif d <= LAP_CLOSE_M:
+            away = d > away_m
+        elif d <= close_m:
             if best is None or d < math.dist(route[best], start):
                 best = i
         elif best is not None:
             break               # back, and now off past the start
     return best
+
+
+def ring(route):
+    """An area flown round its border as `route`, as the outline it closes
+    back to its start: cut where it got back there (lap_end, AREA_LAP_M),
+    so a lap flown on past the start does not go round twice."""
+    end = lap_end(route, AREA_LAP_M, AREA_LAP_M)
+    return list(route if end is None else route[:end + 1])
+
+
+def inward(outline):
+    """An outline of screen points (y down), turned so that the inside is
+    on the left of the way it runs: where a hostile area's ticks stand."""
+    turn = sum(a[0] * b[1] - b[0] * a[1]
+               for a, b in zip(outline, outline[1:] + outline[:1]))
+    return outline[::-1] if turn > 0 else list(outline)
+
+
+def tuft(x, y):
+    """The marsh symbol at screen point (x, y): a short base line with three
+    blades standing up from it, as [(x0, y0, x1, y1)]."""
+    return [(x - 5, y, x + 5, y), (x - 3, y, x - 4, y - 4),
+            (x, y, x, y - 5), (x + 3, y, x + 4, y - 4)]
 
 
 def square(route, offset=0.0, min_m=BUILDING_MIN_M):
@@ -347,15 +469,53 @@ def square(route, offset=0.0, min_m=BUILDING_MIN_M):
             for (a0, p0), (_, p1) in zip(lines, lines[1:] + lines[:1])]
 
 
-def building_facts(route, offset=0.0):
+def simplify(route, tol):
+    """The points of `route` that keep it within `tol` of the whole of it
+    (Douglas-Peucker), its ends always kept: a wobble narrower than `tol`
+    is smoothed out, every real corner stays."""
+    keep = {0, len(route) - 1}
+    todo = [(0, len(route) - 1)]
+    while todo:
+        i, j = todo.pop()
+        (ax, ay), (bx, by) = route[i], route[j]
+        d = math.hypot(bx - ax, by - ay)
+        far, k = 0.0, None
+        for m in range(i + 1, j):
+            x, y = route[m]
+            off = (abs((bx - ax) * (ay - y) - (ax - x) * (by - ay)) / d if d
+                   else math.hypot(x - ax, y - ay))
+            if off > far:
+                far, k = off, m
+        if k is not None and far > tol:
+            keep.add(k)
+            todo += [(i, k), (k, j)]
+    return [route[m] for m in sorted(keep)]
+
+
+def outline(route, offset=0.0, shape="squared"):
+    """A building walked round as `route`, (x, y) map points, as the corners
+    of its outline: "squared" (see square), or "walked": the walk itself,
+    cut where it got back to its start (lap_end) and smoothed to
+    WALKED_TOL_M, every angle kept, for a building too tricky to square
+    (building-011, microTech, 2026-11-07: 1.5 km of arms and diagonals).
+    The offset is for squared walls only."""
+    if shape != "walked":
+        return square(route, offset)
+    end = lap_end(route)
+    return simplify(list(route if end is None else route[:end + 1]),
+                    WALKED_TOL_M)
+
+
+def building_facts(route, offset=0.0, shape="squared"):
     """What Show details says about a building walked round as `route`,
-    (x, y) map points: its squared outline's corners, area (m2), size
-    (longer, shorter side of the box round it, along its walls, m) and the
-    walls' direction (degrees east of north, 0..90)."""
-    corners = square(route, offset)
+    (x, y) map points: its outline's corners and area (m2) (see outline),
+    its size (longer, shorter side of the box round it, along its walls, m)
+    and the walls' direction (degrees east of north, 0..90), which is the
+    squared outline's either way."""
+    corners = outline(route, offset, shape)
     area = abs(sum(a[0] * b[1] - b[0] * a[1]
                    for a, b in zip(corners, corners[1:] + corners[:1]))) / 2
-    (ax, ay), (bx, by) = corners[0], corners[1]
+    (ax, ay), (bx, by) = square(route, offset)[:2]
     th = math.atan2(by - ay, bx - ax)
     co, si = math.cos(th), math.sin(th)
     us = [x * co + y * si for x, y in corners]
@@ -385,3 +545,52 @@ def ticks(line, every=TICK_EVERY_PX, half=TICK_HALF_PX):
             at += every
         walked += d
     return out
+
+
+def pattern(line, style):
+    """A line of screen points drawn in `style` (STYLES): (runs, dots), the
+    polylines to draw and the points to put a dot on. Dashes, pluses and
+    ticks are all runs; a solid line under them is the first."""
+    pts = [p for i, p in enumerate(line) if i == 0 or p != line[i - 1]]
+    if len(pts) < 2:
+        return [], []
+    along = [0.0]
+    for p, q in zip(pts, pts[1:]):
+        along.append(along[-1] + math.dist(p, q))
+    total = along[-1]
+    under, repeat = STYLES[style]
+
+    def at(s):                  # the point s px along, and the way it runs
+        i = max(0, min(len(pts) - 2, bisect.bisect_left(along, s) - 1))
+        (ax, ay), (bx, by) = pts[i], pts[i + 1]
+        d = along[i + 1] - along[i]
+        t = (s - along[i]) / d
+        return i, (ax + t * (bx - ax), ay + t * (by - ay)), \
+            ((bx - ax) / d, (by - ay) / d)
+
+    def piece(a, b):            # the line from a to b px along it
+        i, start, _ = at(a)
+        j, end, _ = at(b)
+        return [start] + pts[i + 1:j + 1] + [end]
+
+    runs = [pts] if under else []
+    dots = []
+    s, k = 0.0, 0
+    while repeat and s < total:
+        mark, size = repeat[k % len(repeat)]
+        if mark == "dash":
+            runs.append(piece(s, min(total, s + size)))
+        elif mark != "gap":
+            _, (x, y), (ux, uy) = at(s)
+            if mark == "dot":
+                dots.append((x, y))
+            elif mark == "plus":
+                h = MARK_HALF_PX
+                runs += [[(x - ux * h, y - uy * h), (x + ux * h, y + uy * h)],
+                         [(x - uy * h, y + ux * h), (x + uy * h, y - ux * h)]]
+            else:               # a tick, on the left of the way it runs
+                runs.append([(x, y), (x + uy * TICK_SIDE_PX,
+                                      y - ux * TICK_SIDE_PX)])
+        s += size
+        k += 1
+    return runs, dots
