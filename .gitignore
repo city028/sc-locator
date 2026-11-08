@@ -27,3 +27,4 @@ tests/
 TODO.md
 examples/
 sync.ffs_db
+sync.ffs_lock
