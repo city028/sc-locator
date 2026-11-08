@@ -71,20 +71,20 @@
     "planet": "arccorp",
     "system": "stanton",
     "radius_m": 800000.0,
-    "analysed": "2026-10-05 15:48",
+    "analysed": "2026-11-08 10:03",
     "kind": "rotating",
     "site": {
-      "lat": -19.25245753377206,
-      "lon": -172.1169350101172
+      "lat": -19.259747777101598,
+      "lon": -172.1715984751017
     },
-    "samples": 21,
-    "duration_s": 69.08029341697693,
-    "rho_m": 755334.184182943,
-    "rho_local_m": 755410.4129376934,
-    "omega_deg_s": 0.032244415759691024,
-    "period_s": 11164.723922523,
-    "sigma": 0.00960459467472778,
-    "arc_deg": 2.2239919513265702,
+    "samples": 24,
+    "duration_s": 30.799270153045654,
+    "rho_m": 755279.755805005,
+    "rho_local_m": 755359.9319805059,
+    "omega_deg_s": 0.03215436,
+    "period_s": 11195.99,
+    "sigma": 0.003063301216613695,
+    "arc_deg": 0.990059743493555,
     "axis": [
       0.0,
       0.0,
@@ -92,14 +92,15 @@
     ],
     "axis_tilt_deg": 0.0,
     "centre": [
-      18587664767.871815,
-      -22151916849.41372,
-      218.13321394548984
+      18587664718.38679,
+      -22151916998.016846,
+      229.33970941370353
     ],
-    "star_distance_m": 28917273412.722065,
-    "declination_deg": -4.322023156305703e-07,
-    "t_ref": 1791200916.169673,
-    "subsolar_lon_ref": -111.46830493096448,
+    "star_distance_m": 28917273494.75031,
+    "declination_deg": -4.544065133439161e-07,
+    "t_ref": 1794117830.9497116,
+    "subsolar_lon_ref": 57.0105766050103,
+    "label": "planet",
     "notes": "Test"
   },
   "microtech": {
@@ -134,7 +135,8 @@
     "star_distance_m": 43443352773.511444,
     "declination_deg": -3.243112718438247e-08,
     "t_ref": 1791996803.302639,
-    "subsolar_lon_ref": -1.0630057216332318
+    "subsolar_lon_ref": -1.0630057216332318,
+    "label": "planet"
   },
   "clio": {
     "planet": "clio",
@@ -206,16 +208,32 @@
   "space -42308390,-7276096,18513 km": {
     "scope": "space",
     "system": "pyro",
-    "analysed": "2026-10-08 16:12",
+    "analysed": "2026-11-07 15:46",
     "site_sys": [
-      -42308390136.0,
-      -7276096483.099999,
-      18513072.400000002
+      -42308390194.799995,
+      -7276096544.3,
+      18512999.400000002
     ],
-    "samples": 31,
-    "duration_s": 58.71580648422241,
+    "samples": 60,
+    "duration_s": 59.21355724334717,
     "kind": "fixed",
-    "label": "Lagrange station"
+    "label": "Lagrange station",
+    "station": {
+      "name": "Rat's Nest",
+      "body": "Pyro V Lagrange Point 5",
+      "faction": null,
+      "services": [
+        "repair",
+        "refuel",
+        "clinic",
+        "shops",
+        "trade",
+        "habs"
+      ],
+      "pads": "S,M,L",
+      "armistice": false,
+      "source": "UEX 2026-11-07"
+    }
   },
   "space -16104160,7587170,227 km": {
     "scope": "space",
@@ -416,25 +434,25 @@
   "space -48117881,48502939,-100 km": {
     "scope": "space",
     "system": "pyro",
-    "analysed": "2026-10-09 09:54",
+    "analysed": "2026-11-07 13:14",
     "site_sys": [
-      -48117880842.799995,
-      48502938535.75,
-      -99949.6
+      -48118632588.05,
+      48502881118.25,
+      -99583.29999999999
     ],
-    "samples": 20,
-    "duration_s": 58.66879463195801,
+    "samples": 48,
+    "duration_s": 59.518187522888184,
     "over": "pyrovi",
     "site_over": [
-      -317135.417076,
-      301732.693573,
-      -99949.578366
+      -316567.876274,
+      301419.105862,
+      -99583.26091
     ],
     "kind": "moving",
-    "speed_mps": 266.5581204299972,
+    "speed_mps": 272.550147759684,
     "direction": [
-      0.43997475121733637,
-      0.8980101437574315,
+      0.5714033936356668,
+      -0.8206693376394923,
       0.0
     ],
     "label": "orbital station",
@@ -818,5 +836,135 @@
       "armistice": true,
       "source": "UEX 2026-10-24"
     }
+  },
+  "pyrovi": {
+    "planet": "pyrovi",
+    "system": "pyro",
+    "radius_m": 285000.0,
+    "analysed": "2026-11-07 13:30",
+    "kind": "rotating",
+    "site": {
+      "lat": -12.934710514570938,
+      "lon": 142.65145716669323
+    },
+    "samples": 22,
+    "duration_s": 30.37312960624695,
+    "rho_m": 277301.0573456355,
+    "rho_local_m": 277837.76347682823,
+    "omega_deg_s": 0.03511726077567194,
+    "period_s": 10251.369043265355,
+    "sigma": 0.0032587254374441834,
+    "arc_deg": 1.0842072603088242,
+    "axis": [
+      0.0,
+      0.0,
+      1.0
+    ],
+    "axis_tilt_deg": 0.0,
+    "centre": [
+      -48118274124.307526,
+      48503130536.09768,
+      2293.418867837696
+    ],
+    "star_distance_m": 68322192415.81567,
+    "declination_deg": -1.9232875459124386e-06,
+    "t_ref": 1794043804.1578724,
+    "subsolar_lon_ref": -156.9406401419206,
+    "label": "planet"
+  },
+  "space 41418354,-11259079,-9520 km": {
+    "scope": "space",
+    "system": "pyro",
+    "analysed": "2026-11-07 15:12",
+    "site_sys": [
+      41418353579.7,
+      -11259078949.6,
+      -9520012.8
+    ],
+    "samples": 56,
+    "duration_s": 59.309720516204834,
+    "kind": "fixed",
+    "label": "Lagrange station",
+    "station": {
+      "name": "Rod's Fuel 'N Supplies",
+      "body": "Pyro V Lagrange Point 4",
+      "faction": "Citizens For Prosperity",
+      "services": [
+        "repair",
+        "refuel",
+        "clinic",
+        "shops",
+        "trade",
+        "habs"
+      ],
+      "pads": "S,M,L",
+      "armistice": false,
+      "source": "UEX 2026-11-07"
+    }
+  },
+  "space -14605363,6564831,1358 km": {
+    "scope": "space",
+    "system": "pyro",
+    "analysed": "2026-11-07 16:00",
+    "site_sys": [
+      -14605362728.199999,
+      6564830905.1,
+      1357708.2
+    ],
+    "samples": 60,
+    "duration_s": 59.821537494659424,
+    "kind": "fixed",
+    "label": "Lagrange station",
+    "station": {
+      "name": "Starlight Service Station",
+      "body": "Bloom Lagrange Point 1",
+      "faction": "Citizens For Prosperity",
+      "services": [
+        "repair",
+        "refuel",
+        "clinic",
+        "shops",
+        "trade",
+        "habs"
+      ],
+      "pads": "L",
+      "armistice": false,
+      "source": "UEX 2026-11-07"
+    }
+  },
+  "bloom": {
+    "planet": "bloom",
+    "system": "pyro",
+    "radius_m": 413900.0,
+    "analysed": "2026-11-07 16:23",
+    "kind": "rotating",
+    "site": {
+      "lat": 1.0994157043215322,
+      "lon": -67.20053230083204
+    },
+    "samples": 30,
+    "duration_s": 30.22592306137085,
+    "rho_m": 412893.46017858235,
+    "rho_local_m": 413885.05500100966,
+    "omega_deg_s": 0.01993782136066286,
+    "period_s": 18056.135296220316,
+    "sigma": 0.0004995694043712248,
+    "arc_deg": 0.6014779523889465,
+    "axis": [
+      -0.00031050264705878875,
+      0.000785492214339612,
+      0.99999964329498
+    ],
+    "axis_tilt_deg": 0.04839408175060159,
+    "centre": [
+      -16103894171.261997,
+      7587937666.042247,
+      -22119.585135386136
+    ],
+    "star_distance_m": 17802028128.936268,
+    "declination_deg": -0.035205368081727334,
+    "t_ref": 1794054232.0296314,
+    "subsolar_lon_ref": -21.956919233924282,
+    "label": "planet"
   }
 }

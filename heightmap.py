@@ -512,18 +512,20 @@ def frame_shift(frame0, frame, radius):
     return o[0], o[1], vy / d, -vx / d
 
 
-def relief_image(relief, shift, w, h, mpp, block, lo, hi):
+def relief_image(relief, shift, w, h, mpp, block, lo, hi, blank=None):
     """The filled and shaded view of a w x h px map, one pixel to a `block` px
     square of the map, so the result is drawn small and then zoomed by
     `block` (Tk does that natively, much faster than pixel by pixel).
 
     `relief` as relief_grid gives it, `shift` as frame_shift gives it for the
     map being drawn. Returns an (h // block, w // block, 3) array of 8 bit
-    RGB, coloured on a lo..hi scale; GREY where nothing is under a block.
+    RGB, coloured on a lo..hi scale; GREY (or `blank`, "#rrggbb": white on
+    paper) where nothing is under a block.
     """
     x0, y0, step, zs, light = relief
+    blank = blank or GREY
     out = np.empty((h // block, w // block, 3), np.uint8)
-    out[:] = [int(GREY[i:i + 2], 16) for i in (1, 3, 5)]
+    out[:] = [int(blank[i:i + 2], 16) for i in (1, 3, 5)]
     if zs.size == 0:
         return out
     ox, oy, c, s = shift
@@ -648,6 +650,15 @@ def height_colour(h, lo, hi, light=1.0):
     t *= len(RAMP) - 1
     i = min(int(t), len(RAMP) - 2)
     return _hex(_mix(RAMP[i], RAMP[i + 1], t - i), light)
+
+
+def fade(rgb, opacity, under=None):
+    """8 bit RGB (an array, ... x 3) as seen at `opacity` % over the grey of
+    ground nobody measured (or `under`, "#rrggbb": white on paper)."""
+    under = under or GREY
+    grey = np.array([int(under[i:i + 2], 16) for i in (1, 3, 5)], float)
+    return np.rint(grey + (np.asarray(rgb, float) - grey) * opacity
+                   / 100).astype(np.uint8)
 
 
 def height_colours(h, lo, hi, light):

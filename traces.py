@@ -145,6 +145,10 @@ WALKED_TOL_M = 3.0      # and one drawn as walked, wobbles narrower than this
 LAP_AWAY_M = 8.0        # a walk this far from its start has set off round
 LAP_CLOSE_M = 4.0       # and back this close to it has been all the way round
 AREA_LAP_M = 300.0      # as those two, for an area flown round its border
+# A misread spike in an area's border (see spikes): at most this many points,
+# jumped into and back out of by more than SPIKE_JUMP times the usual step.
+SPIKE_POINTS = 6
+SPIKE_JUMP = 10.0
 TUFT_EVERY_PX = 28.0    # a swamp's tufts this far apart
 TICK_EVERY_PX = 40.0    # ticks this far apart along the drawn line
 TICK_HALF_PX = 6.0      # and reaching this far either side of it
@@ -166,6 +170,60 @@ STYLES = {
 }
 MARK_HALF_PX = 4.0      # a plus reaches this far each way
 TICK_SIDE_PX = 6.0      # a hostile border's tick sticks out this far
+
+# The height map's layers, bottom to top. The reference sphere (the grey of
+# ground not measured) is at the bottom, the height map itself (relief,
+# samples, height lines, the LAT/LON grid) on level 2, and the waypoints on
+# top: those stay where they are. Every kind of survey between them has a
+# level of LEVELS; kinds on one level are drawn in a fixed order: water,
+# areas, railways, lines, buildings. The height map, water, areas (their
+# fill) and buildings also have an opacity (%); lines have none, as Tk draws
+# them solid. As shipped, (level, opacity), in the order Settings > Height
+# map lists them; set there (see layers).
+HEIGHTMAP_LEVEL = 2
+LEVELS = (3, 4, 5, 6)
+LAYERS = {
+    "heightmap": (HEIGHTMAP_LEVEL, 100),
+    "sea": (3, 100),
+    "lake": (3, 100),
+    "waterway": (3, 100),
+    "railway": (4, None),
+    "road": (4, None),
+    "trail": (4, None),
+    "border": (4, None),
+    "hostile-border": (4, None),
+    "restricted-line": (4, None),
+    "pipeline": (4, None),
+    "power-line": (4, None),
+    "built-up-area": (5, 25),
+    "hostile-area": (5, 25),
+    "swamp": (5, 25),
+    "restricted-zone": (5, 25),
+    "landing-zone": (5, 25),
+    "building": (6, 100),
+}
+
+
+def layers(chosen):
+    """{kind: (level, opacity %)} for the height map: as `chosen` sets them
+    ({kind: {"level": n, "opacity": %}}, from Settings), else as shipped
+    (LAYERS). A level off LEVELS or an opacity off 0..100 is brought into
+    range; the height map's level, and a line's opacity (None), stay."""
+    out = {}
+    for kind, (level, opacity) in LAYERS.items():
+        got = (chosen or {}).get(kind) or {}
+        if kind != "heightmap" and isinstance(got.get("level"), (int, float)):
+            level = min(LEVELS[-1], max(LEVELS[0], round(got["level"])))
+        if opacity is not None and isinstance(got.get("opacity"),
+                                              (int, float)):
+            opacity = min(100, max(0, round(got["opacity"])))
+        out[kind] = (level, opacity)
+    return out
+
+
+def alpha(opacity):
+    """An opacity in % as a picture's alpha, 0..255."""
+    return round(opacity * 255 / 100)
 
 
 def new_trace(kind, name, now, planet=None):
@@ -287,7 +345,8 @@ def merge_problem(ts, radius):
 def merge(ts, level=None):
     """One trace from traces `ts` that merge_problem passes. The first by
     name is kept, with its name, start and width; the label is the first
-    there is. Its points are all of theirs, in that order, and `breaks`
+    there is, the notes all of theirs, a blank line between. Its points are
+    all of theirs, in that order, and `breaks`
     where each next run starts. A lake's or sea's level is `level`, or the
     first one's when None."""
     ts = sorted(ts, key=lambda t: t["name"])
@@ -302,6 +361,9 @@ def merge(ts, level=None):
     label = next((t["label"] for t in ts if t.get("label")), None)
     if label:
         out["label"] = label
+    notes = "\n\n".join(t["notes"] for t in ts if t.get("notes"))
+    if notes:
+        out["notes"] = notes
     if level is not None:
         out["level"] = level
     return out
@@ -363,10 +425,46 @@ def lap_end(route, away_m=LAP_AWAY_M, close_m=LAP_CLOSE_M):
     return best
 
 
+def spikes(route):
+    """Runs of misread points in an area's border, as (first, last) index
+    pairs: at most SPIKE_POINTS jumped into and back out of, both jumps over
+    SPIKE_JUMP times the route's median step, with the route picking up
+    closer to where it left than either jump.
+
+    built-up-area-002 (microTech, 2026-11-08): four fixes in a HUD dropout
+    read x -170623 as -176553, 6 km off and agreeing with each other, and
+    were drawn as a spike across the circle. A real gap, where fixes were
+    lost but none misread, has the jump out and no jump back."""
+    steps = [math.dist(p, q) for p, q in zip(route, route[1:])]
+    if len(steps) < 3:
+        return []
+    big = SPIKE_JUMP * sorted(steps)[len(steps) // 2]
+    found, i = [], 1
+    while i < len(route) - 1:
+        out = steps[i - 1]
+        hit = None
+        if out > big:
+            for j in range(i, min(i + SPIKE_POINTS, len(route) - 1)):
+                back = steps[j]
+                if back > big and math.dist(route[i - 1], route[j + 1]) \
+                        < min(out, back):
+                    hit = j
+                    break
+        if hit is None:
+            i += 1
+        else:
+            found.append((i, hit))
+            i = hit + 1
+    return found
+
+
 def ring(route):
     """An area flown round its border as `route`, as the outline it closes
-    back to its start: cut where it got back there (lap_end, AREA_LAP_M),
-    so a lap flown on past the start does not go round twice."""
+    back to its start: misread spikes left out (spikes), then cut where it
+    got back there (lap_end, AREA_LAP_M), so a lap flown on past the start
+    does not go round twice."""
+    gone = {k for a, b in spikes(route) for k in range(a, b + 1)}
+    route = [p for k, p in enumerate(route) if k not in gone]
     end = lap_end(route, AREA_LAP_M, AREA_LAP_M)
     return list(route if end is None else route[:end + 1])
 

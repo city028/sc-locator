@@ -48,6 +48,7 @@ HERE = Path(__file__).resolve().parent
 if str(HERE) not in sys.path:            # the maths lives beside this file
     sys.path.insert(0, str(HERE))
 import heightmap                         # noqa: E402
+import maps                              # noqa: E402
 import spin_analysis as spin             # noqa: E402
 import starmap                           # noqa: E402
 import stations                          # noqa: E402
@@ -71,6 +72,7 @@ HEIGHTMAP_FILE = HERE / "heightmap.json" # ground heights from survey mode
 SURVEY_FILE = HERE / "survey.json"       # the last survey square, to resume
 TRACES_FILE = HERE / "traces.json"       # railways traced, see traces.py
 SUBTYPES_FILE = HERE / "subtypes.json"   # the SUBs in use, see subtypes.py
+MAPS_FILE = HERE / "maps.json"           # maps kept to print, see maps.py
 BACKUP_DIR = HERE / "bak"
 BACKUP_KEEP = 30                         # versions of each file kept in bak/
 # How often a running survey is written out. Each write also keeps a backup,
@@ -168,6 +170,14 @@ DEFAULT_CONFIG = {
     # named starts as shipped (main_window.HEIGHT_SWITCHES). Set in Settings >
     # Height map.
     "heightmap_switches": {},
+    # Each survey kind's level and opacity on the height map,
+    # {kind: {"level": n, "opacity": %}}; one not named is as shipped
+    # (traces.LAYERS). Set in Settings > Height map.
+    "heightmap_layers": {},
+    # The colour of waypoint names on the star map and on the height map, by
+    # name (main_window.LABEL_COLOURS). Set in Settings > Waypoints.
+    "starmap_label_colour": "white",
+    "heightmap_label_colour": "white",
     "stale_after": 3.0,                # seconds before a fix is flagged stale
     "default_radius": 1000000.0,         # used when the zone is not in BODY_RADII
     "min_move": 20.0,                    # metres moved before heading is updated
@@ -449,6 +459,12 @@ def load_heightmap():
 def load_traces():
     """Traced lines, oldest first. Empty if there are none yet."""
     data = load_json(TRACES_FILE, [])
+    return data if isinstance(data, list) else []
+
+
+def load_maps():
+    """Maps kept to print (maps.py), oldest first. Empty if none yet."""
+    data = load_json(MAPS_FILE, [])
     return data if isinstance(data, list) else []
 
 
@@ -1642,11 +1658,20 @@ SYSTEM_ROW_TOLERANCE_M = 1000.0
 # frame whose third value read +882 km among neighbours at -77 km slipped
 # through a 2,000 km limit and put the position 960 km out.
 #
-# Quantum travel outruns this and drops the lock, which costs nothing: the
-# game stops updating the Root row for the whole jump anyway (Euterpe to
-# Hurston, 2026-10-14: the same value for 226 s). The star map takes your
-# place during a jump from the planet-frame fix instead.
+# Quantum travel outruns this. The Root row froze for a whole jump once
+# (Euterpe to Hurston, 2026-10-14: the same value for 226 s), but ArcCorp to
+# Wala (2026-10-25) it kept moving every frame, and every reading was refused:
+# so a jump is followed by on_course instead.
 SYSTEM_LOCK_KM = 100.0
+
+# A jump flies a straight line, so readings beyond the lock are believed when
+# three in a row run on one course: the second step within COURSE_DEG of the
+# first's direction, and no faster than COURSE_MAX_M_S. Twice light, as the
+# times are when a read finished, not when the frame was taken: one logged
+# step came out at 1.6c. The speed itself is not compared step to step: it
+# changed sevenfold between frames slowing down at Wala.
+COURSE_DEG = 5.0
+COURSE_MAX_M_S = 2 * starmap.LIGHT_M_S
 
 # How still you must be for the position to be worth marking. Marking a parked
 # ship is the point, so this only has to be tight enough to exclude a misread.
@@ -1714,6 +1739,20 @@ def _sys_values(tail):
         if len(out) == 3:
             return tuple(out)
     return None
+
+
+def on_course(a, b, c):
+    """a, b, c: (time, system position), oldest first. Do they run on one
+    straight course, as a quantum jump does? A misread digit moves one value
+    by a power of ten, which turns the course or outruns COURSE_MAX_M_S."""
+    (_, pa), (tb, pb), (tc, pc) = a, b, c
+    one = [q - p for p, q in zip(pa, pb)]
+    two = [q - p for p, q in zip(pb, pc)]
+    n1, n2 = math.hypot(*one), math.hypot(*two)
+    if n1 == 0 or n2 == 0 or n2 > COURSE_MAX_M_S * max(tc - tb, 1.0):
+        return False
+    cos = sum(p * q for p, q in zip(one, two)) / (n1 * n2)
+    return cos >= math.cos(math.radians(COURSE_DEG))
 
 
 def parse_system_pos(text):
@@ -1911,6 +1950,7 @@ class State:
         self.sys_pos = None      # system-frame position, once it is believed
         self.sys_prev = None     # the one before it, for the stillness test
         self.sys_candidate = None   # a reading waiting to be corroborated
+        self.sys_path = []       # last (time, reading)s beyond the lock: a jump?
         self.sys_log_time = 0.0  # when the system position was last logged
         self.sys_log_pos = None  # and what it was, to measure drift against
         self.sys_hits = 0        # how many frames have agreed with it
@@ -1946,6 +1986,7 @@ class State:
         self.trace_back = False  # resumed, and not back where it ended yet
         self.traces_dirty = False
         self.traces_saved = 0.0
+        self.maps = []           # maps kept to print, see maps.py: MAPS_FILE
         self.checked_pos = None  # (planet, pos, time) the heights last backed
         self.log = lambda msg: None
 
@@ -1980,24 +2021,30 @@ class State:
         the same way twice running, and a pair of matching errors would take
         the lock exactly as a pair of matching truths would.
 
-        Quantum travel outruns the limit and drops the lock. That is correct:
-        the position is simply re-acquired once enough frames agree again.
+        Quantum travel outruns the limit, and is followed instead while three
+        readings in a row run on one course (see on_course).
         """
         if pos is None:
             return self.sys_pos
         limit = SYSTEM_LOCK_KM * 1000.0
         near = (self.sys_pos is not None
                 and math.dist(pos, self.sys_pos) <= limit)
-        if self.sys_pos is not None and not near:
+        if near:
+            self.sys_candidate = None               # flight, not a misread
+            self.sys_hits = 0
+            self.sys_path = []
+            self.sys_prev = self.sys_pos
+            return pos
+        if self._on_jump(pos, now):
+            self.sys_candidate = None
+            self.sys_hits = 0
+            self.sys_prev = None                    # moving: not still
+            return pos
+        if self.sys_pos is not None:
             # Only jumps and misreads get here; logged, with sub-second
             # times, as this is what showed the row freezing in a jump.
             self.log(f"system reading {math.dist(pos, self.sys_pos) / 1000:,.0f}"
                      f" km out, held: t={now:.2f} {pos}")
-        if near:
-            self.sys_candidate = None               # flight, not a misread
-            self.sys_hits = 0
-            self.sys_prev = self.sys_pos
-            return pos
         if (self.sys_candidate is not None
                 and math.dist(pos, self.sys_candidate) <= limit):
             self.sys_hits += 1
@@ -2005,12 +2052,26 @@ class State:
             if self.sys_hits >= SYSTEM_RELOCK_FRAMES:
                 self.sys_candidate = None
                 self.sys_hits = 0
+                self.sys_path = []
                 self.sys_prev = None
                 return pos
             return self.sys_pos
         self.sys_candidate = pos
         self.sys_hits = 1
         return self.sys_pos
+
+    def _on_jump(self, pos, now):
+        """Is this reading beyond the lock the next one of a jump? Call with
+        the lock held. The last two readings are kept for the next frame; a
+        reading off the course already believed is dropped, not kept, so one
+        misread costs one frame rather than the course."""
+        path = self.sys_path + [(now, pos)]
+        if len(path) >= 3 and on_course(*path[-3:]):
+            self.sys_path = path[-2:]
+            return True
+        if not (self.sys_path and self.sys_path[-1][1] == self.sys_pos):
+            self.sys_path = path[-2:]
+        return False
 
     def system_still(self):
         """Is the system position steady enough to be worth marking?
@@ -2179,6 +2240,7 @@ class State:
                 self.location = None
                 self.sys_pos = self.sys_prev = self.sys_candidate = None
                 self.sys_hits = 0
+                self.sys_path = []
                 self.analysis = None
                 self.status = "game not running"
                 self.log("game not running - idling, no capture")
@@ -3229,6 +3291,70 @@ def restore_traces(state, picks):
     return names
 
 
+def save_maps(state, backup=True):
+    """Write the maps (maps.py). `backup` False keeps no copy: for the run
+    of saves while a map's switches, layers or notes are being set."""
+    with state.lock:
+        save_json(MAPS_FILE, state.maps, backup=backup)
+
+
+def add_map(state, m):
+    """Keep a new map and save."""
+    with state.lock:
+        state.maps.append(m)
+        state.flash(f"map {m['name']} made")
+    save_maps(state)
+
+
+def update_map(state, mid, fields, backup=True, now=None):
+    """Set `fields` ({key: value}) on map `mid`, and save. Returns the map,
+    or None if it is gone."""
+    with state.lock:
+        m = next((m for m in state.maps if m["id"] == mid), None)
+        if m is None:
+            return None
+        m.update(fields)
+        m["updated"] = time.time() if now is None else now
+    save_maps(state, backup)
+    return m
+
+
+def delete_maps(state, ids):
+    """Delete maps by id and save. Returns the names deleted."""
+    with state.lock:
+        gone = [m for m in state.maps if m["id"] in ids]
+        for m in gone:
+            state.maps.remove(m)
+    if gone:
+        save_maps(state)
+    return [m["name"] for m in gone]
+
+
+def deleted_maps(all_maps, backups=None):
+    """Maps in the kept backups of maps.json that are gone now:
+    [(id, map, gone since)], as deleted_waypoints. Matched by id."""
+    have = {m.get("id") for m in all_maps}
+    found = {}
+    for data, since in backed_up(MAPS_FILE, backups):
+        for m in data if isinstance(data, list) else []:
+            mid = m.get("id") if isinstance(m, dict) else None
+            if mid and mid not in have and mid not in found:
+                found[mid] = (mid, m, since)
+    return list(found.values())
+
+
+def restore_maps(state, picks):
+    """Put maps back, as deleted_maps found them, and save. Returns their
+    names."""
+    with state.lock:
+        have = {m["id"] for m in state.maps}
+        back = [dict(m) for m in picks if m.get("id") not in have]
+        state.maps.extend(back)
+    if back:
+        save_maps(state)
+    return [m["name"] for m in back]
+
+
 def delete_heightmaps(state, bodies):
     """Delete the whole height map of each body in `bodies` and save. A body
     being surveyed now is left. Returns the bodies deleted."""
@@ -4060,10 +4186,19 @@ def stop_trace(state):
             state.traces.remove(t)
             state.flash(f"{t['name']} dropped: too short")
         else:
+            # An area drawn by pattern is drawn without its misread spikes;
+            # the points stay as flown.
+            gone = (sum(b - a + 1 for a, b in traces.spikes(t["points"]))
+                    if "fill" in traces.KINDS[t["kind"]] else 0)
+            left = f", {gone} misread points left out" if gone else ""
             state.flash(f"saved {t['name']}: "
-                        f"{fmt_dist(traces.length(t))}")
+                        f"{fmt_dist(traces.length(t))}{left}")
         state.traces_dirty = True
     state.log(f"trace off: {t['name']}, {len(t['points'])} points")
+    if t["points"] and "fill" in traces.KINDS[t["kind"]]:
+        for a, b in traces.spikes(t["points"]):
+            state.log(f"trace {t['name']}: points {a}-{b} drawn as a "
+                      f"misread spike, left out")
     save_traces(state, force=True)
 
 
@@ -4112,6 +4247,24 @@ def label_trace(state, name, label):
     save_traces(state, force=True)
 
 
+def note_trace(state, name, notes, backup=True):
+    """Keep `notes` on the trace `name` (what it is like there: cover,
+    ground, ...), as written in the Surveys tab, and save. Blank removes
+    them. `backup` False for the saves after the first while they are
+    written (see save_json)."""
+    notes = notes.rstrip()
+    with state.lock:
+        t = next((t for t in state.traces if t["name"] == name), None)
+        if t is None or t.get("notes", "") == notes:
+            return
+        if notes:
+            t["notes"] = notes
+        else:
+            t.pop("notes", None)
+        state.traces_dirty = True
+    save_traces(state, force=True, backup=backup)
+
+
 def shape_building(state, name, shape):
     """Draw building `name` "squared" or "walked" (traces.outline), and
     save. Squared, the way every building starts, keeps no key."""
@@ -4130,15 +4283,16 @@ def shape_building(state, name, shape):
     save_traces(state, force=True)
 
 
-def save_traces(state, force=False, now=None):
+def save_traces(state, force=False, now=None, backup=True):
     """Write the traces if they changed and TRACES_SAVE_SECONDS have passed
-    since the last write, or at once with `force`. True if written."""
+    since the last write, or at once with `force`. True if written.
+    `backup` False keeps no copy (see save_json)."""
     now = time.time() if now is None else now
     with state.lock:
         if not state.traces_dirty or (
                 not force and now - state.traces_saved < TRACES_SAVE_SECONDS):
             return False
-        save_json(TRACES_FILE, state.traces, indent=None)
+        save_json(TRACES_FILE, state.traces, indent=None, backup=backup)
         state.traces_dirty = False
         state.traces_saved = now
     return True
@@ -5955,6 +6109,7 @@ def cmd_run(args):
     state.bodies = load_bodies()
     state.heightmap = load_heightmap()
     state.traces = load_traces()
+    state.maps = load_maps()
     state.survey_saved = load_json(SURVEY_FILE, None)
     state.log = make_logger(args.log)
     stop = threading.Event()

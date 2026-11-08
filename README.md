@@ -30,6 +30,7 @@ game.
   - [Main window: star map, waypoints, reports](#main-window-star-map-waypoints-reports)
   - [Sharing waypoints and reports](#sharing-waypoints-and-reports)
   - [Survey mode: your own height map](#survey-mode-your-own-height-map)
+  - [Maps to print](#maps-to-print)
   - [Automatic backups](#automatic-backups)
 - [The panel, button by button](#the-panel-button-by-button)
 - [Command line](#command-line)
@@ -388,19 +389,36 @@ quits the program.
   name is kept; where levels differ you are asked which to keep. The others
   are deleted as Delete does, but the kept one stays merged.
   **Delete...** works on every selected row, once asked; a
-  trace or height survey still running is not deleted. Deleted ones come
+  trace or height survey still running is not deleted. Pick one trace
+  and the **Notes** box under the list shows its notes, to read or write
+  (what it is like there: cover, ground, ...); they are saved as you type
+  and printed with any map that shows it. Merged traces keep all their
+  notes. Deleted ones come
   back from **Restore deleted surveys...** in Settings > Survey, while they
   are in the backups of `traces.json` and `heightmap.json` (their last 30
   saves each; the height map is saved every 2 minutes while surveying, so
   that is about an hour of surveying). A trace whose name has been given
   out again comes back under the next free one.
+- **Maps**: maps of part of a body's height map, kept to print (see
+  [Maps to print](#maps-to-print)): the list by body, searchable, the
+  pages as they print, and each map's options.
 - **Settings**, a tab per section:
   - **Star map**: how much slower a planet's or moon's view turns when
     zoomed in (0: the same at every zoom; 1, the default: the ground under
     the mouse keeps pace with it).
   - **Height map**: what each of its switches starts as. A change is made
     on the height map at once too; **Reset to shipped** puts them all back.
-  - **Waypoints**: **Import waypoints...** for a file someone shared,
+    **Layers**: where each kind of survey is drawn, level 3 at the bottom
+    to 6 on top (water 3, lines 4, areas 5, buildings 6 as shipped), and
+    how solid the height map, water, areas and buildings are (opacity %).
+    The grey of unmeasured ground is always at the bottom, the height map
+    on level 2 and the waypoints on top; lines are always solid.
+    **Restore deleted maps...** puts back maps still in the backups of
+    `maps.json`.
+  - **Waypoints**: **Names**: the colour of waypoint names on the star
+    map and on the height map (white, black, red, yellow, blue, green),
+    with a sample on each map's ground. **Import waypoints...** for a file
+    someone shared,
     **Restore deleted waypoints...** (deleted ones still in the backups of
     `waypoints.json`, by name, put back as they were), and the **SUB
     categories** (see above).
@@ -536,8 +554,15 @@ height map and the star map show them when you tick **Survey waypoints**.
     each type, each with the ground height where it was saved.
   - **POI heights**: the ground height after each POI's name; untick it
     to show POI names only. Survey waypoints keep theirs.
+  - **Waypoint names**: untick to show waypoints by their icons only
+    (heights still show where they are on).
+  - **Map frames** (off at first): the dashed frame and name of each map
+    of this body (see [Maps to print](#maps-to-print)).
 
   A **Go to** list (A to Z) centres the map on a waypoint of the types shown.
+  How the surveys lie over each other and how solid they are is set in
+  Settings > Height map > Layers. **New map...** makes a map to print of
+  the view (see [Maps to print](#maps-to-print)).
 
 #### Flying a pattern
 
@@ -712,6 +737,52 @@ towards LOST TRACK. Then carry on and press END as usual; a trace that
 already has a name is not asked again. **CANCEL** on a resumed trace takes
 it back to the points it had, rather than throwing it away.
 
+### Maps to print
+
+A map is a part of a body's height map kept to print on A4 portrait: where
+it is, how big, and how it is drawn. No picture is kept: it is drawn from
+your surveys and waypoints as they are each time, so what you add later
+shows on it by itself. Maps are kept in `maps.json`.
+
+- **Making one**: on the height map, **New map...** asks for a name and
+  takes the view as it is, with your switches. Then a green A4 frame stays
+  in the middle of the window with the ground outside it dimmed: drag and
+  zoom the ground under it (the wheel in finer steps than usual) and
+  **Save** (or **Cancel**). **Map frames** on the height map shows every
+  map of the body.
+- **The Maps tab**: on the left the maps, by body, with **Search** (name,
+  body or notes) and a **Body** filter. In the middle the pages as they
+  print, a switch a page. On the right:
+  - **Map**: its name (type to rename), size and dates, **Print in**
+    colour or black and white, **Reposition on height map** (frame it
+    again there; Save or Cancel brings you back), **Delete...** (it comes
+    back from Settings > Height map while in the backups).
+  - **Surveys shown**: a tick to show or hide each kind of survey, its
+    level and opacity, for this map only.
+  - **Also shown**: filled relief, height lines, survey samples, POI and
+    survey waypoints, waypoint names.
+  - **Legend**: its corner and size in mm. **Renumber waypoints**.
+  - **Compass**: a north arrow, on or off, its corner, size and an
+    optional white plate. The map is always drawn north up.
+  - **Notes**: what the map is for, saved as you type.
+- **Page 1**: the name, the system, body and date, the map in a frame with
+  the LAT/LON figures round it on white, the scale bar, the scale (1:N),
+  the map's centre (LAT/LON) and the contour interval. Unmeasured ground
+  prints white. The legend, in its box, lists only what is on the map: the
+  waypoints (with names on a line a kind of icon; with names off each
+  waypoint gets a number by its icon, kept with the map, and a line), the
+  kinds of survey, the height colours and lines.
+- **Page 2 on**, if there is anything for it: the legend lines that did not
+  fit in its box, the map's notes, **Heights** (a table of the highest and
+  lowest ground measured, each waypoint's ground height and each lake's and
+  sea's level, highest first, with a profile beside it from the lowest to
+  the highest), and the notes of each survey in the frame.
+- **Black and white**: the relief a light grey, water a light grey with
+  lines across, built-up areas hatched, hostile areas cross-hatched,
+  buildings dark grey, icons black; the pages are grey through.
+
+Export to PDF is still to come.
+
 ### Automatic backups
 
 Every time `waypoints.json`, `bodies.json`, `heightmap.json`, `traces.json` or
@@ -792,6 +863,8 @@ program is closed. The ones you are most likely to change:
 | `waterway_width_m` | `30` | how wide (m) a new waterway is drawn on the height map |
 | `building_wall_offset_m` | `0.5` | how far (m) outside the walls you walk round a building; its outline is pulled in this much |
 | `starmap_zoom_slowdown` | `1.0` | how much slower a planet's or moon's view on the star map turns when zoomed in: per pixel, divided by the zoom to this power (also in Settings > Star map) |
+| `heightmap_layers` | `{}` | each survey kind's level and opacity on the height map, e.g. `{"building": {"level": 3, "opacity": 60}}`; one not named is as shipped (also in Settings > Height map) |
+| `starmap_label_colour` / `heightmap_label_colour` | `"white"` | the colour of waypoint names on each map: white, black, red, yellow, blue or green (also in Settings > Waypoints) |
 | `heightmap_switches` | `{}` | what the height map's switches start as, e.g. `{"samples": true}`; one not named starts as shipped (also in Settings > Height map) |
 | `min_move` | `20.0` | metres you must move before your heading updates |
 | `game_process` | `["starcitizen.exe"]` | process names that count as the game running |
@@ -819,6 +892,7 @@ All next to the `.exe`:
 | `survey.json` | the last survey square, to resume it |
 | `traces.json` | railways you traced, water and buildings you surveyed |
 | `subtypes.json` | your SUB categories and the icon each uses |
+| `maps.json` | your maps to print: where each is and how it is drawn |
 | `bak/` | automatic backups of the files above |
 
 To move to a new PC, copy the whole folder. To share waypoints or reports with

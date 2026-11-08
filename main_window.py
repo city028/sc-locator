@@ -14,12 +14,15 @@ import os
 import time
 import tkinter as tk
 import tkinter.font as tkfont
+import traceback
 from tkinter import filedialog, ttk
 
 import numpy as np
 from PIL import Image, ImageColor, ImageDraw, ImageTk
 
 import heightmap
+import mapprint
+import maps
 import starmap
 import subtypes
 import survey
@@ -44,8 +47,11 @@ ROUTE = "#FF5CD6"
 WATER, SHORE = (169, 212, 239), (42, 122, 184)
 # Buildings: tan with a dark outline, as on a large-scale paper map.
 BUILDING, BUILDING_EDGE = "#F2C49B", "#3A2A1E"
-# How solid an area's wash is (0..255): the ground still shows through.
-ZONE_ALPHA = 70
+
+# The colours a waypoint's name can be given on each map (Settings >
+# Waypoints), by the name the config keeps; white is the window's own.
+LABEL_COLOURS = {"white": FG, "black": "#000000", "red": "#E53935",
+                 "yellow": "#FFEB3B", "blue": "#1E88E5", "green": "#43A047"}
 
 SUN_PX, PLANET_PX, MOON_PX = 14, 9, 5
 SYSTEM_PITCH = math.radians(60)     # the system map's default view: tilted
@@ -238,12 +244,13 @@ def open_main(root, state, scl, set_hud):
     height = HeightMapTab(nb, state, scl, follow, nav)
     reports = ReportViewer(nb, state, scl, nav)
     surveys = SurveysTab(nb, state, scl, nav)
+    maps_tab = MapsTab(nb, state, scl, nav)
     nav.star, nav.height, nav.editor, nav.reports = star, height, editor, reports
-    nav.surveys = surveys
+    nav.surveys, nav.maps = surveys, maps_tab
     settings = SettingsTab(nb, state, scl, nav, editor)
-    tabs = [star, height, editor, reports, surveys, settings]
+    tabs = [star, height, editor, reports, surveys, maps_tab, settings]
     for tab, title in zip(tabs, ("Star map", "Height map", "Waypoints",
-                                 "Reports", "Surveys", "Settings")):
+                                 "Reports", "Surveys", "Maps", "Settings")):
         nb.add(tab.frame, text=title)
 
     # Dragged to another screen: refit when it lands, not a second later.
@@ -375,7 +382,7 @@ class Navigator:
     def __init__(self, nb, state, scl):
         self.nb, self.state, self.scl = nb, state, scl
         self.star = self.height = self.editor = self.reports = None
-        self.surveys = None
+        self.surveys = self.maps = None
 
     # --- going to a tab -------------------------------------------------
 
@@ -404,6 +411,17 @@ class Navigator:
         self.nb.select(self.height.frame)
         self.height.body_var.set(body)
         self.height.open(body)
+
+    def map_to_height(self, m):
+        """Reposition map `m` on the height map, then back to it in the
+        Maps tab."""
+        self.nb.select(self.height.frame)
+
+        def back():
+            self.nb.select(self.maps.frame)
+            self.maps.select(m["id"])
+
+        self.height.frame_map(m, back)
 
     def trace_to_height(self, name):
         self.nb.select(self.height.frame)
@@ -1126,7 +1144,9 @@ class StarMap:
         ids.append(c.create_text(x + (px(9) + 3 if subtypes.icon_of(sub)
                                       else 9), y - 12,
                                  text=label or self.names.get(wid, ""),
-                                 anchor="w", fill=FG,
+                                 anchor="w",
+                                 fill=label_colour(self.state.cfg,
+                                                   "starmap_label_colour"),
                                  font=mono(9), tags=("pin", "label")))
         for item in ids:
             self.pins[item] = wid
@@ -1384,9 +1404,8 @@ class StarMap:
 # ----------------------------------------------------------------------------
 
 
-# What the height map can draw, bottom to top: relief, samples, height lines,
-# survey pattern, water, railways, buildings; then the waypoints. Each as
-# (switch, label, on as shipped).
+# What the height map can draw (in the order its layers are set in Settings,
+# traces.LAYERS), each as (switch, label, on as shipped).
 HEIGHT_LAYERS = (("relief", "Filled relief", True),
                  ("samples", "Survey samples", False),
                  ("lines", "Height lines", True),
@@ -1399,7 +1418,114 @@ HEIGHT_LAYERS = (("relief", "Filled relief", True),
 HEIGHT_SWITCHES = HEIGHT_LAYERS + (
     ("poi", "POI waypoints", True),
     ("survey", "Survey waypoints", False),
-    ("poi_height", "POI heights", False))
+    ("poi_height", "POI heights", False),
+    ("names", "Waypoint names", True),
+    ("frames", "Map frames", False))
+
+
+def label_colour(cfg, key):
+    """The colour waypoint names are drawn in, as config `key` names it
+    (LABEL_COLOURS); white for a name not there."""
+    return LABEL_COLOURS.get(cfg.get(key), FG)
+
+
+def layer_choices(levels, opacities):
+    """{kind: {"level": n, "opacity": %}} to keep as heightmap_layers, from
+    Settings' {kind: level} and {kind: opacity}: only what is not as shipped
+    (traces.LAYERS), so a kind left alone follows the shipped one."""
+    chosen = {}
+    for kind, (level, opacity) in traces.LAYERS.items():
+        got = {}
+        if levels.get(kind, level) != level:
+            got["level"] = levels[kind]
+        if opacity is not None and opacities.get(kind, opacity) != opacity:
+            got["opacity"] = opacities[kind]
+        if got:
+            chosen[kind] = got
+    return chosen
+
+
+class LayerTable:
+    """Each survey kind's level and opacity on the height map, as a grid in
+    `parent` with Reset to shipped under it: the height map's own (Settings)
+    or a map's (its Layers... window). `chosen` is what is set now, as
+    heightmap_layers; `save` is called with layer_choices on every change.
+
+    A map's also has a tick a kind to show it or not: `hidden` is the kinds
+    not shown now, and `save_hidden` is called with them, sorted, on every
+    change. Without `save_hidden` there are no ticks."""
+
+    def __init__(self, parent, chosen, save, hidden=(), save_hidden=None,
+                 blocks=2):
+        """`blocks`: how many lists of kinds side by side."""
+        self.save, self.save_hidden = save, save_hidden
+        grid = tk.Frame(parent, bg=BG)
+        grid.pack(anchor="w")
+        lay = traces.layers(chosen)
+        self.levels, self.opacities, self.shown = {}, {}, {}
+        half = -(-len(lay) // blocks)
+        heads = ("survey", "level", "opacity %")
+        if save_hidden is not None:
+            heads = ("show",) + heads
+        step = len(heads) + 1
+        for col in range(0, blocks * step, step):
+            for k, text in enumerate(heads):
+                tk.Label(grid, text=text, font=mono(9), fg=DIM, bg=BG).grid(
+                    row=0, column=col + k, sticky="w", padx=(0, 8))
+        for k, (kind, (level, opacity)) in enumerate(lay.items()):
+            row, col = k % half + 1, k // half * step
+            if save_hidden is not None:
+                self.shown[kind] = tk.BooleanVar(value=kind not in hidden)
+                ttk.Checkbutton(grid, variable=self.shown[kind],
+                                command=self.ticked).grid(
+                    row=row, column=col, sticky="w", padx=(0, 4))
+                col += 1
+            text = ("height map" if kind == "heightmap"
+                    else traces.KINDS[kind]["menu"])
+            tk.Label(grid, text=text, font=mono(), fg=FG, bg=BG).grid(
+                row=row, column=col, sticky="w", padx=(0, 8))
+            if kind == "heightmap":
+                tk.Label(grid, text=str(level), font=mono(), fg=DIM,
+                         bg=BG).grid(row=row, column=col + 1, sticky="w")
+            else:
+                self.levels[kind] = tk.StringVar(value=str(level))
+                pick = ttk.Combobox(grid, textvariable=self.levels[kind],
+                                    state="readonly", width=3,
+                                    values=[str(v) for v in traces.LEVELS])
+                pick.grid(row=row, column=col + 1, sticky="w", padx=(0, 8))
+                pick.bind("<<ComboboxSelected>>", lambda e: self.changed())
+            if opacity is not None:
+                self.opacities[kind] = tk.StringVar(value=str(opacity))
+                pick = ttk.Combobox(grid, textvariable=self.opacities[kind],
+                                    state="readonly", width=4,
+                                    values=[str(v) for v in range(0, 101, 5)])
+                pick.grid(row=row, column=col + 2, sticky="w",
+                          padx=(0, 32))
+                pick.bind("<<ComboboxSelected>>", lambda e: self.changed())
+        ttk.Button(parent, text="Reset to shipped",
+                   command=self.reset).pack(anchor="w", pady=(6, 0))
+
+    def changed(self):
+        self.save(layer_choices(
+            {k: int(v.get()) for k, v in self.levels.items()},
+            {k: int(v.get()) for k, v in self.opacities.items()}))
+
+    def ticked(self):
+        self.save_hidden(sorted(k for k, v in self.shown.items()
+                                if not v.get()))
+
+    def reset(self):
+        """Every level and opacity back to as shipped, every kind shown."""
+        for kind, (level, opacity) in traces.LAYERS.items():
+            if kind in self.levels:
+                self.levels[kind].set(str(level))
+            if kind in self.opacities:
+                self.opacities[kind].set(str(opacity))
+        self.save({})
+        if self.save_hidden is not None:
+            for var in self.shown.values():
+                var.set(True)
+            self.save_hidden([])
 
 
 def height_switch_starts(cfg):
@@ -1419,6 +1545,9 @@ class HeightMapTab:
              200.0, 400.0, 800.0)
     RELIEF_BLOCK = 4        # px a side of the filled view's blocks
     SETTLE_MS = 250         # quiet this long after a drag or zoom: full draw
+    FRAME_PAD = 30          # px clear round a map's frame as it is set
+    FRAMING_STEP = 2 ** 0.25    # a wheel click's zoom while a frame is set
+    DIM_ALPHA = 110         # how dark the ground outside a map's frame is
 
     def __init__(self, parent, state, scl, follow, nav):
         self.state, self.scl, self.follow, self.nav = state, scl, follow, nav
@@ -1427,13 +1556,17 @@ class HeightMapTab:
         self.offset = (0.0, 0.0)    # (east m, north m) dragged from you
         self.mpp = 100.0
         self.press, self.seen, self.image = None, None, None
-        self.water = None       # the lakes' image, held as self.image is
-        self.zone_wash = None   # and the areas' washes
+        self.pictures = []      # water, washes, buildings: held as self.image
         self.held = None    # as the star map's: set by Go to
         self.contours = None    # (key, frame, (half_w, half_h), lines): draw
         self.relief = None      # (key, frame, (half_w, half_h), relief_grid)
         self.job, self.settle = None, None      # see schedule
-        self.building_items = {}    # outline item -> (trace name, label)
+        # Buildings drawn, as (outline px, (trace name, label)), and those
+        # whose name shows by the pointer, as (outline px, label); see
+        # draw_buildings. Found by the pointer being inside the outline, as
+        # their fill is a picture, not a canvas item.
+        self.building_px, self.building_names = [], []
+        self.hovered = None         # the name shown by the pointer
         self.pin_items = {}         # a waypoint's drawn items -> its id
         self.goto_ids = []          # the waypoint ids of Go to's lines
 
@@ -1452,6 +1585,25 @@ class HeightMapTab:
                                  state="readonly")
         self.goto.pack(anchor="w", pady=(0, 8))
         self.goto.bind("<<ComboboxSelected>>", lambda e: self.go_to())
+        # Maps kept to print (maps.py): a new one from the view, framed
+        # here; the rest of them is in the Maps tab.
+        tk.Label(side, text="Map", font=mono(), fg=DIM, bg=BG).pack(anchor="w")
+        self.new_button = ttk.Button(side, text="New map...",
+                                     command=self.new_map)
+        self.new_button.pack(anchor="w")
+        # Shown while a map's frame is being set (see frame_map).
+        self.framing_row = tk.Frame(side, bg=BG)
+        self.framing_text = tk.Label(self.framing_row, font=mono(9),
+                                     fg=ACCENT, bg=BG, justify="left")
+        self.framing_text.pack(anchor="w")
+        ttk.Button(self.framing_row, text="Save", width=9,
+                   command=self.save_frame).pack(side="left")
+        ttk.Button(self.framing_row, text="Cancel", width=9,
+                   command=self.cancel_frame).pack(side="left")
+        # While a frame is set: {"map", "was": (centre, mpp), "back": what
+        # to do once saved or cancelled, or None}. See frame_map.
+        self.framing = None
+        tk.Frame(side, bg=BG, height=8).pack()
         self.info = tk.Label(side, font=mono(), fg=FG, bg=BG, justify="left",
                              anchor="w")
         self.info.pack(anchor="w", fill="x")
@@ -1471,6 +1623,14 @@ class HeightMapTab:
         ttk.Checkbutton(side, text="POI heights",
                         variable=self.show["poi_height"],
                         command=self.draw).pack(anchor="w")
+        self.show["names"] = tk.BooleanVar(value=on["names"])
+        ttk.Checkbutton(side, text="Waypoint names",
+                        variable=self.show["names"],
+                        command=self.draw).pack(anchor="w")
+        self.show["frames"] = tk.BooleanVar(value=on["frames"])
+        ttk.Checkbutton(side, text="Map frames",
+                        variable=self.show["frames"],
+                        command=self.draw).pack(anchor="w")
         tk.Label(side, font=mono(9), fg=DIM, bg=BG, justify="left",
                  anchor="w",
                  text="grey: not measured\nbrown: contour lines\n"
@@ -1489,6 +1649,7 @@ class HeightMapTab:
         self.canvas.bind("<B1-Motion>", self.on_drag)
         self.canvas.bind("<ButtonRelease-1>", self.on_release)
         self.canvas.bind("<MouseWheel>", self.on_wheel)
+        self.canvas.bind("<Motion>", self.on_motion)
         # Right-click on a waypoint, a building or the ground: the menus
         # every tab shares.
         self.canvas.bind("<Button-3>", self.context_menu)
@@ -1497,6 +1658,7 @@ class HeightMapTab:
 
     def open(self, body):
         """Show `body`, around the busiest area surveyed on it."""
+        self.end_framing()
         self.body, self.offset = body, (0.0, 0.0)
         self.goto_var.set("")
         self.goto_choices()
@@ -1532,9 +1694,108 @@ class HeightMapTab:
     def set_switches(self, on):
         """Set switches by name ({name: on}, as HEIGHT_SWITCHES names them)
         from Settings, and redraw as a click on them would."""
+        self.set_vars(on)
+        self.draw()
+
+    def set_vars(self, on):
+        """Tick or clear the switches named in `on` ({name: on})."""
         for name, value in on.items():
             (self.types if name in self.types else self.show)[name].set(value)
+
+    def switches(self):
+        """{name: on} for every switch, as they are ticked now."""
+        return {name: var.get() for name, var in
+                list(self.show.items()) + list(self.types.items())}
+
+    # --- maps (maps.py) -------------------------------------------------
+
+    def new_map(self):
+        """A new map of the view as it is, shown as the height map's
+        switches show it, named and then framed."""
+        if self.body is None or self.centre is None or self.framing:
+            return
+        with self.state.lock:
+            ms = list(self.state.maps)
+            layers = self.state.cfg.get("heightmap_layers")
+        name = ask_name(self.frame, "New map", "Name the map",
+                        maps.map_name(ms),
+                        [m["name"] for m in maps.of_body(ms, self.body)],
+                        can_clear=False)
+        if not name:
+            return
+        c = self.canvas
+        across, _ = maps.fit(c.winfo_width(), c.winfo_height(),
+                             self.FRAME_PAD)
+        switches, hidden = maps.from_view(self.switches())
+        m = maps.new_map(name, self.body, self.centre, across * self.mpp,
+                         switches, layers, hidden=hidden)
+        self.scl.add_map(self.state, m)
+        self.frame_map(m)
+
+    def frame_map(self, m, back=None):
+        """Set where map `m`'s frame is: it stays in the middle of the
+        window while the ground is dragged and zoomed under it, in finer
+        steps than the height map's own (FRAMING_STEP), until Save or
+        Cancel; then `back` is run, if given."""
+        if m["body"] != self.body:
+            self.body_var.set(m["body"])
+            self.open(m["body"])
+        self.end_framing()
+        self.framing = {"map": m, "was": (self.centre, self.mpp),
+                        "back": back}
+        with self.state.lock:
+            self.held = (self.state.system, self.state.planet)
+        self.offset = (0.0, 0.0)
+        self.centre = list(m["centre"])
+        c = self.canvas
+        across, _ = maps.fit(c.winfo_width(), c.winfo_height(),
+                             self.FRAME_PAD)
+        if c.winfo_width() >= 50:
+            self.mpp = m["width_m"] / across
+        self.frame_controls()
         self.draw()
+
+    def save_frame(self):
+        if not self.framing:
+            return
+        c = self.canvas
+        across, _ = maps.fit(c.winfo_width(), c.winfo_height(),
+                             self.FRAME_PAD)
+        self.scl.update_map(self.state, self.framing["map"]["id"], {
+            "centre": list(heightmap.local_frame(self.centre)[0]),
+            "width_m": across * self.mpp})
+        self.end_framing(back=True)
+
+    def cancel_frame(self):
+        """The view back where it was before the frame was set."""
+        if not self.framing:
+            return
+        self.centre, self.mpp = self.framing["was"]
+        self.end_framing(back=True)
+
+    def end_framing(self, back=False):
+        """No frame being set any more; its `back` run if `back`."""
+        was, self.framing = self.framing, None
+        self.frame_controls()
+        if was is None:
+            return
+        self.draw()
+        if back and was["back"]:
+            was["back"]()
+
+    def frame_controls(self):
+        """New map... unless a frame is being set; Save and Cancel while
+        one is."""
+        if self.framing:
+            self.new_button.state(["disabled"])
+            self.framing_text.config(
+                text=f"Framing {self.framing['map']['name']}:\ndrag and "
+                     "zoom the ground\nunder the frame, then Save.")
+            self.framing_row.pack(anchor="w", pady=(4, 0),
+                                  after=self.new_button)
+        else:
+            self.new_button.state(["!disabled"])
+            self.framing_row.pack_forget()
 
     def goto_choices(self):
         """The open body's waypoints, for Go to. The list shows names, which
@@ -1600,8 +1861,8 @@ class HeightMapTab:
         menu of the body the map shows."""
         under = self.canvas.find_overlapping(e.x - 2, e.y - 2, e.x + 2, e.y + 2)
         pins = [self.pin_items[i] for i in under if i in self.pin_items]
-        builds = [self.building_items[i] for i in under
-                  if i in self.building_items]
+        builds = [b for px, b in self.building_px
+                  if traces.inside_ring(e.x, e.y, px)]
         at = (e.x_root, e.y_root)
         self.menu.delete(0, "end")
         if pins:
@@ -1614,6 +1875,17 @@ class HeightMapTab:
             shown = False
         if shown:
             self.menu.tk_popup(e.x_root, e.y_root)
+
+    def on_motion(self, e):
+        """A building's name by the pointer while the pointer is over it,
+        where the name did not fit inside its walls (see draw_buildings)."""
+        over = next((label for px, label in reversed(self.building_names)
+                     if traces.inside_ring(e.x, e.y, px)), None)
+        if over != self.hovered:
+            self.hovered = over
+            self.canvas.delete("name")
+            if over:
+                self.show_name(e, over)
 
     def on_drag(self, e):
         if self.press is None or self.centre is None:
@@ -1658,8 +1930,18 @@ class HeightMapTab:
         self.draw()
 
     def on_wheel(self, e):
-        i = self.ZOOMS.index(self.mpp) + (-1 if e.delta > 0 else 1)
-        self.mpp = self.ZOOMS[max(0, min(len(self.ZOOMS) - 1, i))]
+        """Zoom a step of ZOOMS in or out (the next one, from a map's own
+        zoom), or a FRAMING_STEP while a map's frame is being set."""
+        zin = e.delta > 0
+        if self.framing:
+            self.mpp = min(self.ZOOMS[-1], max(
+                self.ZOOMS[0], self.mpp * self.FRAMING_STEP ** (-1 if zin
+                                                                else 1)))
+        else:
+            finer = [z for z in self.ZOOMS if z < self.mpp * 0.999]
+            coarser = [z for z in self.ZOOMS if z > self.mpp * 1.001]
+            self.mpp = ((finer[-1] if finer else self.ZOOMS[0]) if zin
+                        else (coarser[0] if coarser else self.ZOOMS[-1]))
         self.schedule()
 
     def radius(self):
@@ -1681,7 +1963,9 @@ class HeightMapTab:
                                               (st.system, st.planet)):
             self.held = None
         here = st.planet == self.body and st.pos
-        on_it = self.follow.get() and self.held is None and here
+        # A frame being set stays where it is.
+        on_it = (self.follow.get() and self.held is None and here
+                 and not self.framing)
         plan = st.survey_saved
         return (self.body, heightmap.cell_count(st.heightmap, self.body),
                 tuple(st.pos) if on_it else None,
@@ -1730,7 +2014,9 @@ class HeightMapTab:
             frame = (heightmap.local_frame(self.centre)
                      if self.centre is not None else None)
             rec = st.heightmap.get(self.body)
-            lakes = [(traces.parts(t), t.get("level")) for t in st.traces
+            lay = traces.layers(st.cfg.get("heightmap_layers"))
+            lakes = [(traces.parts(t), t.get("level"), t["kind"])
+                     for t in st.traces
                      if t["planet"] == self.body and t["kind"] in traces.WATER
                      and len(t["points"])
                      >= traces.KINDS[t["kind"]]["least"]]
@@ -1738,7 +2024,7 @@ class HeightMapTab:
             # and kept until the survey, a lake or the zoom changes or you
             # pan off them. Only what is switched on is worked out.
             key = (self.body, self.seen[1], self.mpp,
-                   sum(len(q) for p, _ in lakes for q in p))
+                   sum(len(q) for p, _, _ in lakes for q in p))
 
             def stale(kept):
                 if not frame:
@@ -1770,7 +2056,8 @@ class HeightMapTab:
                     and st.survey_saved["origin"] is not None else None)
             rails = [list(t["points"]) for t in st.traces
                      if t["planet"] == self.body and t["kind"] == "railway"]
-            # Lines and areas drawn by pattern: (points, kind, label).
+            # Lines and areas drawn by pattern: (points, kind, label, its
+            # name in traces.KINDS).
             drawn, zones = [], []
             for t in st.traces:
                 k = traces.KINDS[t["kind"]]
@@ -1779,7 +2066,7 @@ class HeightMapTab:
                 if (t["planet"] == self.body and "style" in k
                         and len(t["points"]) >= k["least"]):
                     (drawn if k["group"] == "line" else zones).append(
-                        (list(t["points"]), k, t.get("label")))
+                        (list(t["points"]), k, t.get("label"), t["kind"]))
             rivers = [(run, t["width_m"]) for t in st.traces
                       if t["planet"] == self.body
                       and t["kind"] == "waterway" and len(t["points"]) >= 2
@@ -1807,9 +2094,10 @@ class HeightMapTab:
         # Over a lake the HUD's ground is neither the bed nor the surface
         # (NOTES.md): the cells there shape no contour, shade or colour.
         # Each lake as its runs on the map (one, or more once merged).
-        lake_xys = [(runs, level) for runs, level in (
-            ([self.on_map(run, frame, radius) for run in runs], level)
-            for runs, level in lakes) if None not in runs] if frame else []
+        lake_xys = [(runs, level, kind) for runs, level, kind in (
+            ([self.on_map(run, frame, radius) for run in runs], level, kind)
+            for runs, level, kind in lakes) if None not in runs] \
+            if frame else []
         around = self.outside(around, lake_xys)
         near = self.outside(near, lake_xys)
         interval = heightmap.contour_interval(body_lo, body_hi)
@@ -1825,6 +2113,9 @@ class HeightMapTab:
                            heightmap.relief_grid(around, 2 * half_w,
                                                  2 * half_h, step))
         c.delete("all")
+        self.pictures, self.building_px, self.building_names = [], [], []
+        self.hovered = None
+        faded = lay["heightmap"][1]     # the height map's opacity, %
         lo, hi = heightmap.height_range(z for _, _, z in near)
         img = tk.PhotoImage(width=w, height=h)
         img.put(heightmap.GREY, to=(0, 0, w, h))
@@ -1835,8 +2126,9 @@ class HeightMapTab:
             # Worked out one pixel to a block, then blown up by Tk: putting
             # every pixel took longer than working the colours out.
             block = self.RELIEF_BLOCK * (2 if quick else 1)
-            small = ImageTk.PhotoImage(Image.fromarray(heightmap.relief_image(
-                self.relief[3], shift, w, h, self.mpp, block, lo, hi)))
+            small = ImageTk.PhotoImage(Image.fromarray(heightmap.fade(
+                heightmap.relief_image(self.relief[3], shift, w, h, self.mpp,
+                                       block, lo, hi), faded)))
             img.tk.call(img, "copy", small, "-zoom", block, block)
         if self.show["samples"].get():
             # Cells are 70-100 m: drawn 100 m wide they overlap, not gap.
@@ -1847,26 +2139,44 @@ class HeightMapTab:
                 x1, y1 = min(w, x0 + size), min(h, y0 + size)
                 x0, y0 = max(0, x0), max(0, y0)
                 if x1 > x0 and y1 > y0:
-                    img.put(heightmap.height_colour(z, lo, hi),
-                            to=(x0, y0, x1, y1))
+                    img.put("#%02x%02x%02x" % tuple(heightmap.fade(
+                        ImageColor.getrgb(heightmap.height_colour(z, lo, hi)),
+                        faded)), to=(x0, y0, x1, y1))
         self.image = img                # Tk drops an image nothing holds
         c.create_image(0, 0, image=img, anchor="nw")
         if frame:
             self.draw_grid(frame, radius, w, h)
             if self.show["lines"].get():
                 self.draw_contours(frame, radius, interval, w, h)
+            # The surveys level by level (traces.LAYERS), then the survey
+            # pattern and the QT leg over them all.
+            for level in traces.LEVELS:
+                here = {k for k, (at, _) in lay.items() if at == level}
+                water = here & {"sea", "lake", "waterway"}
+                if self.show["lake"].get():
+                    # Water of one opacity in one picture, so a river
+                    # running into a lake joins it.
+                    for op in sorted({lay[k][1] for k in water}):
+                        kinds = {k for k in water if lay[k][1] == op}
+                        self.draw_lakes(
+                            [x for x in lake_xys if x[2] in kinds],
+                            rivers if "waterway" in kinds else [], op,
+                            frame, radius, w, h)
+                if self.show["zone"].get():
+                    self.draw_zones([(p, k, label, lay[n][1])
+                                     for p, k, label, n in zones if n in here],
+                                    frame, radius, w, h)
+                if self.show["rail"].get() and "railway" in here:
+                    self.draw_rails(rails, frame, radius, w, h)
+                if self.show["drawn"].get():
+                    self.draw_drawn([(p, k, label)
+                                     for p, k, label, n in drawn if n in here],
+                                    frame, radius, w, h)
+                if self.show["building"].get() and "building" in here:
+                    self.draw_buildings(buildings, lay["building"][1], frame,
+                                        radius, w, h)
             if plan and self.show["course"].get():
                 self.draw_course(plan, frame, radius, w, h)
-            if self.show["lake"].get():
-                self.draw_lakes(lake_xys, rivers, frame, radius, w, h)
-            if self.show["zone"].get():
-                self.draw_zones(zones, frame, radius, w, h)
-            if self.show["rail"].get():
-                self.draw_rails(rails, frame, radius, w, h)
-            if self.show["drawn"].get():
-                self.draw_drawn(drawn, frame, radius, w, h)
-            if self.show["building"].get():
-                self.draw_buildings(buildings, frame, radius, w, h)
             if route:
                 self.draw_route(*route, frame, radius, w, h)
 
@@ -1898,11 +2208,18 @@ class HeightMapTab:
                     else:
                         items = [c.create_oval(sx - 4, sy - 4, sx + 4, sy + 4,
                                                fill=PIN, outline=BG)]
-                    # A spot height, as BM 1570 on a paper map.
+                    # A spot height, as BM 1570 on a paper map. With names
+                    # switched off the height still shows where it is on.
                     z = elev.get(wid)
-                    items.append(c.create_text(
-                        sx + gap, sy, anchor="w", fill=FG, font=mono(9),
-                        text=name if z is None else f"{name} {z:.0f}"))
+                    text = " ".join(
+                        ([name] if self.show["names"].get() else [])
+                        + ([] if z is None else [f"{z:.0f}"]))
+                    if text:
+                        items.append(c.create_text(
+                            sx + gap, sy, anchor="w", font=mono(9),
+                            fill=label_colour(self.state.cfg,
+                                              "heightmap_label_colour"),
+                            text=text))
                     for item in items:      # right-click any part of it
                         self.pin_items[item] = wid
             xy = spot(pos) if here == self.body and pos else None
@@ -1917,6 +2234,8 @@ class HeightMapTab:
         else:
             c.create_text(w / 2, h / 2, fill=FG, font=mono(),
                           text=f"Nothing surveyed on {self.body} yet")
+        if frame:
+            self.draw_frames(frame, radius, w, h)
         self.scale_bar(w, h)
         self.draw_legend(lo, hi, bool(near))
         self.info.config(text=f"{self.seen[1]:,} cells surveyed\n"
@@ -1926,6 +2245,43 @@ class HeightMapTab:
                               f"{self.mpp:g} m a pixel\n"
                               + (f"contour interval {interval:g} m"
                                  if rec else ""))
+
+    def draw_frames(self, frame, radius, w, h):
+        """Maps' frames. While one is being set (frame_map): its frame fixed
+        in the middle of the window, the ground outside it dimmed. Else,
+        with Map frames on, the frame of each map of this body, dashed, its
+        name over its top left corner."""
+        c = self.canvas
+        if self.framing:
+            fw, fh = maps.fit(w, h, self.FRAME_PAD)
+            px = [(w / 2 - fw / 2, h / 2 - fh / 2),
+                  (w / 2 + fw / 2, h / 2 - fh / 2),
+                  (w / 2 + fw / 2, h / 2 + fh / 2),
+                  (w / 2 - fw / 2, h / 2 + fh / 2)]
+            dim = Image.new("RGBA", (w, h), (0, 0, 0, self.DIM_ALPHA))
+            ImageDraw.Draw(dim).polygon(px, fill=(0, 0, 0, 0))
+            self.pictures.append(ImageTk.PhotoImage(dim))
+            c.create_image(0, 0, image=self.pictures[-1], anchor="nw")
+            c.create_polygon(*[v for p in px for v in p], fill="",
+                             outline=ACCENT, width=2)
+            c.create_text(px[0][0], px[0][1] - 4, anchor="sw", fill=ACCENT,
+                          font=mono(9, True),
+                          text=self.framing["map"]["name"])
+            return
+        if not self.show["frames"].get():
+            return
+        with self.state.lock:
+            ms = maps.of_body(self.state.maps, self.body)
+        for m in ms:
+            xys = self.on_map(maps.outline(m, radius), frame, radius)
+            if not xys:
+                continue
+            px = [(w / 2 + x / self.mpp, h / 2 - y / self.mpp)
+                  for x, y in xys]
+            c.create_polygon(*[v for p in px for v in p], fill="",
+                             outline=ACCENT, width=1, dash=(6, 4))
+            c.create_text(px[0][0], px[0][1] - 3, anchor="sw", fill=ACCENT,
+                          font=mono(8), text=m["name"])
 
     def draw_grid(self, frame, radius, w, h):
         """LAT and LON lines, labelled on the left and top edges."""
@@ -2013,22 +2369,16 @@ class HeightMapTab:
     @staticmethod
     def outside(cells, lake_xys):
         """The cells (as local_cells gives them) outside every lake."""
-        if not cells or not lake_xys:
-            return cells
-        xs, ys = np.array([c[0] for c in cells]), np.array([c[1] for c in cells])
-        wet = np.zeros(len(cells), bool)
-        for runs, _ in lake_xys:
-            for xys in runs:
-                wet |= traces.inside(xs, ys, xys)
-        return [c for c, w in zip(cells, wet.tolist()) if not w]
+        return mapprint.outside(cells, lake_xys)
 
-    def draw_lakes(self, lake_xys, rivers, frame, radius, w, h):
+    def draw_lakes(self, lake_xys, rivers, opacity, frame, radius, w, h):
         """Lakes as flat water: every lake painted into one mask as its fan
         of triangles (traces.fan), so lakes that overlap (one surveyed in
-        parts) merge, and the shore line is the mask's edge. Drawn as an image over the relief and height lines;
-        the LAT/LON grid is raised back over it. Waterways go into the same
-        mask as lines width_m wide to scale (never under 2 px), so a river
-        running into a lake joins it."""
+        parts) merge, and the shore line is the mask's edge. Drawn as an
+        image, the water `opacity` % and the shore solid; the LAT/LON grid
+        is raised back over it. Waterways go into the same mask as lines
+        width_m wide to scale (never under 2 px), so a river running into a
+        lake joins it."""
         c = self.canvas
         mask = Image.new("L", (w, h), 0)
         paint = ImageDraw.Draw(mask)
@@ -2042,7 +2392,7 @@ class HeightMapTab:
                            width=max(2, round(width_m / self.mpp)),
                            joint="curve")
         labels = []
-        for runs, level in lake_xys:
+        for runs, level, _ in lake_xys:
             pxs = [[(w / 2 + x / self.mpp, h / 2 - y / self.mpp)
                     for x, y in xys] for xys in runs]
             xs = [p[0] for px in pxs for p in px]
@@ -2065,11 +2415,12 @@ class HeightMapTab:
             inner = (p[1:-1, 1:-1] & p[:-2, 1:-1] & p[2:, 1:-1]
                      & p[1:-1, :-2] & p[1:-1, 2:])
         rgba = np.zeros((h, w, 4), np.uint8)
-        rgba[wet] = (*WATER, 255)
+        rgba[wet] = (*WATER, traces.alpha(opacity))
         rgba[wet & ~inner] = (*SHORE, 255)
-        self.water = ImageTk.PhotoImage(Image.fromarray(rgba, "RGBA"))
-        c.create_image(0, 0, image=self.water, anchor="nw")
-        c.tag_raise("grid")
+        self.pictures.append(ImageTk.PhotoImage(Image.fromarray(rgba,
+                                                                "RGBA")))
+        c.tag_raise("grid", c.create_image(0, 0, image=self.pictures[-1],
+                                           anchor="nw"))
         # The level, as a lake's elevation is printed on a paper map.
         for x, y, level in labels:
             c.create_text(x, y, text=f"{level:,.0f}", fill="#%02x%02x%02x"
@@ -2127,14 +2478,14 @@ class HeightMapTab:
                           outline="")
 
     def draw_zones(self, zones, frame, radius, w, h):
-        """Hostile areas, swamps and the other areas drawn by pattern: each
-        washed over with its kind's fill (see through, ZONE_ALPHA), its
-        border in its style with the inside on the left (a hostile area's
-        ticks point in), a swamp's tufts over it, its name in its middle.
-        Drawn over the lakes, under everything else."""
+        """Hostile areas, swamps and the other areas drawn by pattern, as
+        (points, kind, label, opacity %): each washed over with its kind's
+        fill at its opacity, its border in its style with the inside on the
+        left (a hostile area's ticks point in), a swamp's tufts over it, its
+        name in its middle. The LAT/LON grid is raised back over the wash."""
         c = self.canvas
         shown = []
-        for points, kind, label in zones:
+        for points, kind, label, opacity in zones:
             xys = self.on_map(traces.ring(points), frame, radius)
             if not xys:
                 continue
@@ -2143,20 +2494,19 @@ class HeightMapTab:
             xs, ys = [p[0] for p in px], [p[1] for p in px]
             if max(xs) < 0 or min(xs) > w or max(ys) < 0 or min(ys) > h:
                 continue
-            shown.append((px, kind, label))
+            shown.append((px, kind, label, opacity))
         # The washes first, as one image, then everything over them.
-        self.zone_wash = None
-        if any(kind["fill"] for _, kind, _ in shown):
+        if any(kind["fill"] for _, kind, _, _ in shown):
             wash = Image.new("RGBA", (w, h), (0, 0, 0, 0))
             paint = ImageDraw.Draw(wash)
-            for px, kind, _ in shown:
+            for px, kind, _, opacity in shown:
                 if kind["fill"]:
                     paint.polygon(px, fill=ImageColor.getrgb(kind["fill"])
-                                  + (ZONE_ALPHA,))
-            self.zone_wash = ImageTk.PhotoImage(wash)
-            c.create_image(0, 0, image=self.zone_wash, anchor="nw")
-            c.tag_raise("grid")
-        for px, kind, label in shown:
+                                  + (traces.alpha(opacity),))
+            self.pictures.append(ImageTk.PhotoImage(wash))
+            c.tag_raise("grid", c.create_image(0, 0, image=self.pictures[-1],
+                                               anchor="nw"))
+        for px, kind, label, _ in shown:
             if kind["symbol"] == "tufts":
                 self.draw_tufts(px, kind["colour"], w, h)
             border = traces.inward(px)
@@ -2179,15 +2529,16 @@ class HeightMapTab:
                     for seg in traces.tuft(x, y):
                         self.canvas.create_line(*seg, fill=colour, width=1)
 
-    def draw_buildings(self, buildings, frame, radius, w, h):
+    def draw_buildings(self, buildings, opacity, frame, radius, w, h):
         """Buildings walked round, squared off or as walked (traces.outline):
         tan with a dark outline, as on a large-scale paper map. A building's
         name is printed on it where it fits inside the walls; where it does
         not, it shows by the pointer while the pointer is over the building
-        (names printed past the walls piled up and buried the map).
-        Right-click one for its menu (see context_menu)."""
+        (names printed past the walls piled up and buried the map; see
+        on_motion). The fill is a picture at `opacity` %, the outline over
+        it solid. Right-click one for its menu (see context_menu)."""
         c = self.canvas
-        self.building_items = {}
+        shown = []
         for points, offset, label, name, shape in buildings:
             xys = self.on_map(points, frame, radius)
             if not xys:
@@ -2197,12 +2548,23 @@ class HeightMapTab:
             xs, ys = [p[0] for p in px], [p[1] for p in px]
             if max(xs) < 0 or min(xs) > w or max(ys) < 0 or min(ys) > h:
                 continue
-            outline = c.create_polygon(*[v for p in px for v in p],
-                                       fill=BUILDING, outline=BUILDING_EDGE,
-                                       width=1)
-            self.building_items[outline] = (name, label)
+            shown.append((px, name, label))
+        if not shown:
+            return
+        fills = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+        paint = ImageDraw.Draw(fills)
+        for px, _, _ in shown:
+            paint.polygon(px, fill=ImageColor.getrgb(BUILDING)
+                          + (traces.alpha(opacity),))
+        self.pictures.append(ImageTk.PhotoImage(fills))
+        c.create_image(0, 0, image=self.pictures[-1], anchor="nw")
+        for px, name, label in shown:
+            c.create_polygon(*[v for p in px for v in p], fill="",
+                             outline=BUILDING_EDGE, width=1)
+            self.building_px.append((px, (name, label)))
             if not label:
                 continue
+            xs, ys = [p[0] for p in px], [p[1] for p in px]
             t = c.create_text(sum(xs) / len(xs), sum(ys) / len(ys),
                               text=label, fill=BUILDING_EDGE, font=mono(8))
             x0, y0, x1, y1 = c.bbox(t)
@@ -2210,9 +2572,7 @@ class HeightMapTab:
                    for x, y in ((x0, y0), (x1, y0), (x1, y1), (x0, y1))):
                 continue
             c.delete(t)
-            c.tag_bind(outline, "<Enter>",
-                       lambda e, label=label: self.show_name(e, label))
-            c.tag_bind(outline, "<Leave>", lambda e: c.delete("name"))
+            self.building_names.append((px, label))
 
     def show_name(self, e, label):
         """A building's name by the pointer, as the pointer comes over it."""
@@ -2639,11 +2999,84 @@ class SurveysTab:
         scroll = ttk.Scrollbar(self.frame, orient="vertical",
                                command=self.tree.yview)
         self.tree.configure(yscrollcommand=scroll.set)
+        # The notes of the one survey picked, under the list: what it is
+        # like there (cover, ground, ...), kept as they are typed.
+        box = tk.LabelFrame(self.frame, text=" Notes ", font=mono(),
+                            fg=ACCENT, bg=BG, bd=2, relief="groove",
+                            padx=10, pady=6)
+        box.pack(side="bottom", fill="x", pady=(6, 0))
+        self.notes_title = tk.Label(box, font=mono(9), fg=DIM, bg=BG,
+                                    anchor="w")
+        self.notes_title.pack(fill="x")
+        self.notes = tk.Text(box, height=6, wrap="word", font=mono(),
+                             bg=PANEL, fg=FG, insertbackground=FG,
+                             relief="flat", padx=6, pady=4)
+        self.notes.pack(fill="x", pady=(4, 0))
+        self.notes.bind("<KeyRelease>", lambda e: self.save_notes_soon())
+        self.notes.bind("<FocusOut>", lambda e: self.save_notes())
+        self.noted = None           # the trace whose notes are shown
+        self.notes_job = None       # a save waiting for typing to stop
+        self.notes_backed = None    # the trace last backed up as typed in
+        self.show_notes(None)
         scroll.pack(side="right", fill="y")
         self.tree.pack(fill="both", expand=True)
         self.tree.bind("<Button-3>", self.popup)
+        self.tree.bind("<<TreeviewSelect>>", lambda e: self.on_select())
         self.menu = tk.Menu(self.tree, tearoff=False, font=mono(), bg=PANEL,
                             fg=FG, activebackground="#1d4f3a")
+
+    NOTES_SAVE_MS = 1500    # notes are saved this long after typing stops
+
+    def on_select(self):
+        """The notes of the one trace picked; those being written are kept
+        first. A height map, or more than one row, has none to show."""
+        sel = self.tree.selection()
+        name = (sel[0][6:] if len(sel) == 1 and sel[0].startswith("trace:")
+                else None)
+        if name != self.noted:
+            self.save_notes()
+            self.show_notes(name)
+
+    def show_notes(self, name):
+        """Show trace `name`'s notes to be written in, or none (None)."""
+        self.noted, self.notes_backed = name, None
+        with self.state.lock:
+            t = next((t for t in self.state.traces if t["name"] == name),
+                     None) if name else None
+            text = t.get("notes", "") if t else ""
+            label = t.get("label", "") if t else ""
+        self.notes.config(state="normal")
+        self.notes.delete("1.0", "end")
+        self.notes.insert("1.0", text)
+        self.notes.edit_modified(False)
+        if t is None:
+            self.noted = None
+            self.notes.config(state="disabled")
+            self.notes_title.config(text="Pick one survey to read or write "
+                                         "its notes.")
+        else:
+            self.notes_title.config(text=f"{name}  {label}".rstrip()
+                                    + "  (kept as you type)")
+
+    def save_notes_soon(self):
+        """Save once typing stops for NOTES_SAVE_MS."""
+        if self.notes_job is not None:
+            self.frame.after_cancel(self.notes_job)
+        self.notes_job = self.frame.after(self.NOTES_SAVE_MS, self.save_notes)
+
+    def save_notes(self):
+        """Keep the notes shown, if they were changed."""
+        if self.notes_job is not None:
+            self.frame.after_cancel(self.notes_job)
+            self.notes_job = None
+        if self.noted and self.notes.edit_modified():
+            # Only the first save since the survey was picked keeps a
+            # backup, as a report's notes (see scl.save_json).
+            self.scl.note_trace(self.state, self.noted,
+                                self.notes.get("1.0", "end-1c"),
+                                backup=self.notes_backed != self.noted)
+            self.notes_backed = self.noted
+            self.notes.edit_modified(False)
 
     # Rows are keyed "trace:<name>" or "map:<body>".
 
@@ -2928,6 +3361,512 @@ def survey_kinds(scl):
     ]
 
 
+class MapsTab:
+    """Maps kept to print (maps.py): the list on the left, grouped by body,
+    searched and filtered by body; the map picked in the middle, its pages
+    as they print (mapprint.py); what can be set for it on the right. New
+    maps are made, and maps framed, on the height map."""
+
+    ALL = "all bodies"
+    NOTES_SAVE_MS = 1500    # notes are saved this long after typing stops
+    RENDER_MS = 300         # the page is drawn again this long after a change
+    # What a map shows besides its surveys (maps.SWITCHES), as ticked here.
+    ALSO = (("relief", "Filled relief"), ("lines", "Height lines"),
+            ("samples", "Survey samples"), ("poi", "POI waypoints"),
+            ("survey", "Survey waypoints"), ("names", "Waypoint names"))
+
+    def __init__(self, parent, state, scl, nav):
+        self.state, self.scl, self.nav = state, scl, nav
+        self.frame = tk.Frame(parent, bg=BG)
+        self.seen = None            # what the list was last filled from
+        self.mid = None             # the map picked
+        self.shown = None           # its "updated" as last shown
+        self.backed = None          # the map last backed up as it was set
+        self.notes_job = None       # a save waiting for typing to stop
+        self.notes = None           # its notes box, while one is picked
+        self.info = None            # and the line saying where and when
+        self.drawn = None           # what the page was last drawn from
+        self.render_job = None      # a draw waiting for changes to stop
+        self.picture = None         # the page drawn, held for Tk
+
+        left = tk.Frame(self.frame, bg=BG)
+        left.pack(side="left", fill="y", padx=(0, 8))
+        tk.Label(left, text="Search", font=mono(), fg=DIM,
+                 bg=BG).pack(anchor="w")
+        self.search = tk.StringVar()
+        tk.Entry(left, textvariable=self.search, font=mono(), bg=PANEL,
+                 fg=FG, insertbackground=FG, relief="flat",
+                 width=24).pack(anchor="w", fill="x", pady=(0, 6))
+        self.search.trace_add("write", lambda *a: self.fill())
+        tk.Label(left, text="Body", font=mono(), fg=DIM,
+                 bg=BG).pack(anchor="w")
+        self.body_var = tk.StringVar(value=self.ALL)
+        self.body_pick = ttk.Combobox(left, textvariable=self.body_var,
+                                      state="readonly", width=22,
+                                      values=[self.ALL])
+        self.body_pick.pack(anchor="w", pady=(0, 6))
+        self.body_pick.bind("<<ComboboxSelected>>", lambda e: self.fill())
+        box = tk.Frame(left, bg=BG)
+        box.pack(fill="both", expand=True)
+        self.tree = ttk.Treeview(box, show="tree", selectmode="browse")
+        set_column(self.tree, "#0", 260)
+        scroll = ttk.Scrollbar(box, orient="vertical",
+                               command=self.tree.yview)
+        self.tree.configure(yscrollcommand=scroll.set)
+        scroll.pack(side="right", fill="y")
+        self.tree.pack(side="left", fill="both", expand=True)
+        self.tree.bind("<<TreeviewSelect>>", lambda e: self.picked())
+        tk.Label(left, font=mono(9), fg=DIM, bg=BG, justify="left",
+                 text="New maps are made on the height\nmap: New map..."
+                 ).pack(anchor="w", pady=(6, 0))
+
+        right = tk.Frame(self.frame, bg=BG, width=px(470))
+        right.pack(side="right", fill="y", padx=(8, 0))
+        right.pack_propagate(False)
+        self.options = scrolled(right)
+
+        # The map picked: a page of it as it prints, as big as fits.
+        middle = tk.Frame(self.frame, bg=BG)
+        middle.pack(side="left", fill="both", expand=True)
+        # A switch a page, as many as the map takes (see page_switches).
+        self.pages_row = tk.Frame(middle, bg=BG)
+        self.pages_row.pack(anchor="w")
+        self.page = tk.IntVar(value=1)
+        self.page_count = None
+        self.sheet = tk.Label(middle, bg=BG, fg=DIM, font=mono(),
+                              text="Pick a map in the list.")
+        self.sheet.pack(fill="both", expand=True, pady=(4, 0))
+        self.sheet.bind("<Configure>", lambda e: self.render_soon())
+        self.show_options(None)
+
+    def current(self):
+        """The map picked, or None if there is none (or it is gone)."""
+        with self.state.lock:
+            return next((m for m in self.state.maps
+                         if m["id"] == self.mid), None)
+
+    def render_soon(self):
+        """Draw the page once changes stop for RENDER_MS."""
+        if self.render_job is not None:
+            self.frame.after_cancel(self.render_job)
+        self.render_job = self.frame.after(self.RENDER_MS, self.render)
+
+    def look(self):
+        """What the page is drawn from: the map, its body's surveys and
+        waypoints, the page shown and the room for it. Lock held."""
+        m = next((m for m in self.state.maps if m["id"] == self.mid), None)
+        if m is None:
+            return None
+        body = m["body"]
+        return (m["id"], m.get("updated"),
+                heightmap.cell_count(self.state.heightmap, body),
+                tuple((t["name"], len(t["points"]), t.get("label"),
+                       t.get("notes"))
+                      for t in self.state.traces if t["planet"] == body),
+                tuple((w["id"], w["name"], w.get("type"), w.get("sub"),
+                       w.get("x"), w.get("y"), w.get("z"))
+                      for w in self.state.waypoints
+                      if w.get("planet") == body),
+                self.page.get(), self.sheet.winfo_width(),
+                self.sheet.winfo_height())
+
+    def render(self):
+        """The page shown, drawn small enough to fit (mapprint), or a word
+        on picking a map."""
+        self.render_job = None
+        st = self.state
+        with st.lock:
+            self.drawn = self.look()
+            m = next((dict(m) for m in st.maps if m["id"] == self.mid), None)
+            if m is not None:
+                rec = st.heightmap.get(m["body"])
+                radius = (rec["radius"] if rec
+                          else self.scl.BODY_RADII.get(m["body"], 1.0))
+                data = mapprint.gather(m, rec, radius, st.traces,
+                                       st.waypoints,
+                                       st.cfg["building_wall_offset_m"])
+        if m is None:
+            self.picture = None
+            self.sheet.config(image="", text="Pick a map in the list.")
+            return
+        data["system"] = self.nav.body_system(m["body"])
+        w, h = self.sheet.winfo_width(), self.sheet.winfo_height()
+        if w < 50 or h < 50:
+            return
+        dpi = min(w / maps.PAGE_MM[0], h / maps.PAGE_MM[1]) * 25.4
+        # A page that cannot be drawn says so, rather than leave the last
+        # map drawn in its place (2026-11-08: one did, unnoticed).
+        try:
+            page, numbers, overflow = mapprint.page1(m, data, dpi)
+            pages = [page] + mapprint.later_pages(m, data, dpi, overflow)
+        except Exception as exc:
+            self.state.log(f"map {m['name']} not drawn: "
+                           + traceback.format_exc().replace("\n", " | "))
+            self.picture = None
+            self.sheet.config(image="", text=f"{m['name']} could not be "
+                              f"drawn: {exc}\n(details in the log)")
+            return
+        self.page_switches(len(pages))
+        self.picture = ImageTk.PhotoImage(pages[self.page.get() - 1])
+        self.sheet.config(image=self.picture, text="")
+        # Waypoints numbered for the first time keep their numbers.
+        if numbers != (m.get("numbers") or {}):
+            self.scl.update_map(self.state, m["id"], {"numbers": numbers},
+                                backup=False)
+
+    def page_switches(self, count):
+        """A switch for each of the map's `count` pages, page 1 picked if
+        the one picked is gone."""
+        if count == self.page_count:
+            return
+        self.page_count = count
+        for child in self.pages_row.winfo_children():
+            child.destroy()
+        if self.page.get() > count:
+            self.page.set(1)
+        for n in range(1, count + 1):
+            ttk.Radiobutton(self.pages_row, text=f"Page {n}", value=n,
+                            variable=self.page,
+                            command=self.render_soon).pack(side="left",
+                                                           padx=(0, 10))
+
+    # --- the list -------------------------------------------------------
+
+    def refresh(self):
+        """The list, when the maps changed; the map picked, when it changed
+        elsewhere (framed on the height map) or what it shows did."""
+        with self.state.lock:
+            seen = tuple((m["id"], m["name"], m["body"], m.get("notes", ""))
+                         for m in self.state.maps)
+        if seen != self.seen:
+            self.fill()
+        m = self.current()
+        if m is not None and m.get("updated") != self.shown:
+            self.shown = m.get("updated")
+            self.show_info(m)
+        with self.state.lock:
+            seen = self.look()
+        if seen != self.drawn and self.render_job is None:
+            self.render_soon()
+
+    def fill(self):
+        """The list as searched and filtered, the map picked kept picked."""
+        with self.state.lock:
+            ms = [dict(m) for m in self.state.maps]
+        self.seen = tuple((m["id"], m["name"], m["body"], m.get("notes", ""))
+                          for m in ms)
+        bodies = sorted({m["body"] for m in ms})
+        self.body_pick.config(values=[self.ALL] + bodies)
+        if self.body_var.get() not in bodies:
+            self.body_var.set(self.ALL)
+        body = None if self.body_var.get() == self.ALL else self.body_var.get()
+        self.tree.delete(*self.tree.get_children())
+        for b, group in maps.listed(ms, body, self.search.get()):
+            self.tree.insert("", "end", iid=f"body:{b}", open=True,
+                             text=f"{b} ({len(group)})")
+            for m in group:
+                self.tree.insert(f"body:{b}", "end", iid=f"map:{m['id']}",
+                                 text=m["name"])
+        iid = f"map:{self.mid}"
+        if self.mid and self.tree.exists(iid):
+            self.tree.selection_set(iid)
+            self.tree.see(iid)
+
+    def select(self, mid):
+        """Pick map `mid`, the search and filter cleared if they hide it."""
+        if not self.tree.exists(f"map:{mid}"):
+            self.search.set("")
+            self.body_var.set(self.ALL)
+            self.fill()
+        if self.tree.exists(f"map:{mid}"):
+            self.tree.selection_set(f"map:{mid}")
+            self.tree.see(f"map:{mid}")
+
+    def picked(self):
+        """A map picked in the list (a body line picks none): shown, with
+        its options. One made before maps had this tab is brought up to
+        date first (maps.settled)."""
+        sel = self.tree.selection()
+        mid = sel[0][4:] if sel and sel[0].startswith("map:") else None
+        if mid == self.mid:
+            return
+        self.save_notes()
+        self.mid, self.backed = mid, None
+        m = self.current()
+        if m is not None and maps.settled(m):
+            self.scl.update_map(self.state, mid, maps.settled(m))
+        self.shown = m.get("updated") if m else None
+        self.show_options(m)
+        self.render_soon()
+
+    # --- the options ----------------------------------------------------
+
+    def show_options(self, m):
+        """What can be set for map `m`, or a word on picking one (None)."""
+        self.notes = self.info = None
+        for child in self.options.winfo_children():
+            child.destroy()
+        if m is None:
+            tk.Label(self.options, font=mono(), fg=DIM, bg=BG,
+                     justify="left", text="Pick a map in the list."
+                     ).pack(anchor="w", padx=4, pady=4)
+            return
+        box = self.box(" Map ")
+        row = tk.Frame(box, bg=BG)
+        row.pack(anchor="w", fill="x")
+        tk.Label(row, text="Name:", font=mono(), fg=FG, bg=BG).pack(
+            side="left", padx=(0, 6))
+        self.name_var = tk.StringVar(value=m["name"])
+        name = tk.Entry(row, textvariable=self.name_var, font=mono(),
+                        bg=PANEL, fg=FG, insertbackground=FG, relief="flat")
+        name.pack(side="left", fill="x", expand=True)
+        name.bind("<Return>", lambda e: self.rename())
+        name.bind("<FocusOut>", lambda e: self.rename())
+        self.info = tk.Label(box, font=mono(9), fg=DIM, bg=BG,
+                             justify="left", anchor="w")
+        self.info.pack(anchor="w", fill="x", pady=(4, 0))
+        self.show_info(m)
+        row = tk.Frame(box, bg=BG)
+        row.pack(anchor="w", pady=(4, 0))
+        tk.Label(row, text="Print in:", font=mono(), fg=FG, bg=BG).pack(
+            side="left", padx=(0, 6))
+        self.ink = tk.StringVar(value=maps.ink_of(m))
+        for value, text in maps.INKS.items():
+            ttk.Radiobutton(row, text=text, value=value, variable=self.ink,
+                            command=lambda: self.keep(
+                                {"ink": self.ink.get()})).pack(
+                side="left", padx=(0, 8))
+        row = tk.Frame(box, bg=BG)
+        row.pack(anchor="w", pady=(6, 0))
+        ttk.Button(row, text="Reposition on height map",
+                   command=lambda: self.nav.map_to_height(self.current())
+                   ).pack(side="left")
+        ttk.Button(row, text="Delete...", command=self.delete).pack(
+            side="left", padx=(6, 0))
+
+        box = self.box(" Surveys shown ")
+        LayerTable(box, m["layers"],
+                   lambda chosen: self.keep({"layers": chosen}),
+                   m.get("hidden", ()),
+                   lambda hidden: self.keep({"hidden": hidden}), blocks=1)
+
+        box = self.box(" Also shown ")
+        on = maps.view_switches(m)
+        self.also = {}
+        for name, text in self.ALSO:
+            self.also[name] = tk.BooleanVar(value=on[name])
+            ttk.Checkbutton(box, text=text, variable=self.also[name],
+                            command=self.also_ticked).pack(anchor="w")
+
+        box = self.box(" Legend ")
+        lg = maps.legend_of(m)
+        corner = {v: k for k, v in maps.CORNERS.items()}[lg["corner"]]
+        self.legend_vars = {"corner": tk.StringVar(value=corner),
+                            "w_mm": tk.StringVar(value=f"{lg['w_mm']:g}"),
+                            "h_mm": tk.StringVar(value=f"{lg['h_mm']:g}")}
+        grid = tk.Frame(box, bg=BG)
+        grid.pack(anchor="w")
+        for r, (key, text, values) in enumerate((
+                ("corner", "Corner", list(maps.CORNERS)),
+                ("w_mm", "Width mm", [str(v) for v in range(
+                    20, int(maps.FRAME_MM[0]) + 1, 5)]),
+                ("h_mm", "Height mm", [str(v) for v in range(
+                    15, int(maps.FRAME_MM[1]) + 1, 5)]))):
+            tk.Label(grid, text=text + ":", font=mono(), fg=FG,
+                     bg=BG).grid(row=r, column=0, sticky="w", padx=(0, 6))
+            pick = ttk.Combobox(grid, textvariable=self.legend_vars[key],
+                                state="readonly", values=values,
+                                width=13 if key == "corner" else 5)
+            pick.grid(row=r, column=1, sticky="w", pady=1)
+            pick.bind("<<ComboboxSelected>>", lambda e: self.legend_set())
+        tk.Label(box, font=mono(9), fg=DIM, bg=BG, justify="left",
+                 text="What does not fit goes on page 2. With waypoint "
+                      "names off,\neach waypoint has a number, kept once "
+                      "given.").pack(anchor="w", pady=(4, 0))
+        ttk.Button(box, text="Renumber waypoints",
+                   command=lambda: self.keep({"numbers": {}})).pack(
+            anchor="w", pady=(4, 0))
+
+        box = self.box(" Compass ")
+        cp = maps.compass_of(m)
+        self.compass_vars = {
+            "on": tk.BooleanVar(value=cp["on"]),
+            "plate": tk.BooleanVar(value=cp["plate"]),
+            "corner": tk.StringVar(value={v: k for k, v in
+                                          maps.CORNERS.items()}[cp["corner"]]),
+            "size_mm": tk.StringVar(value=f"{cp['size_mm']:g}")}
+        ttk.Checkbutton(box, text="Show the north arrow",
+                        variable=self.compass_vars["on"],
+                        command=self.compass_set).pack(anchor="w")
+        grid = tk.Frame(box, bg=BG)
+        grid.pack(anchor="w", pady=(2, 0))
+        for r, (key, text, values) in enumerate((
+                ("corner", "Corner", list(maps.CORNERS)),
+                ("size_mm", "Size mm", [str(v) for v in range(
+                    int(maps.COMPASS_MM[0]), int(maps.COMPASS_MM[1]) + 1,
+                    2)]))):
+            tk.Label(grid, text=text + ":", font=mono(), fg=FG,
+                     bg=BG).grid(row=r, column=0, sticky="w", padx=(0, 6))
+            pick = ttk.Combobox(grid, textvariable=self.compass_vars[key],
+                                state="readonly", values=values,
+                                width=13 if key == "corner" else 5)
+            pick.grid(row=r, column=1, sticky="w", pady=1)
+            pick.bind("<<ComboboxSelected>>", lambda e: self.compass_set())
+        ttk.Checkbutton(box, text="On a white plate",
+                        variable=self.compass_vars["plate"],
+                        command=self.compass_set).pack(anchor="w",
+                                                       pady=(2, 0))
+
+        box = self.box(" Notes ")
+        tk.Label(box, font=mono(9), fg=DIM, bg=BG, justify="left",
+                 text="What the map is for, printed with it. Kept as you "
+                      "type.").pack(anchor="w")
+        self.notes = text_box(box, 10)
+        self.notes.insert("1.0", m.get("notes", ""))
+        self.notes.edit_modified(False)
+        self.notes.pack(fill="x", pady=(4, 0))
+        self.notes.bind("<KeyRelease>", lambda e: self.save_notes_soon())
+        self.notes.bind("<FocusOut>", lambda e: self.save_notes())
+
+    def box(self, title):
+        box = tk.LabelFrame(self.options, text=title, font=mono(), fg=ACCENT,
+                            bg=BG, bd=2, relief="groove", padx=10, pady=6)
+        box.pack(anchor="nw", fill="x", padx=4, pady=4)
+        return box
+
+    def show_info(self, m):
+        """Where map `m` is, how big, and when it was made and changed."""
+        if self.info is None:
+            return
+        try:
+            self.info.config(text=(
+                f"on {m['body']}, {self.scl.fmt_dist(m['width_m'])} x "
+                f"{self.scl.fmt_dist(maps.height_m(m['width_m']))}\n"
+                "made " + time.strftime("%Y-%m-%d %H:%M",
+                                        time.localtime(m["created"]))
+                + ", changed " + time.strftime(
+                    "%Y-%m-%d %H:%M", time.localtime(m["updated"]))))
+        except tk.TclError:             # the options were just rebuilt
+            pass
+
+    def keep(self, fields):
+        """Set `fields` on the map picked, save and draw it again: only the
+        first change since it was picked keeps a backup (scl.save_json)."""
+        if self.mid is None:
+            return
+        m = self.scl.update_map(self.state, self.mid, fields,
+                                backup=self.backed != self.mid)
+        self.backed = self.mid
+        if m is not None:
+            self.shown = m["updated"]
+            self.show_info(m)
+            self.render_soon()
+
+    def compass_set(self):
+        v = self.compass_vars
+        self.keep({"compass": {"on": v["on"].get(),
+                               "corner": maps.CORNERS[v["corner"].get()],
+                               "size_mm": float(v["size_mm"].get()),
+                               "plate": v["plate"].get()}})
+
+    def legend_set(self):
+        v = self.legend_vars
+        self.keep({"legend": {"corner": maps.CORNERS[v["corner"].get()],
+                              "w_mm": float(v["w_mm"].get()),
+                              "h_mm": float(v["h_mm"].get())}})
+
+    def also_ticked(self):
+        self.keep({"switches": {name: var.get()
+                                for name, var in self.also.items()}})
+
+    def rename(self):
+        m = self.current()
+        name = " ".join(self.name_var.get().split())
+        if m is None or not name or name == m["name"]:
+            if m is not None:
+                self.name_var.set(m["name"])
+            return
+        self.scl.update_map(self.state, m["id"], {"name": name})
+        self.fill()
+
+    def save_notes_soon(self):
+        """Save once typing stops for NOTES_SAVE_MS."""
+        if self.notes_job is not None:
+            self.frame.after_cancel(self.notes_job)
+        self.notes_job = self.frame.after(self.NOTES_SAVE_MS, self.save_notes)
+
+    def save_notes(self):
+        """Keep the notes shown, if they were changed."""
+        if self.notes_job is not None:
+            self.frame.after_cancel(self.notes_job)
+            self.notes_job = None
+        if self.mid is None or self.notes is None:
+            return
+        try:
+            if not self.notes.edit_modified():
+                return
+            text = self.notes.get("1.0", "end-1c").rstrip()
+        except tk.TclError:             # the box is already gone
+            return
+        m = self.scl.update_map(self.state, self.mid, {"notes": text},
+                                backup=self.backed != self.mid)
+        self.backed = self.mid
+        self.notes.edit_modified(False)
+        if m is not None:
+            self.shown = m["updated"]
+            self.show_info(m)
+
+    # --- deleting and restoring -----------------------------------------
+
+    def delete(self):
+        """Delete the map picked, once asked."""
+        m = self.current()
+        if m is None:
+            return
+        if not ask_yes_no("Delete map", f"Delete the map {m['name']} "
+                          f"({m['body']})?\n\nIt can be put back from "
+                          "Settings > Height map while it is still in the "
+                          "backups.", parent=self.frame):
+            return
+        self.save_notes()
+        gone = self.scl.delete_maps(self.state, [m["id"]])
+        with self.state.lock:
+            self.state.flash(f"deleted map {', '.join(gone)}")
+        self.mid = None
+        self.show_options(None)
+        self.render_soon()
+        self.fill()
+
+    def restore(self, parent):
+        """Put back maps deleted earlier, from the backups of maps.json,
+        picked by name in ask_restore."""
+        st, scl = self.state, self.scl
+        with st.lock:
+            have = [dict(m) for m in st.maps]
+        found = scl.deleted_maps(have)
+        if not found:
+            show_message("Restore deleted maps",
+                         "No deleted maps in the backups: the last "
+                         f"{scl.BACKUP_KEEP} saves of maps.json hold none "
+                         "that is gone now.", parent=parent)
+            return
+        rows = [(str(i), m.get("name", ""), m.get("body", ""),
+                 time.strftime("%Y-%m-%d %H:%M",
+                               time.localtime(m.get("created", 0))),
+                 scl.fmt_dist(m.get("width_m", 0)), since)
+                for i, (_, m, since) in enumerate(found)]
+        keys = ask_restore(parent, "maps", "maps.json",
+                           (("name", 180), ("body", 110), ("made", 165),
+                            ("across", 110), ("gone since", 165)), rows)
+        if not keys:
+            return
+        back = scl.restore_maps(st, [found[int(k)][1] for k in keys])
+        with st.lock:
+            st.flash(f"restored {len(back)} map"
+                     + ("s" if len(back) != 1 else ""))
+        self.fill()
+
+
 class SettingsTab:
     """What is done to the program's data as a whole rather than to one
     waypoint, a tab per section: how the star map turns, what the height
@@ -3007,7 +3946,9 @@ class SettingsTab:
                       "it; above 1 slower still."
                  ).pack(anchor="w", pady=(6, 0))
 
-        box = tk.LabelFrame(page["Height map"], text=" Switches ", font=mono(),
+        # Switches, layers and restoring maps: taller than some windows.
+        height_page = scrolled(page["Height map"])
+        box = tk.LabelFrame(height_page, text=" Switches ", font=mono(),
                             fg=ACCENT, bg=BG, bd=2, relief="groove",
                             padx=10, pady=8)
         box.pack(anchor="nw", fill="x", padx=4, pady=4)
@@ -3027,6 +3968,53 @@ class SettingsTab:
                 row=k % half, column=k // half, sticky="w", padx=(0, 24))
         ttk.Button(box, text="Reset to shipped",
                    command=self.reset_starts).pack(anchor="w", pady=(6, 0))
+
+        box = tk.LabelFrame(height_page, text=" Layers ", font=mono(),
+                            fg=ACCENT, bg=BG, bd=2, relief="groove",
+                            padx=10, pady=8)
+        box.pack(anchor="nw", fill="x", padx=4, pady=4)
+        tk.Label(box, font=mono(9), fg=DIM, bg=BG, justify="left",
+                 text="Where each survey is drawn, level 3 at the bottom "
+                      "to 6 on top, and how solid it is.\nUnder them the "
+                      "grey of ground not measured, then the height map "
+                      "(level 2);\nover them the waypoints. Lines are "
+                      "always solid. A change here is made on the\nheight "
+                      "map at once. An open map has its own (its Layers... "
+                      "button)."
+                 ).pack(anchor="w", pady=(0, 6))
+        LayerTable(box, state.cfg.get("heightmap_layers"), self.save_layers)
+        # nav.maps is only set once every tab exists: looked up on click.
+        self.restore_box(height_page, "maps", "maps.json",
+                         lambda: nav.maps.restore(self.frame))
+
+        box = tk.LabelFrame(page["Waypoints"], text=" Names ", font=mono(),
+                            fg=ACCENT, bg=BG, bd=2, relief="groove",
+                            padx=10, pady=8)
+        box.pack(anchor="nw", fill="x", padx=4, pady=4)
+        tk.Label(box, font=mono(9), fg=DIM, bg=BG, justify="left",
+                 text="The colour of waypoint names on each map. A change "
+                      "here is made on the map at once."
+                 ).pack(anchor="w", pady=(0, 6))
+        grid = tk.Frame(box, bg=BG)
+        grid.pack(anchor="w")
+        for row, (key, text, ground, tab) in enumerate((
+                ("starmap_label_colour", "Star map", BG, "star"),
+                ("heightmap_label_colour", "Height map", heightmap.GREY,
+                 "height"))):
+            tk.Label(grid, text=text + ":", font=mono(), fg=FG, bg=BG).grid(
+                row=row, column=0, sticky="w", padx=(0, 6), pady=2)
+            var = tk.StringVar(value=state.cfg.get(key) if state.cfg.get(key)
+                               in LABEL_COLOURS else "white")
+            pick = ttk.Combobox(grid, textvariable=var, state="readonly",
+                                width=8, values=list(LABEL_COLOURS))
+            pick.grid(row=row, column=1, sticky="w", padx=(0, 10))
+            # A name as the map shows it, on that map's ground.
+            sample = tk.Label(grid, text=" Shady Glen 1570 ", font=mono(9),
+                              bg=ground, fg=LABEL_COLOURS[var.get()])
+            sample.grid(row=row, column=2, sticky="w")
+            pick.bind("<<ComboboxSelected>>",
+                      lambda e, k=key, v=var, s=sample, t=tab:
+                      self.save_label_colour(k, v.get(), s, t))
 
         box = tk.LabelFrame(page["Waypoints"], text=" Import ", font=mono(),
                             fg=ACCENT, bg=BG, bd=2, relief="groove",
@@ -3122,6 +4110,19 @@ class SettingsTab:
         for name, value in on.items():
             self.starts[name].set(value)
         self.nav.height.set_switches(on)
+
+    def save_label_colour(self, key, name, sample, tab):
+        """Keep the colour of waypoint names on one map (`tab`: "star" or
+        "height"), show it on the sample and redraw that map."""
+        self.scl.save_setting(self.state, key, name)
+        sample.config(fg=LABEL_COLOURS[name])
+        getattr(self.nav, tab).draw()
+
+    def save_layers(self, chosen):
+        """Keep the height map's own levels and opacities (`chosen`, as
+        layer_choices gives them), and redraw it with them."""
+        self.scl.save_setting(self.state, "heightmap_layers", chosen)
+        self.nav.height.draw()
 
     def refresh(self):
         """The SUB list, redrawn when it or the waypoints' use of it changes."""

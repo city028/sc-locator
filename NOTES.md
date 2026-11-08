@@ -798,9 +798,26 @@ Crusader, Hurston. The planet-frame row kept updating throughout. On arrival
 the Root row was mostly unreadable (11 of 11 frames failed in one stretch) and
 misreads interleaved with good frames held off the three-frame relock for
 minutes. A tracker that followed a jump's straight line through the Root row
-was built and removed again: there is nothing on that row to follow.
+was built and removed again: there was nothing on that row to follow.
 
-What the star map does instead is under "Where you are on the star map".
+**It moves now (2026-10-25, back 2026-11-08).** ArcCorp to Wala the Root row
+updated every frame of both jumps, and every reading was refused as more than
+100 km from the last, so the star map's cross stood still and then snapped to
+the destination. `on_course` follows a jump again: a reading beyond the lock
+is believed when it and the two before it run on one straight course (the
+second step within `COURSE_DEG`, 5 deg, of the first's direction, and no
+faster than twice light, as a read's time is when it finished). The speed is
+not compared from step to step: it changed sevenfold between frames slowing
+down at Wala. A reading off a course already believed is dropped rather than
+starting a new one, so one misread mid-jump costs a frame. Replayed through
+the log, 28 of that trip's 32 refused readings are now shown (two at the start
+of each leg are needed to find the course), and no misread was taken: the
+ones that were (`58000.0` for a value, `22925.3` for another) turn the course
+or outrun light. A frozen row, as on 2026-10-14, still repeats one value and
+is taken by the ordinary lock, as before.
+
+What the star map does with the planet-frame fix is under "Where you are on
+the star map".
 
 Marking a point additionally requires the position to have held still, because
 out there nothing else can contradict it: there is no radius, no terrain height
@@ -845,6 +862,32 @@ re-anchored (see "The spin drifts"). It works only in the zones of analysed
 bodies; elsewhere the Root row is used. A step faster than light is a misread
 fix -- Crusader once read 77.6 Gm out among readings of 19.1 Gm -- and is
 skipped, up to twice in a row.
+
+It is only as good as the body's spin. Checked against every logged Root
+reading (2026-11-08): microTech about 1 km, Wala 11 km, Nyx I 28 km, but
+ArcCorp 5.6 million km -- its spin, measured once on 2026-10-05 from a 2.2 deg
+arc and never re-anchored, had drifted some 150 deg by 2026-10-25, so in
+ArcCorp's zone the cross sat on the wrong side of the planet.
+
+**A fresh ANALYSE did not fix it (2026-11-08).** The new one (30 s, a 1.0 deg
+arc) got where the planet was turned to right -- logged readings that day
+within 1 km -- but its rate, 0.0323321 deg/s, was 0.55% fast: about 15 deg a
+day of drift, worse than the 10-05 one, which was 0.28% slow. On the 10-25
+readings, 2.9 million km out, it was still 145 deg off. A short arc fixes the
+angle but not the rate: a read's time is when it finished, and at ~426 m/s on
+the surface half a second of that is ~200 m.
+
+The rate was found instead from the visits themselves. Each pair of them
+allows a set of rates a whole number of turns apart (360 deg over the time
+between): 10-05 to 11-08 every 1.2e-4 deg/s, 10-25 to 11-08 every 3.0e-4. Only
+0.03215436 deg/s (11,196 s, 3.11 h) is in both. It is in bodies.json by hand,
+the 11-08 analysis's angle kept: logged readings now within 1 km near the
+planet on both 10-25 and 11-08, and 470-610 km at 2.9 million km on 10-25,
+0.01 deg, which is the gap between a planet fix and the Root reading it is
+logged with. Carried forward at this rate, the 10-05 analysis lands within
+0.005 deg of the 11-08 one.
+
+Another ANALYSE on ArcCorp would overwrite this rate with a short-arc one.
 
 Each `system pos` log line ends with the last planet fix and its time, which
 is what the two were checked against each other with.
@@ -2057,6 +2100,105 @@ The height map and the star map redraw by themselves only when what they
 compare of the waypoints changes. The height map compared id, name, type
 and position, the star map id, name and body; neither the SUB, so a new
 SUB kept the old icon until a zoom redrew it. Both compare the SUB now.
+
+## A misread spike in built-up-area-002 (2026-11-08)
+
+Sakurasun Goldenrod, microTech, flown round at ~57 m/s (95% under 114). The
+HUD was lost for a minute (09:21:35-09:22:31: "debug HUD not on screen"
+three times, contrast cuts switching), and four fixes in it read x
+`-170623` as `-176553`: 6 km west and 900 m higher, agreeing with each
+other, so the spike went into the outline across the circle. The first came
+16 s after the last good point, 375 m/s, under the areas' 3,000 m/s; the
+next two would have come back in by rejoin at 235 and 223 m/s. The HUD came
+back ~700 m past the start; the stretch missed was then flown again
+backwards, after the start, and ring() cut it off at the lap (point 217).
+
+Repaired by hand (backup in bak/): points 0-183, then 254 back to 218, the
+re-flown stretch reversed; 221 points, a clean ring.
+
+A tighter area speed limit does not fix this: built-up-area-001 (New
+Babbage) was flown at a median 203 m/s with bursts of 460-566, and 300 m/s
+would still have let two of these misreads in by rejoin. The log does not
+show whether the HUD's heights were read in those frames (they would have
+disagreed by ~900 m), so making them vouch could not be checked either.
+
+**Spike check (chosen by the user).** `traces.spikes` finds runs of at most
+`SPIKE_POINTS` (6) points jumped into and back out of, both jumps over
+`SPIKE_JUMP` (10) times the route's median step, where the route picks up
+closer to where it left than either jump. `ring()` leaves them out before
+cutting the lap, so the points stay as flown and only the drawing changes,
+as with buildings. END AREA says how many were left out, and the log names
+the runs. On the original built-up-area-002 it finds exactly 184-187; on
+every other saved trace nothing, but four points (113-116) of lake-001,
+which is drawn as a fan and does not use it. A gap with no misreads (a jump
+out, none back) and an arm of the area flown at the usual step are not
+spikes. A misread smaller than ten steps is not caught: at New Babbage's
+~200 m steps that is anything under ~2 km.
+
+## Height map layers and opacity (2026-11-08)
+
+Tk draws its canvas items solid: lines, polygons and text have no opacity.
+Only pictures (PIL, RGBA) are see-through, which is how water and the area
+washes were already drawn. So each survey kind has a level (3-6, between
+the height map on 2 and the waypoints on top; `traces.LAYERS`) and the
+ones drawn as pictures an opacity: the height map (blended toward the
+unmeasured grey), water, area fills and buildings. Buildings became a
+picture with their outline drawn over it, so right-click and the name by
+the pointer now find a building by the pointer being inside its outline
+(`traces.inside_ring`), not by Tk's own hit test. Lines stay solid by
+choice. Water of one opacity is one picture, so a river running into a
+lake of the same opacity still joins it.
+
+## Notes saved as you type, without flooding bak/ (2026-11-08)
+
+Survey notes are saved 1.5 s after typing stops. The first version saved
+`traces.json` with a backup each time, so one long note could push all 30
+of its backups out of bak/. Like the report notes, only the first save
+since the survey was picked keeps a backup now (`save_traces(backup=)`).
+Map options and map notes do the same.
+
+## Maps to print (2026-11-08)
+
+A map (`maps.py`, `maps.json`) is a view, not a picture: body, centre (unit
+vector), width in m, its options, legend, compass, waypoint numbers and
+notes. North is up: the frame is the flat map around its centre. It is
+drawn from the data as it is each time, so new surveys show on it by
+themselves.
+
+The page (`mapprint.py`) is drawn with PIL, not the Tk canvas: canvas items
+cannot be printed sharp. Every size is in mm on the page and turned into px
+at the dpi asked for, so the Maps tab's preview and the print are the same
+page; the height map's px widths and patterns are kept as 0.26 mm each.
+The A4 layout (`maps.PAGE_MM` and on) gives a 174 x 239 mm frame; a map
+framed when it was 174 x 194 kept its centre and width and only shows more
+ground north to south.
+
+Black and white is a palette, not a conversion: turned grey, hostile areas
+and swamps, and water and built-up areas, come out nearly the same, orange
+icons go dull and the relief goes dark under the text. Areas are hatched
+instead, water gets lines across, the relief is a light grey, icons black,
+and the page is saved as "L" so nothing coloured slips through.
+
+Waypoint numbers (names off) are kept with the map, given top left to
+bottom right the first time, so a printed copy and a later one agree; a
+deleted waypoint leaves a gap until Renumber.
+
+Heights on page 2 are what the data has: the highest and lowest measured
+cells in the frame (not under a lake), each waypoint's `elev` and each
+lake's and sea's level. Buildings stand on legs and roads and railways are
+flown over, so their points' heights are not the ground's. On Sakurasun
+Goldenrod many turrets sit higher than the highest cell measured (658 m
+against 476 m): the height survey there does not cover the perimeter.
+
+## A map that drew the one before (2026-11-08)
+
+Sakurasun Goldenrod in black and white kept showing in colour, or showed
+the map picked before it. Its built-up area's legend line went over to page
+2, and hatching it there failed (`alpha_composite` needs RGBA; page 2 is
+RGB). The error went to the console only, as Tk callback errors do, and
+the preview kept its last picture. Hatching pastes through a mask now,
+which works on either; and a page that cannot be drawn says so in the tab
+and in the log rather than leave the last one.
 
 ## Still open
 
