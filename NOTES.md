@@ -2208,6 +2208,40 @@ for 95 and full-size colour. The five maps at the time came to 0.7 to 3.2 MB
 against 0.4 to 1.8 MB, and each drew and saved at 300 dpi in under a second,
 so the export runs on the window's thread.
 
+## Star map: less clutter, a POI list, down to the ground (2026-11-08)
+
+The system map leaves moons and places attached to a body to that body's
+view (`starmap.system_view`). It is a filter on top of `system_objects`, not
+a change to it: `placed_bodies` goes through `system_objects`, and without
+the moons there they would vanish from the planet views too. Something is
+only taken off if the view that shows it can be reached, so a moon whose
+planet has no centre stays, as does a place attached to a body with none (a
+reset analysis does that). On the data at the time the 1,000 Mm of
+`POI_RANGE_M` sat in a wide gap: Z48-013 at 93 Mm, the next out Startlight
+Station at 1,815 Mm.
+
+The POI list is rebuilt only when what it lists changes (`fill_pois`), as
+the map redraws on every drag and fix and a rebuild loses the selection and
+scroll. Its groups are where the map shows a POI, so Z48-013 is under
+Crusader. Show in reports asks `waypoint_report`, which compares waypoints
+by id: names repeat, so `place_name` alone could not say which one a report
+was made at.
+
+A pin with ground under it opens on the height map (`scl.has_ground`); one in
+orbit or in space has nothing to show there, so it still opens in Waypoints.
+
+Tk on Windows has no real dash patterns on a canvas line: it picks a stock
+pen, whose dots grow with the width. `dash=(3, 4)` and `(12, 16)` drew the
+same pixels at width 4, so the ring width setting leaves the dash alone.
+`itemcget(..., "dash")` also returns only three characters (`12 ` for
+`12 16`), so it cannot be used to check one.
+
+Checking a window from a script: a canvas sets its `current` item from a
+generated `<Motion>`, so pins can be clicked without moving the real pointer.
+A process that has not declared DPI awareness gets scaled coordinates from
+Tk while `ImageGrab` works in real pixels, so a grab comes out cut off; a
+box "cut off" that way was measured to fit.
+
 ## Still open
 
 - Two errors from the screen reader's side, each costing one frame:

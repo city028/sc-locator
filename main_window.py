@@ -398,6 +398,15 @@ class Navigator:
         self.nb.select(self.editor.frame)
         self.editor.select(wid)
 
+    def open_pin(self, wid):
+        """A pin clicked on the star map: on the height map if it has ground
+        under it, else in the Waypoints tab."""
+        w = self.scl.find_waypoint(snapshot(self.state)[0], wid)
+        if w is not None and self.scl.has_ground(w, self.state.cfg):
+            self.to_height(wid)
+        else:
+            self.to_list(wid)
+
     def body_system(self, body):
         with self.state.lock:
             rec = self.state.bodies.get(body) or {}
@@ -406,6 +415,13 @@ class Navigator:
     def body_to_star(self, body):
         self.nb.select(self.star.frame)
         self.star.show(self.body_system(body), body)
+
+    def back_to_star(self, body):
+        """From the height map to `body`'s view on the star map, left as it
+        was if the star map is still showing that body."""
+        self.nb.select(self.star.frame)
+        if self.star.body != body:
+            self.star.show(self.body_system(body), body)
 
     def body_to_height(self, body):
         self.nb.select(self.height.frame)
@@ -592,15 +608,29 @@ class Navigator:
             add(label="Centre", command=lambda: self.star.centre_on(wid))
         if here != "star" and w.get("system") in starmap.SYSTEMS:
             add(label="Show on star map", command=lambda: self.to_star(wid))
-        # The ground only: not deep space, nor a station up in orbit.
-        if (here != "height" and w.get("frame", "planet") == "planet"
-                and not self.scl.in_orbit(w, self.state.cfg)):
+        if here != "height" and self.scl.has_ground(w, self.state.cfg):
             add(label="Show on height map", command=lambda: self.to_height(wid))
         if here != "list":
             add(label="Show in Waypoints", command=lambda: self.to_list(wid))
         add(label="Rename...", command=lambda: self.rename_waypoint(wid, at))
         add(label="Edit...", command=lambda: self.edit_waypoint(wid, at))
         add(label="Delete...", command=lambda: self.delete_waypoint(wid))
+        return True
+
+    def poi_list_menu(self, menu, wid, at):
+        """A POI's menu in the star map's list: where else to see it."""
+        wps, bodies = snapshot(self.state)
+        w = self.scl.find_waypoint(wps, wid)
+        if w is None:
+            return False
+        report = self.scl.waypoint_report(w, bodies, wps)
+        add = menu.add_command
+        add(label="Show on star map", command=lambda: self.to_star(wid))
+        add(label="Show info", command=lambda: self.waypoint_details(wid, at))
+        add(label="Show in waypoints", command=lambda: self.to_list(wid))
+        if report is not None:
+            add(label="Show in reports",
+                command=lambda: self.body_to_report(report))
         return True
 
     def body_menu(self, menu, body, here, at, opened=False):
@@ -718,6 +748,7 @@ class StarMap:
         self.backdrops, self.ramp = {}, None
         self.frame = tk.Frame(parent, bg=BG)
         self.system, self.body = starmap.SYSTEMS[0], None
+        self.up = None          # the body "back" opens; None: the system view
         self.yaw, self.pitch, self.zoom = 0.0, SYSTEM_PITCH, 1.0
         self.press, self.dragged, self.seen = None, False, None
         self.ticks = 0
@@ -746,23 +777,43 @@ class StarMap:
         self.types = type_switches(side, ("poi",), self.draw, self.type_boxes)
         self.type_boxes["survey"].pack_forget()
         self.back = ttk.Button(side, text="< back to system",
-                               command=lambda: self.show(self.system, None))
-        self.back.pack(anchor="w", fill="x", pady=(8, 12))
+                               command=lambda: self.show(self.system, self.up))
+        # Packed by show, in a body's view: the system view has no way back.
         # One framed box, title, hint and list together, so it is plain which
-        # list the words are about.
+        # list the words are about. Packed first, at the bottom, so a short
+        # window takes its room from the POI list above.
         self.box = box = tk.LabelFrame(side, font=mono(),
                             fg=ACCENT, bg=BG, bd=2, relief="groove",
                             padx=6, pady=6)
-        box.pack(anchor="w", fill="both", expand=True)
+        box.pack(side="bottom", anchor="w", fill="x", pady=(8, 0))
         self.unplaced_hint = tk.Label(box, font=mono(9), fg=DIM, bg=BG,
                                       justify="left", anchor="w")
         self.unplaced_hint.pack(anchor="w", fill="x", pady=(0, 6))
         self.unplaced = tk.Listbox(box, font=mono(), bg=PANEL, fg=FG, width=22,
-                                   height=12, relief="flat",
+                                   height=4, relief="flat",
                                    selectbackground="#1F3A52")
         self.unplaced.pack(fill="both", expand=True)
         self.unplaced.bind("<<ListboxSelect>>", self.open_unplaced)
         self.unplaced.bind("<Button-3>", self.unplaced_menu)
+
+        # Every POI of the system, whichever view is open.
+        self.poi_seen, self.poi_closed = None, set()
+        box = tk.LabelFrame(side, text=" POIs ", font=mono(), fg=ACCENT, bg=BG,
+                            bd=2, relief="groove", padx=6, pady=6)
+        box.pack(anchor="w", fill="both", expand=True, pady=(8, 0))
+        tk.Label(box, text="Search", font=mono(), fg=DIM, bg=BG).pack(anchor="w")
+        self.poi_search = tk.StringVar()
+        tk.Entry(box, textvariable=self.poi_search, font=mono(), bg=PANEL,
+                 fg=FG, insertbackground=FG, relief="flat", width=10).pack(
+            anchor="w", fill="x", pady=(0, 6))
+        self.poi_search.trace_add("write", lambda *_: self.fill_pois())
+        self.pois = ttk.Treeview(box, show="tree", selectmode="browse")
+        set_column(self.pois, "#0", 330)
+        scroll = ttk.Scrollbar(box, orient="vertical", command=self.pois.yview)
+        self.pois.configure(yscrollcommand=scroll.set)
+        scroll.pack(side="right", fill="y")
+        self.pois.pack(side="left", fill="both", expand=True)
+        self.pois.bind("<Button-3>", self.poi_menu)
 
         self.canvas = tk.Canvas(self.frame, bg=BG, highlightthickness=0)
         self.canvas.pack(side="left", fill="both", expand=True)
@@ -817,11 +868,14 @@ class StarMap:
             self.om_bar.place_forget()
             self.reset_btn.place(relx=1.0, x=-10, y=10, anchor="ne")
             survey.pack_forget()
+            self.back.pack_forget()
         else:
             self.reset_btn.place_forget()
             self.om_bar.place(relx=1.0, x=-10, y=10, anchor="ne")
             survey.pack(anchor="w", after=self.type_boxes["poi"])
+            self.back.pack(anchor="w", fill="x", pady=(8, 4), before=self.box)
         self.pitch = SYSTEM_PITCH if body is None else math.radians(20)
+        self.fill_pois()
         self.draw()
 
     def view_om(self, lat, lon):
@@ -923,6 +977,46 @@ class StarMap:
         if w is not None:
             self.view_om(*starmap.facing((w["x"], w["y"], w["z"])))
 
+    def fill_pois(self):
+        """The list of POIs, for the system and search. Rebuilt only when what
+        it lists changes, so a redraw keeps its selection and scroll. Every
+        group is open during a search; after it, as they were left."""
+        wps, bodies = snapshot(self.state)
+        text = self.poi_search.get()
+        rows = starmap.poi_groups(
+            bodies, self.scl.search_waypoints(wps, text), self.system)
+        seen = (bool(text.strip()), rows)
+        if seen == self.poi_seen:
+            return
+        tree = self.pois
+        if self.poi_seen and not self.poi_seen[0]:
+            shown = set(tree.get_children())
+            self.poi_closed = (self.poi_closed - shown) | {
+                g for g in shown if not tree.item(g, "open")}
+        picked = tree.selection()
+        tree.delete(*tree.get_children())
+        for group, pois in rows:
+            iid = f"group:{group}"
+            tree.insert("", "end", iid=iid, text=f"{group} ({len(pois)})",
+                        open=seen[0] or iid not in self.poi_closed)
+            for wid, name in pois:
+                tree.insert(iid, "end", iid=f"poi:{wid}", text=name)
+        if picked and tree.exists(picked[0]):
+            tree.selection_set(picked[0])
+            tree.see(picked[0])
+        self.poi_seen = seen
+
+    def poi_menu(self, e):
+        """Right-click a POI in the list: select it and give its menu. A
+        group's line has none."""
+        row = self.pois.identify_row(e.y)
+        if not row.startswith("poi:"):
+            return
+        self.pois.selection_set(row)
+        self.menu.delete(0, "end")
+        if self.nav.poi_list_menu(self.menu, row[4:], (e.x_root, e.y_root)):
+            self.menu.tk_popup(e.x_root, e.y_root)
+
     def open_unplaced(self, _event):
         sel = self.unplaced.curselection()
         if sel:
@@ -958,7 +1052,7 @@ class StarMap:
             current = self.canvas.find_withtag("current")
             wid = self.pins.get(current[0]) if current else None
             if wid is not None:
-                self.nav.to_list(wid)
+                self.nav.open_pin(wid)
             for tag in self.canvas.gettags("current"):
                 if tag.startswith("body:"):
                     self.show(self.system, tag[5:])
@@ -1009,12 +1103,14 @@ class StarMap:
         me = self.where_am_i()
         if self.follow.get():
             self.follow_me(me)
+        self.fill_pois()
         with self.state.lock:
             cells = heightmap.cell_count(self.state.heightmap, self.body)
         # The SUB too: its icon is the pin (2026-11-08, a new SUB showed
-        # the old icon until something else changed).
-        seen = (tuple((w["id"], w["name"], w["planet"], w.get("sub"))
-                      for w in wps),
+        # the old icon until something else changed). Shown around too: it
+        # moves a pin between the views.
+        seen = (tuple((w["id"], w["name"], w["planet"], w.get("sub"),
+                       w.get("parent")) for w in wps),
                 tuple((k, tuple(v.get("centre") or ())) for k, v in bodies.items()),
                 cells, me)
         self.ticks += 1
@@ -1038,13 +1134,15 @@ class StarMap:
         self.subs = {wp["id"]: wp.get("sub", "") for wp in wps}
         self.names = {wp["id"]: wp["name"] for wp in wps}
         self.me = self.where_am_i()
-        objs = starmap.system_objects(bodies, wps, self.system)
+        objs = starmap.system_view(bodies, wps, self.system)
+        self.up = (starmap.back_to(self.body, bodies, self.system)
+                   if self.body else None)
+        self.back.config(text=f"< back to {self.up or 'system'}")
         if self.body is None:
             self.fill_box(" Bodies not analysed yet ", objs["unplaced"],
                           "These have waypoints but\nno place on the map "
                           "until\nyou ANALYSE them.\nClick one to open it.",
                           "None in this system.")
-            self.back.state(["disabled"])
             self.draw_system(objs, wps, w, h)
         else:
             around = starmap.surroundings(self.body, bodies, wps, self.system)
@@ -1052,7 +1150,6 @@ class StarMap:
                           f"Moons of {self.body} with no\nplace yet: ANALYSE "
                           "them\nto show them here.\nClick one to open it.",
                           "None for this body.")
-            self.back.state(["!disabled"])
             self.draw_body(wps, bodies, around, w, h)
 
     def fill_box(self, title, keys, hint, empty):
@@ -1124,7 +1221,7 @@ class StarMap:
     def pin(self, x, y, wid, label=None):
         """A location marker standing on (x, y) for waypoint `wid`, with its
         name (or `label`) beside it, ringed if SHOW ON MAP picked it. Clicking
-        any part of it opens the waypoint in the table."""
+        any part of it opens the waypoint (Navigator.open_pin)."""
         c = self.canvas
         ids = []
         sub = self.subs.get(wid, "")
@@ -1225,6 +1322,12 @@ class StarMap:
                 or starmap.fit_scale([b["centre"] for b in objs["bodies"]]
                                      + [p for _, p in objs["points"]], w, h))
 
+    def orbit_line(self, flat):
+        """An orbit ring through the screen points `flat`, as thick as
+        Settings > Star map says."""
+        self.canvas.create_line(*flat, fill=ORBIT, dash=(3, 4),
+                                width=self.state.cfg["starmap_ring_width"])
+
     def draw_system(self, objs, wps, w, h):
         c, yaw, pitch = self.canvas, self.yaw, self.pitch
         cx, cy = w / 2, h / 2
@@ -1238,7 +1341,7 @@ class StarMap:
             for p in ring:
                 sx, sy, _ = starmap.project(p, yaw, pitch, scale, cx, cy)
                 flat += [sx, sy]
-            c.create_line(*flat, fill=ORBIT, dash=(3, 4))
+            self.orbit_line(flat)
 
         items = [(starmap.project((0, 0, 0), yaw, pitch, scale, cx, cy),
                   "sun", None)]
@@ -1316,7 +1419,7 @@ class StarMap:
                 for p in starmap.orbit_ring(math.hypot(q[0], q[1])):
                     sx, sy, _ = starmap.project(p, yaw, pitch, scale, cx, cy)
                     flat += [sx, sy]
-                c.create_line(*flat, fill=ORBIT, dash=(3, 4))
+                self.orbit_line(flat)
 
         items = [(starmap.project(p, own, pitch, scale, cx, cy), "pin", n,
                   None) for n, p in pts]
@@ -1393,7 +1496,8 @@ class StarMap:
         if outer:
             lines.append("beyond the globe: distances not to scale")
         lines.append("drag to rotate  -  wheel to zoom")
-        lines.append("click a pin to edit it, a moon to open it")
+        lines.append("click a pin on the ground for the height map, "
+                     "another to edit it, a moon to open it")
         self.header(f"{self.body.upper()}  ({where})", "\n".join(lines))
         if surveyed:
             self.legend(*self.mesh_tiles[1:], w, h)
@@ -1579,6 +1683,10 @@ class HeightMapTab:
         self.pick.pack(anchor="w", pady=(0, 8))
         self.pick.bind("<<ComboboxSelected>>",
                        lambda e: self.open(self.body_var.get()))
+        # Packed by place_star_back, while the body open is on a star map.
+        self.star_back = ttk.Button(
+            side, text="< back to star map",
+            command=lambda: nav.back_to_star(self.body))
         tk.Label(side, text="Go to", font=mono(), fg=DIM, bg=BG).pack(anchor="w")
         self.goto_var = tk.StringVar()
         self.goto = ttk.Combobox(side, textvariable=self.goto_var, width=14,
@@ -1655,6 +1763,15 @@ class HeightMapTab:
         self.canvas.bind("<Button-3>", self.context_menu)
         self.menu = tk.Menu(self.canvas, tearoff=False, font=mono(), bg=PANEL,
                             fg=FG, activebackground="#1d4f3a")
+
+    def place_star_back(self):
+        """Back to star map: there only while the body open is on one."""
+        on = self.nav.body_system(self.body) in starmap.SYSTEMS
+        if on and not self.star_back.winfo_manager():
+            self.star_back.pack(anchor="w", fill="x", pady=(0, 8),
+                                after=self.pick)
+        elif not on and self.star_back.winfo_manager():
+            self.star_back.pack_forget()
 
     def open(self, body):
         """Show `body`, around the busiest area surveyed on it."""
@@ -2001,6 +2118,7 @@ class HeightMapTab:
         w, h = c.winfo_width(), c.winfo_height()
         if w < 50 or h < 50 or not c.winfo_ismapped() or self.body is None:
             return
+        self.place_star_back()
         half_w, half_h = w / 2 * self.mpp, h / 2 * self.mpp
         with self.state.lock:
             st = self.state
@@ -3986,6 +4104,25 @@ class SettingsTab:
                       "it; above 1 slower still."
                  ).pack(anchor="w", pady=(6, 0))
 
+        box = tk.LabelFrame(page["Star map"], text=" Rings ", font=mono(),
+                            fg=ACCENT, bg=BG, bd=2, relief="groove",
+                            padx=10, pady=8)
+        box.pack(anchor="nw", fill="x", padx=4, pady=4)
+        row = tk.Frame(box, bg=BG)
+        row.pack(anchor="w")
+        tk.Label(row, text="Thickness of the orbit rings:", font=mono(),
+                 fg=FG, bg=BG).pack(side="left", padx=(0, 6))
+        ring_width = tk.StringVar(value=state.cfg["starmap_ring_width"])
+        pick = ttk.Combobox(row, textvariable=ring_width, state="readonly",
+                            width=5, values=("1", "2", "3", "4", "5"))
+        pick.pack(side="left")
+        pick.bind("<<ComboboxSelected>>",
+                  lambda e: self.save_ring_width(int(ring_width.get())))
+        tk.Label(box, font=mono(9), fg=DIM, bg=BG, justify="left",
+                 text="In pixels. A change here is made on the star map at "
+                      "once."
+                 ).pack(anchor="w", pady=(6, 0))
+
         # Switches, layers and restoring maps: taller than some windows.
         height_page = scrolled(page["Height map"])
         box = tk.LabelFrame(height_page, text=" Switches ", font=mono(),
@@ -4157,6 +4294,11 @@ class SettingsTab:
         self.scl.save_setting(self.state, key, name)
         sample.config(fg=LABEL_COLOURS[name])
         getattr(self.nav, tab).draw()
+
+    def save_ring_width(self, width):
+        """Keep how thick the orbit rings are and redraw the star map."""
+        self.scl.save_setting(self.state, "starmap_ring_width", width)
+        self.nav.star.draw()
 
     def save_layers(self, chosen):
         """Keep the height map's own levels and opacities (`chosen`, as

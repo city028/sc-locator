@@ -315,8 +315,10 @@ quits the program.
 
 - **HUD overlay** switch: hide or show the in-game pin and panel.
 - **Star map**: pick Stanton, Pyro or Nyx. The star is at the centre; planets
-  and moons are placed where ANALYSE measured them, deep-space waypoints where
-  they were saved. It opens zoomed in as far as it can with every waypoint
+  are placed where ANALYSE measured them, deep-space waypoints where they were
+  saved. Moons and places in space close to a body are left to that body's
+  view (see **Around a planet**), unless the body has no place on the map yet.
+  It opens zoomed in as far as it can with every waypoint
   shown, and every body that has one, in view. Drag to rotate, mouse wheel to
   zoom; **default view** (top right) puts the view back as it started. The
   **POI waypoints** and **Survey waypoints** switches pick which types are
@@ -326,16 +328,23 @@ quits the program.
   height above it. A drag turns the globe less the closer you are zoomed in
   (how much less: Settings > Star map). Bodies with waypoints that have not
   been analysed yet are listed on the left and open the same way.
+- **POIs** (left of the map): every POI of the system picked, under **Deep
+  space** or the body the map shows it on, whichever view is open. Type in
+  **Search** to narrow it to names holding that text (any case). Click one to
+  select it; right-click it for its menu.
 - **Around a planet**: the opened planet also shows its analysed moons and the
   places in space near it (stations, bases), in their true direction, with the
   real distance in the label. Distances beyond the globe are pulled in so
   everything fits; the globe itself is to scale and turned to how it stands
   right now, so surface waypoints sit right against the moons. Moons not yet
   analysed are listed on the left. A deep-space waypoint is shown around the
-  nearest body within 1,000 Mm; to choose by hand, set **Shown around** in
-  its **Edit...** window (e.g. a Lagrange station that sits far from its
-  planet).
-  Clicking a pin opens it in the Waypoints tab; right-click it, or a planet
+  nearest body within 1,000 Mm, and not on the system map; to choose by hand,
+  set **Shown around** in its **Edit...** window (e.g. a Lagrange station that
+  sits far from its planet, or **none** to keep it on the system map). From a
+  moon, the back button goes to its planet.
+  Clicking a pin on the ground opens it on the height map, whose **back to
+  star map** button returns to this view; any other pin, such as a station in
+  orbit, opens in the Waypoints tab. Right-click it, or a planet
   or moon, for its menu (see [Right-click menus](#right-click-menus)).
 - **View from an orbital marker**: with a planet or moon open, the **OM-1** to
   **OM-6** buttons at the top right look down on it from above that marker, at
@@ -453,6 +462,7 @@ are already on.
 |---|---|---|
 | a **waypoint** (POI, survey, deep space) | its pin on the star map or height map, its row in Waypoints | **Show details**, **Centre** (star map, in its planet's or moon's view: turns it to the middle, so the wheel zooms straight in on it; not for deep space), **Show on star map**, **Show on height map** (on the ground of a planet or moon: not in deep space, nor a station in orbit over 100 km up), **Show in Waypoints**, **Rename...**, **Edit...** (name, SUB, QT, Private, note, and Shown around in deep space), **Delete...** |
 | a **planet or moon** | its globe on the star map (in its own view, anywhere on it), a body in the list on the left, the ground of the height map, its row in Reports | **Show details**, **Open on star map**, **Show on height map** (if surveyed or traced), **Show report** (if analysed), **Show waypoints** |
+| a **POI in the list** | left of the star map | **Show on star map**, **Show info**, **Show in waypoints**, **Show in reports** (the report made at it, or of the body it is on, if there is one) |
 | a **building** | the height map | **Show details**, **Rename...** |
 
 **Show details** opens a small window by the pointer: for a waypoint what
@@ -559,6 +569,7 @@ height map and the star map show them when you tick **Survey waypoints**.
   - **Map frames** (off at first): the dashed frame and name of each map
     of this body (see [Maps to print](#maps-to-print)).
 
+  **Back to star map** opens the body on the star map.
   A **Go to** list (A to Z) centres the map on a waypoint of the types shown.
   How the surveys lie over each other and how solid they are is set in
   Settings > Height map > Layers. **New map...** makes a map to print of
@@ -862,6 +873,7 @@ program is closed. The ones you are most likely to change:
 | `waterway_width_m` | `30` | how wide (m) a new waterway is drawn on the height map |
 | `building_wall_offset_m` | `0.5` | how far (m) outside the walls you walk round a building; its outline is pulled in this much |
 | `starmap_zoom_slowdown` | `1.0` | how much slower a planet's or moon's view on the star map turns when zoomed in: per pixel, divided by the zoom to this power (also in Settings > Star map) |
+| `starmap_ring_width` | `1` | how thick the star map draws its orbit rings, in pixels (also in Settings > Star map) |
 | `heightmap_layers` | `{}` | each survey kind's level and opacity on the height map, e.g. `{"building": {"level": 3, "opacity": 60}}`; one not named is as shipped (also in Settings > Height map) |
 | `starmap_label_colour` / `heightmap_label_colour` | `"white"` | the colour of waypoint names on each map: white, black, red, yellow, blue or green (also in Settings > Waypoints) |
 | `heightmap_switches` | `{}` | what the height map's switches start as, e.g. `{"samples": true}`; one not named starts as shipped (also in Settings > Height map) |

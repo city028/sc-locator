@@ -207,6 +207,56 @@ def attached_body(w, placed):
     return best[1] if best and best[0] <= POI_RANGE_M else None
 
 
+def planet_of(moon):
+    """The planet `moon` belongs to, or None for anything else."""
+    return next((p for p, moons in MOONS.items() if moon in moons), None)
+
+
+def system_view(bodies, waypoints, system):
+    """What the system map draws, as system_objects returns it, without what
+    the view of a body shows instead: moons, and places in space attached to
+    a body. Only where that view can be reached: a moon whose planet has no
+    place on the map stays, as does a place attached to a body with none.
+    """
+    objs = system_objects(bodies, waypoints, system)
+    placed = {b["key"]: b["centre"] for b in objs["bodies"]}
+    by_id = {w["id"]: w for w in waypoints}
+    return {**objs,
+            "bodies": [b for b in objs["bodies"]
+                       if planet_of(b["key"]) not in placed],
+            "points": [(i, p) for i, p in objs["points"]
+                       if attached_body(by_id[i], placed) not in placed]}
+
+
+DEEP_SPACE = "Deep space"
+
+
+def poi_groups(bodies, waypoints, system):
+    """The POIs of `system` for the list beside the map, grouped by where the
+    map shows them: [(group, [(id, name)])], DEEP_SPACE first, then the bodies
+    by name, each sorted by name. No empty groups."""
+    placed = placed_bodies(bodies, system)
+    groups = {}
+    for w in waypoints:
+        if w.get("system") != system or w.get("type", "poi") != "poi":
+            continue
+        if w.get("frame", "planet") == "planet":
+            group = w["planet"]
+        else:
+            at = attached_body(w, placed)
+            group = at if at in placed else DEEP_SPACE
+        groups.setdefault(group, []).append((w["id"], w["name"]))
+    return [(g, sorted(groups[g], key=lambda row: row[1].casefold()))
+            for g in sorted(groups, key=lambda g: (g != DEEP_SPACE, g))]
+
+
+def back_to(body, bodies, system):
+    """The view "back" goes to from `body`'s: its planet for a moon whose
+    planet is on the map, else None for the system view."""
+    planet = planet_of(body)
+    return planet if planet in placed_bodies(bodies, system) else None
+
+
 def waypoint_view(w, bodies):
     """Where the star map shows waypoint w, as (system, body, (lat, lon)), or
     None when its system is not known.

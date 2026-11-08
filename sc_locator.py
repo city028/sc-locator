@@ -166,6 +166,9 @@ DEFAULT_CONFIG = {
     # more it is zoomed in: per pixel, divided by zoom to this power. Set in
     # Settings > Star map.
     "starmap_zoom_slowdown": 1.0,
+    # How thick the star map draws its orbit rings, in pixels. Set in
+    # Settings > Star map.
+    "starmap_ring_width": 1,
     # What the height map's switches start as, {switch: true/false}; one not
     # named starts as shipped (main_window.HEIGHT_SWITCHES). Set in Settings >
     # Height map.
@@ -1524,6 +1527,12 @@ def in_orbit(w, cfg):
         return False
     r = math.dist((w["x"], w["y"], w["z"]), (0.0, 0.0, 0.0))
     return above_space_line(r, w.get("radius", cfg["default_radius"]), cfg)
+
+
+def has_ground(w, cfg):
+    """Does waypoint `w` have ground under it for the height map to show: on
+    a body, and not up in orbit over it?"""
+    return w.get("frame", "planet") == "planet" and not in_orbit(w, cfg)
 
 
 def far_from_body(r, radius, cfg):
@@ -3559,10 +3568,10 @@ def place_gap(a, b):
     return math.dist(a["site_sys"], b["site_sys"])
 
 
-def place_name(rec, wps):
-    """The name of the waypoint saved at a place in space, "" if none: the
-    nearest within SPACE_MATCH_M, matched as place_gap matches reports (by
-    its position over the body for a place that turns with one)."""
+def place_waypoint(rec, wps):
+    """The waypoint saved at a place in space, None if none: the nearest
+    within SPACE_MATCH_M, matched as place_gap matches reports (by its
+    position over the body for a place that turns with one)."""
     if rec.get("site_over") is not None and rec.get("over"):
         at, near = rec["site_over"], [
             w for w in wps if w["planet"] == rec["over"]
@@ -3572,10 +3581,32 @@ def place_name(rec, wps):
             w for w in wps if w.get("frame") == "system"
             and w.get("system") == rec.get("system")]
     else:
-        return ""
-    best = min(((math.dist(at, (w["x"], w["y"], w["z"])), w["name"])
-                for w in near), default=None)
-    return best[1] if best and best[0] <= spin.SPACE_MATCH_M else ""
+        return None
+
+    def gap(w):
+        return math.dist(at, (w["x"], w["y"], w["z"]))
+
+    best = min(near, key=lambda w: (gap(w), w["name"]), default=None)
+    return best if best and gap(best) <= spin.SPACE_MATCH_M else None
+
+
+def place_name(rec, wps):
+    """The name of the waypoint saved at a place in space, "" if none."""
+    w = place_waypoint(rec, wps)
+    return w["name"] if w else ""
+
+
+def waypoint_report(w, bodies, wps):
+    """The key of the report that applies to waypoint `w`, None if none: the
+    one made at it, else the report of the body it is on."""
+    for key, rec in bodies.items():
+        if rec.get("scope") == "space":
+            at = place_waypoint(rec, wps)
+            if at and at["id"] == w["id"]:
+                return key
+    if w.get("frame", "planet") == "planet" and w["planet"] in bodies:
+        return w["planet"]
+    return None
 
 
 def report_columns(key, rec, wps):
