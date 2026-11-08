@@ -23,6 +23,7 @@ from tkinter import filedialog, ttk
 import numpy as np
 from PIL import Image, ImageColor, ImageDraw, ImageTk
 
+import databackup
 import heightmap
 import mapprint
 import maps
@@ -281,6 +282,8 @@ def open_main(root, state, scl, set_hud):
 
     tick()
     updates.start()
+    if state.startup_notice:
+        win.after(800, show_message, "SC Locator", state.startup_notice, win)
     return win
 
 
@@ -4140,7 +4143,7 @@ class SettingsTab:
 
     NO_ICON = "(plain pin)"
     SECTIONS = ("Star map", "Height map", "Waypoints", "Reports", "Survey",
-                "Other")
+                "Backup", "Other")
 
     def __init__(self, parent, state, scl, nav, editor):
         self.state, self.scl, self.nav = state, scl, nav
@@ -4154,6 +4157,7 @@ class SettingsTab:
             page[name] = tk.Frame(self.sections, bg=BG)
             self.sections.add(page[name], text=name)
         self.version_box(page["Other"])
+        self.backup_page(page["Backup"])
 
         survey_page = scrolled(page["Survey"])
         self.restore_box(survey_page, "surveys",
@@ -4358,6 +4362,119 @@ class SettingsTab:
                       "A rename or delete\ncarries over to the\nwaypoints "
                       "with it.\n\nRestore built-ins adds\nback any you "
                       "deleted.").pack(anchor="w", pady=(6, 0))
+
+    def backup_page(self, page):
+        """A button and what it does, for backing up, restoring and wiping
+        everything at once."""
+        for title, label, command, text in (
+                (" Back up ", "Back up everything...", self.back_up,
+                 "All your waypoints, reports, height maps, surveys, maps and "
+                 "settings, with their automatic backups, in one zip file in "
+                 "a folder you choose."),
+                (" Restore ", "Restore everything...", self.restore_all,
+                 "Replaces all your data with a backup and restarts SC "
+                 "Locator. The data you have now is kept in a safety copy "
+                 "first."),
+                (" Wipe ", "Wipe all data...", self.wipe_all,
+                 "Deletes all your data, including the automatic backups, "
+                 "and restarts SC Locator as new. Backups you saved "
+                 "elsewhere are not touched.")):
+            box = tk.LabelFrame(page, text=title, font=mono(), fg=ACCENT,
+                                bg=BG, bd=2, relief="groove", padx=10, pady=8)
+            box.pack(anchor="nw", fill="x", padx=4, pady=4)
+            ttk.Button(box, text=label, width=24, command=command).pack(
+                side="left", anchor="n")
+            tk.Label(box, font=mono(9), fg=DIM, bg=BG, justify="left",
+                     text=text, wraplength=px(860)).pack(side="left",
+                                                         padx=(12, 0))
+
+    def close_for_restart(self):
+        """Close by the normal way out; the restart follows from there."""
+        self.nav.updates.root.after_idle(self.nav.updates.root.destroy)
+
+    def back_up(self):
+        parent = self.frame.winfo_toplevel()
+        path = filedialog.asksaveasfilename(
+            parent=parent, title="Back up everything to",
+            defaultextension=".zip", initialfile=databackup.default_name(),
+            filetypes=[("Zip files", "*.zip")])
+        if not path:
+            return
+        try:
+            self.scl.back_up_all(self.state, path)
+        except (OSError, databackup.BackupError) as exc:
+            show_message("Backup failed", f"No backup was made.\n\n{exc}",
+                         parent)
+            return
+        show_message("Backup made", f"Your data is backed up in:\n{path}",
+                     parent)
+
+    def restore_all(self):
+        parent = self.frame.winfo_toplevel()
+        path = filedialog.askopenfilename(
+            parent=parent, title="Restore everything from",
+            filetypes=[("Zip files", "*.zip")])
+        if not path:
+            return
+        scl = self.scl
+        try:
+            info = databackup.verify(path, scl.data_names())
+        except databackup.BackupError as exc:
+            show_message("Not restored", f"Nothing was changed.\n\n{exc}",
+                         parent)
+            return
+        count = info["counts"].get(scl.WAYPOINT_FILE.name, 0)
+        if ask_buttons(
+                "Restore everything",
+                f"Backup made {info.get('created', 'at an unknown time')} by "
+                f"version {info.get('version', '?')}, with {count} "
+                "waypoints.\n\n"
+                "This replaces ALL your data with that backup; anything "
+                "added since it was made goes. What you have now is kept in "
+                "bak\\before-restore-*.zip.\n\n"
+                "SC Locator will close and start again.",
+                parent, ("Cancel", "Restore")) != "Restore":
+            return
+        try:
+            scl.request_restore(self.state, path)
+        except (OSError, databackup.BackupError) as exc:
+            show_message("Not restored", f"Nothing was changed.\n\n{exc}",
+                         parent)
+            return
+        self.close_for_restart()
+
+    def wipe_all(self):
+        """Two questions, Cancel first in each so that Enter cannot do it."""
+        parent = self.frame.winfo_toplevel()
+        st = self.state
+        with st.lock:
+            what = (f"{len(st.waypoints)} waypoints, {len(st.bodies)} bodies' "
+                    f"reports, {len(st.heightmap)} height maps, "
+                    f"{len(st.traces)} traces and {len(st.maps)} maps")
+        answer = ask_buttons(
+            "Wipe all data",
+            f"This deletes ALL your data: {what}, your settings and every "
+            "automatic backup.\n\nBackups you saved elsewhere are not "
+            "touched. Without one, this data is gone for good.",
+            parent, ("Cancel", "Back up first...", "Continue"))
+        if answer == "Back up first...":
+            self.back_up()
+            return
+        if answer != "Continue":
+            return
+        if ask_buttons(
+                "Are you sure?",
+                "Are you absolutely sure? This cannot be undone.\n\n"
+                "SC Locator will close, delete everything and start again "
+                "as new.", parent,
+                ("Cancel", "Yes, wipe everything")) != "Yes, wipe everything":
+            return
+        try:
+            self.scl.request_wipe(st)
+        except OSError as exc:
+            show_message("Not wiped", f"Nothing was changed.\n\n{exc}", parent)
+            return
+        self.close_for_restart()
 
     def version_box(self, page):
         """Which version this is, any newer one, and the way to it."""

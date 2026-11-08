@@ -2270,6 +2270,30 @@ drops the `.bat` that sc-log-monitor had to fix for an antivirus race.
 - To test an update without publishing: copy the project, set `VERSION` lower
   and `API_URL` to a local server giving a release record and the real Setup.
 
+## Backup, restore and wipe (2026-11-08)
+
+Settings > Backup, in `databackup.py`, which is handed its files and knows
+nothing of the program, so its tests cannot reach the real data.
+
+- **Restore and wipe wait for the next start.** What is in memory is written
+  back as the program closes, and the OCR thread can save at any moment, so
+  replacing files while it runs could be undone seconds later. Each is staged
+  in `restore-pending`, the program closes normally and restarts, and
+  `apply_pending_data` does it before anything loads.
+- **Staged under a `.part` name and renamed when complete**, and an empty
+  `restore-pending` is discarded: restoring "nothing" removes every file, so
+  an incomplete request must never be able to act as one.
+- **Only known names are written** from a zip: the data files and `bak/` with
+  backups of them. That stops a crafted zip writing elsewhere.
+- **`bak/` is filtered by name, not taken whole.** Run from source it is the
+  project's `bak/`, holding code backups as well. A wipe from source must leave
+  those, so the folder itself goes only if that empties it.
+- **The safety copy is made once**, flagged inside the request, so a restore
+  cut short and run again does not snapshot its own half-finished state.
+- A wipe keeps no safety copy, as it is meant to leave nothing; its first
+  question offers a backup instead.
+- A new `*_FILE` constant must join `data_files()`; a test fails if it does not.
+
 ## Still open
 
 - Two errors from the screen reader's side, each costing one frame:

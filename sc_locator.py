@@ -36,6 +36,7 @@ import math
 import os
 import re
 import shutil
+import subprocess
 import sys
 import threading
 import time
@@ -47,6 +48,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 if str(HERE) not in sys.path:            # the maths lives beside this file
     sys.path.insert(0, str(HERE))
+import databackup                        # noqa: E402
 import heightmap                         # noqa: E402
 import maps                              # noqa: E402
 import spin_analysis as spin             # noqa: E402
@@ -55,6 +57,7 @@ import stations                          # noqa: E402
 import subtypes                          # noqa: E402
 import survey                            # noqa: E402
 import traces                            # noqa: E402
+import updater                           # noqa: E402
 
 # The program folder is replaced by every update and removed by an uninstall,
 # so the .exe keeps your data in a folder of its own. BUNDLE is where the
@@ -1945,6 +1948,8 @@ class State:
         self.status = "starting..."
         self.note = ""
         self.note_time = 0.0
+        self.restart = False     # start again once closed (a restore or wipe)
+        self.startup_notice = None      # what the start did to the data
         self.hits = 0            # OCR cycles that produced a usable fix
         self.misses = 0
         self.radius_votes = {}   # planet -> {radius reading: times seen}
@@ -6130,6 +6135,77 @@ def run_console(state):
 # ----------------------------------------------------------------------------
 
 
+def data_files():
+    """Every file of yours. Backup, restore, wipe and the first-start import
+    all go by this list."""
+    return [CONFIG_FILE, WAYPOINT_FILE, BODIES_FILE, STATIONS_FILE,
+            HEIGHTMAP_FILE, SURVEY_FILE, TRACES_FILE, SUBTYPES_FILE,
+            MAPS_FILE]
+
+
+def data_names():
+    return [path.name for path in data_files()]
+
+
+def pending_dir():
+    """Where a restore or wipe waits for the next start (see databackup)."""
+    return CONFIG_FILE.parent / "restore-pending"
+
+
+def back_up_all(state, dest):
+    """Everything in one zip at `dest`, with what is still only in memory
+    written out first."""
+    save_heightmap(state, force=True)
+    save_traces(state, force=True)
+    databackup.create(dest, data_files(), BACKUP_DIR, updater.VERSION)
+
+
+def request_restore(state, path):
+    """Check the backup at `path` and restore it at the restart that follows
+    closing. Raises databackup.BackupError or OSError, changing nothing."""
+    databackup.stage_restore(path, pending_dir(), data_names())
+    state.restart = True
+
+
+def request_wipe(state):
+    """Wipe all data at the restart that follows closing."""
+    databackup.stage_wipe(pending_dir())
+    state.restart = True
+
+
+def apply_pending_data():
+    """Do any restore or wipe that is waiting, before any data is loaded.
+    Returns ("restored" / "wiped" / None, what to tell the user or None)."""
+    extras = [CONFIG_FILE.parent / n
+              for n in ("calib_raw.png", "calib_processed.png")]
+    try:
+        outcome = databackup.apply_pending(data_files(), BACKUP_DIR,
+                                           pending_dir(), extras,
+                                           updater.VERSION)
+    except (OSError, databackup.BackupError) as exc:
+        again = (" It will be tried again the next time SC Locator starts: "
+                 "close it now." if pending_dir().exists() else "")
+        return None, f"The restore or wipe did not finish: {exc}.{again}"
+    if outcome == "restored":
+        return outcome, ("Your backup has been restored. The data you had "
+                         "before it is in bak\\before-restore-*.zip, which "
+                         "Restore can also read.")
+    if outcome == "wiped":
+        return outcome, "All data has been wiped. SC Locator is as new."
+    return None, None
+
+
+def restart_program():
+    """Start this program again, as it was started. The lock is let go first
+    or the new copy would find this one still running."""
+    global _instance_claim
+    if _instance_claim:
+        ctypes.windll.kernel32.CloseHandle(_instance_claim)
+        _instance_claim = None
+    start = [sys.executable] if FROZEN else [sys.executable, sys.argv[0]]
+    subprocess.Popen(start + sys.argv[1:])
+
+
 def copy_old_data(folder):
     """Copy the data files an earlier version kept in `folder`, and their
     backups, into the data folder. Returns how many data files came over.
@@ -6137,9 +6213,7 @@ def copy_old_data(folder):
     folder stays as it was whatever happens here."""
     folder = Path(folder)
     copied = 0
-    for path in (CONFIG_FILE, WAYPOINT_FILE, BODIES_FILE, STATIONS_FILE,
-                 HEIGHTMAP_FILE, SURVEY_FILE, TRACES_FILE, SUBTYPES_FILE,
-                 MAPS_FILE):
+    for path in data_files():
         old = folder / path.name
         if old.is_file() and not path.exists():
             shutil.copy2(old, path)
@@ -6209,11 +6283,13 @@ def cmd_run(args):
             "Both overlays draw in the same corner, so the readout ghosts.\n"
             "Close the other one first, or pass --allow-multiple."
         )
-    if (FROZEN and not args.console and not CONFIG_FILE.exists()
-            and not WAYPOINT_FILE.exists()):
+    outcome, notice = apply_pending_data()
+    if (FROZEN and not args.console and outcome != "wiped"
+            and not CONFIG_FILE.exists() and not WAYPOINT_FILE.exists()):
         offer_old_data()
     cfg = load_config()
     state = State(cfg, load_waypoints())
+    state.startup_notice = notice
     load_subtypes(state.waypoints)
     state.bodies = load_bodies()
     state.heightmap = load_heightmap()
@@ -6237,6 +6313,8 @@ def cmd_run(args):
         stop.set()
         save_heightmap(state, force=True)
         save_traces(state, force=True)
+    if state.restart:
+        restart_program()
 
 
 def cmd_calibrate(args):

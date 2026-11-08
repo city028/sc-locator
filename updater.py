@@ -12,7 +12,7 @@ import sys
 import urllib.request
 from pathlib import Path
 
-VERSION = "1.4.0"               # bump with the tag (vX.Y.Z); build.ps1 reads it
+VERSION = "1.5.0"             # bump with the tag (vX.Y.Z); build.ps1 reads it
 REPO = "city028/sc-locator"
 API_URL = f"https://api.github.com/repos/{REPO}/releases/latest"
 RELEASE_PAGE = f"https://github.com/{REPO}/releases/latest"

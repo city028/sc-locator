@@ -91,6 +91,17 @@ kept its files beside itself. On the first start after installing, choose that
 folder and your waypoints, settings and maps are copied over. The old folder is
 left as it was; delete it yourself once you are happy.
 
+**Backing up everything.** **Settings > Backup** puts all your data, with its
+automatic backups, in one zip file in a folder you choose. **Restore
+everything** replaces all your data with such a zip and restarts SC Locator; the
+data you had is kept in `bak\before-restore-*.zip` first, and Restore can read
+that too. It is also the way to move to a new PC. The zip is not encrypted.
+
+**Wiping everything.** **Settings > Backup > Wipe all data** deletes all your
+data, including the automatic backups, after asking twice, and restarts SC
+Locator as new. This cannot be undone. Backups you saved elsewhere are not
+touched.
+
 **Uninstalling.** Use Windows' *Installed apps*. Your data in
 `%LocalAppData%\SC Locator` is kept; delete that folder too if you want it gone.
 
@@ -928,7 +939,7 @@ All in `%LocalAppData%\SC Locator`:
 | `maps.json` | your maps to print: where each is and how it is drawn |
 | `bak/` | automatic backups of the files above |
 
-To move to a new PC, copy the whole folder. To share waypoints or reports with
+To move to a new PC, use **Settings > Backup**. To share waypoints or reports with
 a friend, use **Export...** and **Import...** (see
 [Sharing](#sharing-waypoints-and-reports)) rather than sending the whole file:
 an import checks each record and asks before replacing anything they
@@ -1035,6 +1046,7 @@ matches `VERSION`: the update check looks for that file on the latest release.
 | `spin_analysis.py` | maths for the body analysis (circle fit, spin, sun position) |
 | `stations.py` | UEX station list download and formatting |
 | `updater.py` | the version number, the update check and the installer download |
+| `databackup.py` | all data in one zip: backup, restore and wipe |
 | `sc_locator.spec` | PyInstaller build recipe |
 | `installer/sc-locator.iss` | Inno Setup installer script |
 | `build.ps1` | builds the program and the installer |
