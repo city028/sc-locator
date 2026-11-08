@@ -756,7 +756,8 @@ shows on it by itself. Maps are kept in `maps.json`.
   - **Map**: its name (type to rename), size and dates, **Print in**
     colour or black and white, **Reposition on height map** (frame it
     again there; Save or Cancel brings you back), **Delete...** (it comes
-    back from Settings > Height map while in the backups).
+    back from Settings > Height map while in the backups), **Export
+    PDF...** (every page in one A4 PDF at 300 dpi).
   - **Surveys shown**: a tick to show or hide each kind of survey, its
     level and opacity, for this map only.
   - **Also shown**: filled relief, height lines, survey samples, POI and
@@ -780,8 +781,6 @@ shows on it by itself. Maps are kept in `maps.json`.
 - **Black and white**: the relief a light grey, water a light grey with
   lines across, built-up areas hatched, hostile areas cross-hatched,
   buildings dark grey, icons black; the pages are grey through.
-
-Export to PDF is still to come.
 
 ### Automatic backups
 

@@ -2200,6 +2200,14 @@ the preview kept its last picture. Hatching pastes through a mask now,
 which works on either; and a page that cannot be drawn says so in the tab
 and in the log rather than leave the last one.
 
+## Maps as PDF (2026-11-08)
+
+Each page goes into the PDF as one JPEG. Pillow's defaults (quality 75,
+colour at half size) blur text and thin lines, so `mapprint.PDF_JPEG` asks
+for 95 and full-size colour. The five maps at the time came to 0.7 to 3.2 MB
+against 0.4 to 1.8 MB, and each drew and saved at 300 dpi in under a second,
+so the export runs on the window's thread.
+
 ## Still open
 
 - Two errors from the screen reader's side, each costing one frame:

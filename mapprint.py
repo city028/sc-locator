@@ -33,6 +33,7 @@ grey with fine lines across it, an area's fill hatching (HATCHES) instead
 of a wash, and the page saved as grey ("L") so nothing else stays coloured.
 """
 import math
+import re
 import time
 
 import numpy as np
@@ -45,6 +46,8 @@ import subtypes
 import traces
 
 PRINT_DPI = 300
+# How Pillow stores a PDF page's picture: its defaults blur text and thin lines.
+PDF_JPEG = {"quality": 95, "subsampling": 0}
 SCREEN_PX_MM = 0.26     # one of the height map's px, on paper
 PAPER = "#FFFFFF"       # ground nobody measured, and the page
 INK, GREY_INK = "#000000", "#5F6368"
@@ -279,6 +282,22 @@ def page1(m, data, dpi):
     if pen.bw:
         page = page.convert("L")
     return page, info["numbers"], overflow
+
+
+def pdf_name(m):
+    """The file name to offer for map `m`'s PDF: its name, with what Windows
+    will not have in a file name replaced."""
+    return re.sub(r'[<>:"/\\|?*]', "_", m["name"]).rstrip(". ") + ".pdf"
+
+
+def save_pdf(m, data, path, dpi=PRINT_DPI):
+    """Every page of map `m`, from `data` (gather), as one PDF at `path`, A4
+    at `dpi`. The number of pages."""
+    page, _, overflow = page1(m, data, dpi)
+    pages = [page] + later_pages(m, data, dpi, overflow)
+    pages[0].save(path, "PDF", save_all=True, append_images=pages[1:],
+                  resolution=float(dpi), **PDF_JPEG)
+    return len(pages)
 
 
 def where(m, data):

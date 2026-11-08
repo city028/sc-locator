@@ -3470,6 +3470,15 @@ class MapsTab:
                 self.page.get(), self.sheet.winfo_width(),
                 self.sheet.winfo_height())
 
+    def gathered(self, m):
+        """What map `m` is drawn from (mapprint.gather). Lock held."""
+        st = self.state
+        rec = st.heightmap.get(m["body"])
+        radius = (rec["radius"] if rec
+                  else self.scl.BODY_RADII.get(m["body"], 1.0))
+        return mapprint.gather(m, rec, radius, st.traces, st.waypoints,
+                               st.cfg["building_wall_offset_m"])
+
     def render(self):
         """The page shown, drawn small enough to fit (mapprint), or a word
         on picking a map."""
@@ -3479,12 +3488,7 @@ class MapsTab:
             self.drawn = self.look()
             m = next((dict(m) for m in st.maps if m["id"] == self.mid), None)
             if m is not None:
-                rec = st.heightmap.get(m["body"])
-                radius = (rec["radius"] if rec
-                          else self.scl.BODY_RADII.get(m["body"], 1.0))
-                data = mapprint.gather(m, rec, radius, st.traces,
-                                       st.waypoints,
-                                       st.cfg["building_wall_offset_m"])
+                data = self.gathered(m)
         if m is None:
             self.picture = None
             self.sheet.config(image="", text="Pick a map in the list.")
@@ -3643,6 +3647,8 @@ class MapsTab:
                    ).pack(side="left")
         ttk.Button(row, text="Delete...", command=self.delete).pack(
             side="left", padx=(6, 0))
+        ttk.Button(box, text="Export PDF...", command=self.export_pdf).pack(
+            anchor="w", pady=(6, 0))
 
         box = self.box(" Surveys shown ")
         LayerTable(box, m["layers"],
@@ -3815,6 +3821,40 @@ class MapsTab:
         if m is not None:
             self.shown = m["updated"]
             self.show_info(m)
+
+    # --- exporting ------------------------------------------------------
+
+    def export_pdf(self):
+        """Save every page of the map picked as one PDF, with a name or
+        notes just typed. A file that cannot be written (open in a viewer,
+        say) or a page that cannot be drawn says so."""
+        self.rename()
+        self.save_notes()
+        st = self.state
+        m = self.current()
+        if m is None:
+            return
+        path = filedialog.asksaveasfilename(
+            parent=self.frame, title="Export PDF", defaultextension=".pdf",
+            filetypes=[("PDF", "*.pdf")], initialfile=mapprint.pdf_name(m))
+        if not path:
+            return
+        with st.lock:
+            m = dict(m)
+            data = self.gathered(m)
+        data["system"] = self.nav.body_system(m["body"])
+        try:
+            count = mapprint.save_pdf(m, data, path)
+        except Exception as exc:
+            st.log(f"map {m['name']} not exported: "
+                   + traceback.format_exc().replace("\n", " | "))
+            show_message("Export PDF", f"{m['name']} was not exported:\n{exc}",
+                         parent=self.frame)
+            return
+        with st.lock:
+            st.flash(f"exported {m['name']}, {count} page"
+                     + ("s" if count > 1 else "")
+                     + f", to {os.path.basename(path)}")
 
     # --- deleting and restoring -----------------------------------------
 
