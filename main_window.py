@@ -11,10 +11,13 @@ geometry is starmap's.
 import ctypes
 import math
 import os
+import shutil
+import threading
 import time
 import tkinter as tk
 import tkinter.font as tkfont
 import traceback
+import webbrowser
 from tkinter import filedialog, ttk
 
 import numpy as np
@@ -27,6 +30,7 @@ import starmap
 import subtypes
 import survey
 import traces
+import updater
 
 BG, PANEL, FG, DIM, ACCENT = "#05080c", "#0d141c", "#D8E2EE", "#8FA0B4", "#7CFFB2"
 SUN = ("#B86A12", "#FFB347", "#FFE7B0")
@@ -43,6 +47,7 @@ RAIL, RAIL_GAP = "#000000", "#FAF7F2"
 # The overland leg from a QT hop to its target: dashed magenta, apart from
 # everything else on the map.
 ROUTE = "#FF5CD6"
+UPDATE_NOTICE = "#FFB000"
 # Lakes: light blue water and a darker blue shore line, as on a paper map.
 WATER, SHORE = (169, 212, 239), (42, 122, 184)
 # Buildings: tan with a dark outline, as on a large-scale paper map.
@@ -233,6 +238,12 @@ def open_main(root, state, scl, set_hud):
     ttk.Checkbutton(bar, text="follow me", variable=follow,
                     command=lambda: [tab.recentre() for tab in tabs[:2]]).pack(
         side="left", padx=(12, 0))
+    updates = Updates(root, win, scl)
+    # A line to click rather than a pop-up: this may be over the game.
+    notice = tk.Label(bar, text="", font=mono(), fg=UPDATE_NOTICE, bg=BG,
+                      cursor="hand2")
+    notice.pack(side="left", padx=(12, 0))
+    notice.bind("<Button-1>", lambda e: updates.offer())
     status = tk.Label(bar, text="", font=mono(), fg=DIM, bg=BG, anchor="e")
     status.pack(side="right", fill="x", expand=True)
 
@@ -246,7 +257,7 @@ def open_main(root, state, scl, set_hud):
     surveys = SurveysTab(nb, state, scl, nav)
     maps_tab = MapsTab(nb, state, scl, nav)
     nav.star, nav.height, nav.editor, nav.reports = star, height, editor, reports
-    nav.surveys, nav.maps = surveys, maps_tab
+    nav.surveys, nav.maps, nav.updates = surveys, maps_tab, updates
     settings = SettingsTab(nb, state, scl, nav, editor)
     tabs = [star, height, editor, reports, surveys, maps_tab, settings]
     for tab, title in zip(tabs, ("Star map", "Height map", "Waypoints",
@@ -261,12 +272,15 @@ def open_main(root, state, scl, set_hud):
         fit_to_screen(win, style)   # the Windows scale changed under it
         for tab in tabs:
             tab.refresh()
+        updates.refresh()
+        notice.config(text=updates.banner())
         with state.lock:
             fresh = time.time() - state.note_time < 4
             status.config(text=state.note if fresh else "")
         win.after(1000, tick)
 
     tick()
+    updates.start()
     return win
 
 
@@ -367,6 +381,98 @@ def ask_yes_no(title, text, parent):
 def show_message(title, text, parent):
     """A message to read, with OK."""
     ask_buttons(title, text, parent)
+
+
+class Updates:
+    """Whether a newer version is out, and putting it in place. GitHub is
+    asked and the installer fetched on threads of their own; what they find
+    is left here for the main window's tick, as only the main thread may
+    touch a window."""
+
+    def __init__(self, root, win, scl):
+        self.root, self.win, self.scl = root, win, scl
+        self.info = None        # updater.check's answer, once there is one
+        self.checking = False
+        self.fraction = None    # 0..1 while the installer comes in
+        self.ready = None       # the installer, fetched and verified
+        self.failed = None      # why it could not be fetched or started
+
+    def start(self):
+        """When the program opens: clear what the last update left, and
+        look for the next. Only an installed program has one coming."""
+        if self.scl.FROZEN:
+            shutil.rmtree(self.scl.HERE / "update", ignore_errors=True)
+            self.check()
+
+    def check(self):
+        if self.checking or self.fraction is not None:
+            return
+        self.checking = True
+        threading.Thread(target=self._check, daemon=True).start()
+
+    def _check(self):
+        self.info = updater.check()
+        self.checking = False
+
+    @property
+    def available(self):
+        return bool(self.info and self.info["available"])
+
+    def banner(self):
+        """The line beside the main window's switches; empty for none."""
+        if self.fraction is not None:
+            return f"Downloading update: {self.fraction:.0%}"
+        if self.available:
+            return f"Version {self.info['latest']} is out: click to update"
+        return ""
+
+    def offer(self):
+        """What the update brings, and whether to install it now."""
+        if not self.available or self.fraction is not None:
+            return
+        info = self.info
+        text = (f"SC Locator {info['latest']} ({info['published']}) is out. "
+                f"You have {updater.VERSION}.\n\n{info['notes'].strip()}\n\n")
+        if not updater.can_install():
+            text += ("This copy did not come from the installer, so it "
+                     "cannot update itself.")
+            if ask_buttons("Update available", text, self.win,
+                           ("Release page", "Later")) == "Release page":
+                webbrowser.open(updater.RELEASE_PAGE)
+            return
+        text += ("Install now closes SC Locator, installs the new version "
+                 "and starts it. Your data is kept.")
+        if ask_buttons("Update available", text, self.win,
+                       ("Install now", "Later")) == "Install now":
+            self.fraction = 0.0
+            threading.Thread(target=self._download, args=(info,),
+                             daemon=True).start()
+
+    def _download(self, info):
+        try:
+            self.ready = updater.download(
+                info, self.scl.HERE / "update" / updater.ASSET_NAME,
+                lambda f: setattr(self, "fraction", f))
+        except Exception as exc:
+            self.failed = str(exc) or type(exc).__name__
+
+    def refresh(self):
+        """Act on what the download thread left: start the installer and
+        close, by the normal way out so that everything is saved."""
+        if self.ready:
+            setup, self.ready = self.ready, None
+            try:
+                updater.start_install(setup)
+            except OSError as exc:
+                self.failed = str(exc)
+            else:
+                self.root.after_idle(self.root.destroy)
+        if self.failed:
+            reason, self.failed, self.fraction = self.failed, None, None
+            # Not from inside the tick: this waits for its OK.
+            self.win.after(1, show_message, "Update failed",
+                           f"{reason}\n\nNothing was changed. The new version "
+                           f"is also at {updater.RELEASE_PAGE}", self.win)
 
 
 class Navigator:
@@ -4047,8 +4153,7 @@ class SettingsTab:
         for name in self.SECTIONS:
             page[name] = tk.Frame(self.sections, bg=BG)
             self.sections.add(page[name], text=name)
-        tk.Label(page["Other"], text="Nothing to set here yet.", font=mono(),
-                 fg=DIM, bg=BG).pack(anchor="nw", padx=8, pady=8)
+        self.version_box(page["Other"])
 
         survey_page = scrolled(page["Survey"])
         self.restore_box(survey_page, "surveys",
@@ -4254,6 +4359,53 @@ class SettingsTab:
                       "with it.\n\nRestore built-ins adds\nback any you "
                       "deleted.").pack(anchor="w", pady=(6, 0))
 
+    def version_box(self, page):
+        """Which version this is, any newer one, and the way to it."""
+        updates = self.nav.updates
+        box = tk.LabelFrame(page, text=" Version ", font=mono(), fg=ACCENT,
+                            bg=BG, bd=2, relief="groove", padx=10, pady=8)
+        box.pack(anchor="nw", fill="both", expand=True, padx=4, pady=4)
+        self.version_text = tk.Label(box, font=mono(), fg=FG, bg=BG,
+                                     justify="left", anchor="w")
+        self.version_text.pack(anchor="w", fill="x")
+        row = tk.Frame(box, bg=BG)
+        row.pack(anchor="w", pady=8)
+        ttk.Button(row, text="Check for updates",
+                   command=updates.check).pack(side="left")
+        self.install_button = ttk.Button(row, text="Install update...",
+                                         command=updates.offer)
+        self.install_button.pack(side="left", padx=(6, 0))
+        ttk.Button(row, text="Release page",
+                   command=lambda: webbrowser.open(updater.RELEASE_PAGE)
+                   ).pack(side="left", padx=(6, 0))
+        tk.Label(box, text="Latest release notes:", font=mono(9), fg=DIM,
+                 bg=BG).pack(anchor="w")
+        self.release_notes = text_box(box, 10, readonly=True)
+        self.release_notes.pack(fill="both", expand=True)
+        self.notes_shown = ""
+
+    def show_version(self):
+        updates = self.nav.updates
+        info = updates.info or {}
+        lines = [f"Installed: {updater.VERSION}"]
+        if updates.available:
+            lines.append(f"Available: {info['latest']} ({info['published']})")
+        if updates.checking:
+            lines.append("Checking...")
+        elif info.get("error"):
+            lines.append(f"Could not check: {info['error']}")
+        elif updates.available:
+            lines.append("A newer version is out.")
+        elif info:
+            lines.append("Up to date.")
+        self.version_text.config(text="\n".join(lines))
+        self.install_button.config(state="normal" if updates.available
+                                   and updates.fraction is None else "disabled")
+        notes = info.get("notes", "")
+        if notes != self.notes_shown:   # setting it loses the scroll position
+            set_text(self.release_notes, notes)
+            self.notes_shown = notes
+
     def restore_box(self, page, what, file, command, **grid):
         """The Restore box for deleted `what` kept in backups of `file`:
         packed in `page`, or gridded there with `grid` given. `command`
@@ -4307,7 +4459,9 @@ class SettingsTab:
         self.nav.height.draw()
 
     def refresh(self):
-        """The SUB list, redrawn when it or the waypoints' use of it changes."""
+        """The version box, and the SUB list, redrawn when it or the
+        waypoints' use of it changes."""
+        self.show_version()
         subs = subtypes.current()
         with self.state.lock:
             used = {}

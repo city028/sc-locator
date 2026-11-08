@@ -2242,6 +2242,34 @@ A process that has not declared DPI awareness gets scaled coordinates from
 Tk while `ImageGrab` works in real pixels, so a grab comes out cut off; a
 box "cut off" that way was measured to fit.
 
+## Installer and updates (2026-11-08)
+
+An Inno Setup per-user installer (`installer/sc-locator.iss`) replaces the
+loose one-file `.exe`. sc-log-monitor's approach (the exe copies itself into
+place and a `.bat` swaps it on update) was the model for the update check but
+not the install: a real Setup gives a wizard, shortcuts and an uninstaller, and
+drops the `.bat` that sc-log-monitor had to fix for an antivirus race.
+
+- **Data moved to `%LocalAppData%\SC Locator`** for the installed program, as
+  the program folder is replaced by updates. From source it stays in the
+  project folder, so the test harness and the development data are untouched.
+- **An update must leave by `root.destroy`, not `os._exit`**: `cmd_run`'s
+  `finally` writes the height map and traces.
+- **Setup and the closing program overlap.** The program starts Setup and then
+  closes, so Setup's `AppMutex` check could find it still running. A silent
+  Setup first waits up to 30 s for the mutex in `InitializeSetup`, which was
+  tested to run before the `AppMutex` check.
+- **The installer is only offered with GitHub's SHA-256** of the release file
+  and only named once it matches. That shows the file is whole, not who built
+  it; the installer is unsigned.
+- **`offer_old_data` runs before anything is loaded.** Done afterwards, closing
+  would write the empty lists in memory over what was just imported.
+- **Tests of the install must not start from the Claude app.** It is a packaged
+  app, so what it starts can get a redirected view of AppData. Start Setup from
+  Explorer.
+- To test an update without publishing: copy the project, set `VERSION` lower
+  and `API_URL` to a local server giving a release record and the real Setup.
+
 ## Still open
 
 - Two errors from the screen reader's side, each costing one frame:

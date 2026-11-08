@@ -56,12 +56,15 @@ import subtypes                          # noqa: E402
 import survey                            # noqa: E402
 import traces                            # noqa: E402
 
-# A one-file .exe unpacks to a temp folder that is deleted on exit, so data is
-# kept beside the .exe instead. BUNDLE is where the packed language data lives.
+# The program folder is replaced by every update and removed by an uninstall,
+# so the .exe keeps your data in a folder of its own. BUNDLE is where the
+# packed language data lives.
 FROZEN = getattr(sys, "frozen", False)
 BUNDLE = Path(getattr(sys, "_MEIPASS", HERE))
 if FROZEN:
-    HERE = Path(sys.executable).resolve().parent
+    HERE = (Path(os.environ.get("LOCALAPPDATA")
+                 or Path.home() / "AppData" / "Local") / "SC Locator")
+    HERE.mkdir(parents=True, exist_ok=True)
 
 ICON_FILE = BUNDLE / "icon.ico"          # packed into the .exe, see the spec
 CONFIG_FILE = HERE / "locator_config.json"
@@ -6127,6 +6130,78 @@ def run_console(state):
 # ----------------------------------------------------------------------------
 
 
+def copy_old_data(folder):
+    """Copy the data files an earlier version kept in `folder`, and their
+    backups, into the data folder. Returns how many data files came over.
+    Copied, not moved, and nothing already here is overwritten: the old
+    folder stays as it was whatever happens here."""
+    folder = Path(folder)
+    copied = 0
+    for path in (CONFIG_FILE, WAYPOINT_FILE, BODIES_FILE, STATIONS_FILE,
+                 HEIGHTMAP_FILE, SURVEY_FILE, TRACES_FILE, SUBTYPES_FILE,
+                 MAPS_FILE):
+        old = folder / path.name
+        if old.is_file() and not path.exists():
+            shutil.copy2(old, path)
+            copied += 1
+    for old in (folder / BACKUP_DIR.name).glob("*.bak"):
+        BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+        if not (BACKUP_DIR / old.name).exists():
+            shutil.copy2(old, BACKUP_DIR / old.name)
+    return copied
+
+
+def offer_old_data():
+    """First start of an installed copy: bring over what an earlier version
+    kept beside its .exe? Asked before anything is loaded, as the data in
+    memory is written back over the files on closing."""
+    import tkinter as tk
+    from tkinter import filedialog
+
+    root = tk.Tk()
+    root.withdraw()                     # placed before it is seen
+    root.title("SC Locator")
+    try:
+        root.iconbitmap(str(ICON_FILE))
+    except tk.TclError:
+        pass
+    text = tk.StringVar(value=(
+        "Have you used an earlier version of SC Locator?\n\n"
+        "Choose the folder its sc-locator.exe is in to bring over your "
+        "waypoints, settings and maps. That folder is left as it is."))
+    tk.Label(root, textvariable=text, justify="left", wraplength=420,
+             padx=14, pady=12).pack()
+
+    def choose():
+        folder = filedialog.askdirectory(parent=root,
+                                         title="The earlier version's folder")
+        if not folder:
+            return
+        try:
+            copied = copy_old_data(folder)
+        except OSError as exc:
+            text.set(f"Could not copy from that folder:\n{exc}")
+            return
+        if copied:
+            root.destroy()
+        else:
+            text.set("No SC Locator data in that folder. Choose another, or "
+                     "start fresh.")
+
+    row = tk.Frame(root)
+    row.pack(anchor="e", padx=14, pady=(0, 12))
+    tk.Button(row, text="Choose folder...", command=choose).pack(side="left")
+    tk.Button(row, text="Start fresh", command=root.destroy).pack(
+        side="left", padx=(6, 0))
+    root.update_idletasks()
+    x, y = root.winfo_pointerxy()
+    x = min(x + 12, root.winfo_screenwidth() - root.winfo_reqwidth() - 20)
+    y = min(y + 12, root.winfo_screenheight() - root.winfo_reqheight() - 80)
+    root.geometry(f"+{max(0, x)}+{max(0, y)}")
+    root.deiconify()
+    root.mainloop()
+
+
 def cmd_run(args):
     if not args.allow_multiple and not claim_single_instance():
         sys.exit(
@@ -6134,6 +6209,9 @@ def cmd_run(args):
             "Both overlays draw in the same corner, so the readout ghosts.\n"
             "Close the other one first, or pass --allow-multiple."
         )
+    if (FROZEN and not args.console and not CONFIG_FILE.exists()
+            and not WAYPOINT_FILE.exists()):
+        offer_old_data()
     cfg = load_config()
     state = State(cfg, load_waypoints())
     load_subtypes(state.waypoints)
@@ -6310,7 +6388,21 @@ def cmd_convert(args):
           f"height over {args.radius:,.0f} m sphere {r - args.radius:,.1f} m")
 
 
+def hide_own_console():
+    """Started by a double-click or shortcut, the .exe gets a console no one
+    else uses, an empty black window: close it. Started from a prompt the
+    console is shared, and stays for what is printed there."""
+    if not FROZEN or sys.platform != "win32":
+        return
+    k = ctypes.windll.kernel32
+    if k.GetConsoleProcessList((ctypes.c_ulong * 2)(), 2) == 1:
+        k.FreeConsole()
+        sys.stdout = sys.stderr = open(os.devnull, "w", encoding="utf-8")
+
+
 def main():
+    if not sys.argv[1:]:
+        hide_own_console()
     ap = argparse.ArgumentParser(description="Star Citizen coordinate locator")
     sub = ap.add_subparsers(dest="cmd", required=True)
 

@@ -9,14 +9,17 @@ OCR). It does **not** read game memory, change game files or send input to the
 game.
 
 - Windows only
-- One `.exe`, nothing to install (the OCR engine is packed inside)
-- Your waypoints are stored in a plain JSON file next to the `.exe`
+- One installer, nothing else needed (no Python, no Store, no admin rights;
+  the OCR engine is packed inside)
+- Tells you when a new version is out and installs it for you
+- Your waypoints are stored in a plain JSON file in `%LocalAppData%\SC Locator`
 
 ---
 
 ## Contents
 
 - [Quick start](#quick-start)
+- [Updates and uninstalling](#updates-and-uninstalling)
 - [What it shows](#what-it-shows)
 - [Features](#features)
   - [Live location](#live-location)
@@ -45,9 +48,9 @@ game.
 
 ## Quick start
 
-1. Download `sc-locator.exe` from the
-   [Releases](../../releases) page and put it in its own folder
-   (it saves its files next to itself).
+1. Download `sc-locator-setup.exe` from the
+   [Releases](../../releases) page and run it. It installs for your Windows
+   user only and asks for no admin rights.
 2. In Star Citizen, set the display mode to **Borderless Window**. Nothing can
    draw over exclusive fullscreen.
 3. In game, open the console with `~` and type:
@@ -58,20 +61,38 @@ game.
 
    This turns on the debug text in the top-right corner. It resets every time
    the game restarts, so do it each session.
-4. Double-click `sc-locator.exe`. A small coloured dot (the **pin**) appears in
-   the bottom-right corner of the screen. A console window also opens; leave it
-   open (it shows errors if something goes wrong).
+4. Start **SC Locator** from the Start menu. A small coloured dot (the **pin**)
+   appears in the bottom-right corner of the screen.
 5. When the pin turns **green** you have a position fix.
 
 To click the overlay while in game, hold **`F`** (the game only shows a mouse
 cursor while `F` is held), or alt-tab.
 
 > **Windows SmartScreen** may say "Windows protected your PC" because the
-> `.exe` is not code-signed. Click **More info → Run anyway**. Some antivirus
+> installer is not code-signed. Click **More info → Run anyway**. Some antivirus
 > tools flag packed Python programs by mistake; the full source is in this
 > repository if you would rather build it yourself.
->
-> The first start takes a few seconds while the `.exe` unpacks itself.
+
+---
+
+## Updates and uninstalling
+
+**New versions.** The program looks for a new version each time it starts. When
+there is one, a line appears at the top of the main window; click it to read
+what changed and install it. **Install now** closes SC Locator, saves
+everything, installs the new version and starts it again. It never interrupts
+you on its own.
+
+**Settings > Other** shows the version you have, any newer one, the latest
+release notes, and a **Check for updates** button.
+
+**Coming from a version before 1.4?** Those were a loose `sc-locator.exe` that
+kept its files beside itself. On the first start after installing, choose that
+folder and your waypoints, settings and maps are copied over. The old folder is
+left as it was; delete it yourself once you are happy.
+
+**Uninstalling.** Use Windows' *Installed apps*. Your data in
+`%LocalAppData%\SC Locator` is kept; delete that folder too if you want it gone.
 
 ---
 
@@ -828,8 +849,8 @@ versions of each file are kept. If something goes wrong, copy one back.
 
 ## Command line
 
-Double-clicking the `.exe` is the same as `sc-locator.exe run`. From a command
-prompt in the `.exe`'s folder you can also use:
+Starting it from the Start menu is the same as `sc-locator.exe run`. From a
+command prompt in `%LocalAppData%\Programs\SC Locator` you can also use:
 
 | command | what it does |
 |---|---|
@@ -847,13 +868,14 @@ prompt in the `.exe`'s folder you can also use:
 `--delay N` waits N seconds so you can switch to the game, `--region L T R B`
 sets the area by hand (fractions of the screen, 0 to 1), `--cut N` sets the
 text contrast, `--save` writes the result to the settings. It also saves
-`calib_raw.png` and `calib_processed.png` so you can see what the OCR sees.
+`calib_raw.png` and `calib_processed.png` in `%LocalAppData%\SC Locator` so you
+can see what the OCR sees.
 
 ---
 
 ## Settings (`locator_config.json`)
 
-Created next to the `.exe` on first run. Edit it with any text editor while the
+Created in `%LocalAppData%\SC Locator` on first run. Edit it with any text editor while the
 program is closed. The ones you are most likely to change:
 
 | setting | default | meaning |
@@ -891,7 +913,7 @@ Keep the overlay out of the `region` area, or it reads its own text.
 
 ## Files it creates
 
-All next to the `.exe`:
+All in `%LocalAppData%\SC Locator`:
 
 | file | what |
 |---|---|
@@ -993,22 +1015,29 @@ pip install -r requirements.txt
 python sc_locator.py run
 ```
 
-To build the `.exe` (the language data is copied in from the Tesseract install
-folder; set `TESSERACT_DIR` if it is not in `C:\Program Files\Tesseract-OCR`):
+To build the installer (the language data is copied in from the Tesseract
+install folder; set `TESSERACT_DIR` if it is not in
+`C:\Program Files\Tesseract-OCR`):
 
 ```
 pip install pyinstaller
-pyinstaller sc_locator.spec
+winget install JRSoftware.InnoSetup
+powershell -NoProfile -ExecutionPolicy Bypass -File build.ps1
 ```
 
-The result is `dist\sc-locator.exe`.
+The result is `dist\sc-locator-setup.exe`, built for the `VERSION` in
+`updater.py`. A release must attach it under exactly that name, on a tag that
+matches `VERSION`: the update check looks for that file on the latest release.
 
 | file | what |
 |---|---|
 | `sc_locator.py` | the program: screen capture, OCR, parsing, overlay, waypoints |
 | `spin_analysis.py` | maths for the body analysis (circle fit, spin, sun position) |
 | `stations.py` | UEX station list download and formatting |
+| `updater.py` | the version number, the update check and the installer download |
 | `sc_locator.spec` | PyInstaller build recipe |
+| `installer/sc-locator.iss` | Inno Setup installer script |
+| `build.ps1` | builds the program and the installer |
 | `icon.ico` | the program's icon, on the `.exe` and its windows |
 | `make_icon.py` | draws `icon.ico` (`python make_icon.py icon.ico`) |
 | `bodies.json` | measured analyses for the Stanton bodies |
