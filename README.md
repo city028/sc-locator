@@ -32,6 +32,7 @@ game.
   - [Places in space and station info](#places-in-space-and-station-info)
   - [Main window: star map, waypoints, reports](#main-window-star-map-waypoints-reports)
   - [Sharing waypoints and reports](#sharing-waypoints-and-reports)
+  - [Marking items private or to share](#marking-items-private-or-to-share)
   - [Survey mode: your own height map](#survey-mode-your-own-height-map)
   - [Maps to print](#maps-to-print)
   - [Automatic backups](#automatic-backups)
@@ -223,7 +224,11 @@ A waypoint is a saved position on a body (or in deep space).
   waypoint is left out when you copy or export several, and asks first
   when it is the only one you picked (see
   [Sharing](#sharing-waypoints-and-reports)). Set it in the main window's
-  **Edit...** window.
+  **Edit...** window, or in the Waypoints tab's right-click menu.
+- A waypoint can also be marked **Share to Discord** (no to start with), for
+  the Discord sharing still being built (see
+  [Marking items private or to share](#marking-items-private-or-to-share)).
+  A private waypoint cannot be: ticking Private clears and greys it.
 - Set SUB and QT with **EDIT** in the panel (just after saving, in game) or in
   the main window's Waypoints tab.
 
@@ -386,7 +391,7 @@ quits the program.
 - **Waypoints**: every waypoint in a table. Right-click a row for its menu:
   show it on the maps, **Rename...**, **Delete...** (asks first), and
   **Edit...** for a window with all of it: name, **SUB**, **QT**,
-  **Private**, note, and
+  **Private**, **Share to Discord**, note, and
   for deep space **Shown around**; **OK** saves them together, **X** or
   Escape leaves it as it was.
   Names need not be unique: any number of waypoints can be called Cave.
@@ -394,7 +399,8 @@ quits the program.
   `waypoints.json`, given to older waypoints the first time it loads.
   Filter by system, body and type (all, POI or Survey), and type in
   **Search** to narrow the list to names holding that text (any case) as you
-  type. Copy and export them from the same menu, import them in Settings > Waypoints;
+  type. Click a column's heading to sort by it, again to sort the other way.
+  Copy and export them from the same menu, import them in Settings > Waypoints;
   see [Sharing](#sharing-waypoints-and-reports).
 - **Reports**: every analysis result, with your own notes saved alongside it
   in `bodies.json`. A new ANALYSE run of the same place keeps the notes.
@@ -404,8 +410,11 @@ quits the program.
   the waypoint saved there, within 20 km), **TYPE** (planet, moon,
   Lagrange station, jump point, orbital station...), **SYSTEM**, **KIND**
   (rotating, fixed, moving), **COORDINATES** in the system frame in Mm
-  (1,000 km; a body's centre, a place where it was analysed) and the date
-  **ANALYSED**; the report beside it has the full figures.
+  (1,000 km; a body's centre, a place where it was analysed), the date
+  **ANALYSED**, and **PRIVATE** and **DISCORD** (see
+  [Marking items private or to share](#marking-items-private-or-to-share));
+  the report beside it has the full figures. Click a column's heading to
+  sort by it.
   Copy and export them the same way; import them in Settings > Reports.
   **Delete...** in the same
   right-click menu takes the selected reports out, with their notes, once
@@ -419,7 +428,9 @@ quits the program.
   length, and each
   body's **height map** with its cells. Every height survey on a body adds
   to that one map (a cell does not remember which survey measured it), so
-  a height map is kept and deleted whole. Right-click a row: a trace has
+  a height map is kept and deleted whole. **PRIVATE** and **DISCORD** show
+  how each is marked; click a column's heading to sort by it. Right-click a
+  row: a trace has
   **Show on height map** (centred on it, its layer switched on), a
   building also **Show details**, **Rename...** and **Draw as walked** /
   **Draw squared**, a line or an area **Rename...**; a height map has its
@@ -492,7 +503,7 @@ are already on.
 
 | Right-click | Where | Menu |
 |---|---|---|
-| a **waypoint** (POI, survey, deep space) | its pin on the star map or height map, its row in Waypoints | **Show details**, **Centre** (star map, in its planet's or moon's view: turns it to the middle, so the wheel zooms straight in on it; not for deep space), **Show on star map**, **Show on height map** (on the ground of a planet or moon: not in deep space, nor a station in orbit over 100 km up), **Show in Waypoints**, **Rename...**, **Edit...** (name, SUB, QT, Private, note, and Shown around in deep space), **Delete...** |
+| a **waypoint** (POI, survey, deep space) | its pin on the star map or height map, its row in Waypoints | **Show details**, **Centre** (star map, in its planet's or moon's view: turns it to the middle, so the wheel zooms straight in on it; not for deep space), **Show on star map**, **Show on height map** (on the ground of a planet or moon: not in deep space, nor a station in orbit over 100 km up), **Show in Waypoints**, **Rename...**, **Edit...** (name, SUB, QT, Private, Share to Discord, note, and Shown around in deep space), **Delete...** |
 | a **planet or moon** | its globe on the star map (in its own view, anywhere on it), a body in the list on the left, the ground of the height map, its row in Reports | **Show details**, **Open on star map**, **Show on height map** (if surveyed or traced), **Show report** (if analysed), **Show waypoints** |
 | a **POI in the list** | left of the star map | **Show on star map**, **Show info**, **Show in waypoints**, **Show in reports** (the report made at it, or of the body it is on, if there is one) |
 | a **building** | the height map | **Show details**, **Rename...** |
@@ -513,16 +524,37 @@ select several rows, then right-click one of them:
 - **Copy** puts them on the clipboard, ready to paste into Discord. A
   waypoint becomes a few readable lines (name, type, system and body,
   latitude/longitude, height, note); a report is pasted in a code block so its
-  columns stay lined up, with your notes below it. Private waypoints are
-  left out, as for Export.
+  columns stay lined up, with your notes below it. Private waypoints and
+  reports are left out, as for Export.
 - **Export...** saves them to a file you choose, in the same format as
   `waypoints.json` or `bodies.json`. Send that file to a friend. Private
-  waypoints are left out (it says how many); if all you picked are
-  private, nothing is written.
+  ones are left out (it says how many); if all you picked are private,
+  nothing is written.
 
-To share one private waypoint with someone you choose, pick that one on its
-own: **Copy** and **Export...** then ask "… is a private waypoint. Copy (or
-Export) it anyway?", and **OK** shares it; **Cancel** does not.
+To share one private waypoint or report with someone you choose, pick that
+one on its own: **Copy** and **Export...** then ask "… is a private
+waypoint (or report). Copy (or Export) it anyway?", and **OK** shares it;
+**Cancel** does not.
+
+### Marking items private or to share
+
+Waypoints, reports, surveys (traces and height maps) and maps can each be
+marked **Private** and **Share to Discord**, both off to start with. The
+sharing to Discord itself is still being built; these marks say what it
+will send. A private item is never shared: making one private takes its
+share mark off.
+
+- **Waypoints**, **Reports** and **Surveys**: select one or more rows and
+  right-click. The menu offers what would change something for the rows
+  picked: **Make private** / **Make not private**, and **Share to Discord**
+  (the private ones are left out, and it says how many) / **Stop sharing to
+  Discord**. With every row picked private, Share to Discord is greyed out.
+  A waypoint's **Edit...** window has both as ticks too.
+- **Maps**: the map picked has **Private - never shared** and **Share to
+  Discord** ticks in its **Map** box. Export PDF... is not affected.
+
+Merging traces with a private one among them makes the merged trace
+private. Reports imported from a file come in neither private nor shared.
 
 **Import waypoints...** (in Settings > Waypoints) and **Import reports...**
 (in Settings > Reports) read a file someone sent you. Each record is checked first:

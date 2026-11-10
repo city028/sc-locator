@@ -2795,33 +2795,119 @@ def edit_waypoint(wps, wid, new, sub, qt):
 
 
 def update_waypoint(wps, wid, name, sub, qt, note, parent=None,
-                    private=None):
+                    private=None, share=None):
     """Everything the Edit window sets, all checked before anything changes:
     the name (need not be unique), SUB, QT, the note (empty removes it),
     for a deep-space waypoint only, the body it is shown around (`parent`,
-    as set_waypoint_parent takes it; None hands it back to distance), and
-    whether it is private (None leaves that as it is)."""
+    as set_waypoint_parent takes it; None hands it back to distance),
+    whether it is private and whether it is shared to Discord (None leaves
+    either as it is; a private one cannot be shared)."""
     w = _waypoint(wps, wid)
     if not name.strip():
         raise ValueError("name cannot be empty")
     if sub and sub not in subtypes.names():
         raise ValueError(f"'{sub}' is not a SUB")
+    if share and (private or (private is None and w.get("private"))):
+        raise ValueError(PRIVATE_NOT_SHARED)
     edit_waypoint(wps, wid, name, sub, qt)
     set_waypoint_note(wps, wid, note)
     if w.get("frame") == "system":
         set_waypoint_parent(wps, wid, parent)
     if private is not None:
         set_waypoint_private(wps, wid, private)
+    if share is not None:
+        set_share(w, share)
 
 
 def set_waypoint_private(wps, wid, private):
     """A private waypoint is never exported. Kept only while it is: no
     "private" means no, as on every waypoint from before it existed."""
-    w = _waypoint(wps, wid)
+    set_private(_waypoint(wps, wid), private)
+
+
+# Any item (waypoint, report, trace, height map, map) can be flagged to share
+# to Discord, unless it is private. Both flags are kept only while set, as
+# "private" always was on waypoints.
+PRIVATE_NOT_SHARED = "a private item cannot be shared"
+FLAGS = ("private", "share")
+
+
+def set_private(rec, private):
+    """Make an item private or not. Made private, it is no longer shared."""
     if private:
-        w["private"] = True
+        rec["private"] = True
+        rec.pop("share", None)
     else:
-        w.pop("private", None)
+        rec.pop("private", None)
+
+
+def set_share(rec, share):
+    """Flag an item to share to Discord or not. ValueError for a private
+    one."""
+    if share and rec.get("private"):
+        raise ValueError(PRIVATE_NOT_SHARED)
+    if share:
+        rec["share"] = True
+    else:
+        rec.pop("share", None)
+
+
+def shareable(rec):
+    """Whether an item goes to Discord: flagged to share and not private."""
+    return bool(rec.get("share")) and not rec.get("private")
+
+
+def flag_items(recs, flag, on):
+    """Set `flag` ("private" or "share") on each item of `recs`. Returns how
+    many were left as they were: the private ones, when asked to share."""
+    skipped = 0
+    for rec in recs:
+        if flag == "share" and on and rec.get("private"):
+            skipped += 1
+        elif flag == "share":
+            set_share(rec, on)
+        else:
+            set_private(rec, on)
+    return skipped
+
+
+def flag_saved(state, kind, keys, flag, on):
+    """flag_items on the items of `kind` named by `keys`, and save:
+    "waypoint" and "map" by id, "report" by its key in bodies.json, "trace"
+    by name, "heightmap" by body. Returns (items found, left as they were)."""
+    if flag not in FLAGS:
+        raise ValueError(f"'{flag}' is not a flag")
+    keys = set(keys)
+    with state.lock:
+        if kind == "waypoint":
+            recs = [w for w in state.waypoints if w["id"] in keys]
+        elif kind == "report":
+            recs = [r for k, r in state.bodies.items() if k in keys]
+        elif kind == "trace":
+            recs = [t for t in state.traces if t["name"] in keys]
+        elif kind == "heightmap":
+            recs = [r for b, r in state.heightmap.items() if b in keys]
+        elif kind == "map":
+            recs = [m for m in state.maps if m["id"] in keys]
+        else:
+            raise ValueError(f"'{kind}' is not a kind of item")
+        skipped = flag_items(recs, flag, on)
+        if recs and kind == "waypoint":
+            save_json(WAYPOINT_FILE, state.waypoints)
+        elif recs and kind == "report":
+            save_json(BODIES_FILE, state.bodies)
+        elif recs and kind == "trace":
+            state.traces_dirty = True
+        elif recs and kind == "heightmap":
+            state.heightmap_dirty = True
+    # These take the lock themselves.
+    if recs and kind == "trace":
+        save_traces(state, force=True)
+    elif recs and kind == "heightmap":
+        save_heightmap(state, force=True)
+    elif recs and kind == "map":
+        save_maps(state)
+    return len(recs), skipped
 
 
 def exportable(wps):
@@ -2869,6 +2955,26 @@ def search_waypoints(wps, text):
     only spaces) matches every one."""
     text = text.strip().casefold()
     return [w for w in wps if text in w["name"].casefold()]
+
+
+# A number in a list's cell: signed only at the start or after a space, so
+# the dash in railway-001 is not a minus. Thousands commas are dropped first
+# (15,708 cells), not those between coordinates (12850,0,0).
+_SORT_PART = re.compile(r"(?:(?<=\s)|^)[-+]?\d+(?:\.\d+)?|\d+(?:\.\d+)?|\D+")
+
+
+def sort_key(text):
+    """What a list's column is sorted by: its text, ignoring case, with each
+    number in it by its value (9 before 10, -2.5 before +1.0). Blank first."""
+    text = re.sub(r"\b\d{1,3}(?:,\d{3})+\b",
+                  lambda m: m.group().replace(",", ""), str(text)).strip()
+    key = []
+    for part in _SORT_PART.findall(text):
+        try:
+            key.append((0, float(part), ""))
+        except ValueError:
+            key.append((1, 0.0, part.casefold()))
+    return key
 
 
 TYPE_NAMES = {"poi": "point of interest", "survey": "survey"}
@@ -2931,7 +3037,9 @@ def waypoint_details_text(w, around=None, here=None):
     if w.get("saved"):
         lines.append(f"Saved {w['saved']}")
     if w.get("private"):
-        lines.append("Private: never exported")
+        lines.append("Private: never exported or shared")
+    elif w.get("share"):
+        lines.append("Shared to Discord")
     return "\n".join(lines)
 
 
@@ -3555,6 +3663,8 @@ def read_report_file(path):
 def prepare_report_import(rec, now):
     """A checked report as ours: dated now, with the notes saying so."""
     out = dict(rec)
+    for flag in FLAGS:                  # theirs to set, not ours
+        out.pop(flag, None)
     out["analysed"] = now
     notes = (rec.get("notes") or "").strip()
     out["notes"] = f"Imported on : {now}" + (f"\n{notes}" if notes else "")

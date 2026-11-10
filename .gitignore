@@ -25,6 +25,7 @@ calib_processed.png
 # Kept local, not published
 tests/
 TODO.md
+TODO-DONE.md
 examples/
 sync.ffs_db
 sync.ffs_lock

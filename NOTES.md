@@ -2294,6 +2294,61 @@ nothing of the program, so its tests cannot reach the real data.
   question offers a backup instead.
 - A new `*_FILE` constant must join `data_files()`; a test fails if it does not.
 
+## Sharing to Discord: the design (2026-11-10)
+
+Agreed with the user; built in phases (TODO.md). Facts it rests on:
+
+- **A webhook can only post**, and edit, read or delete its own posts by
+  message id. It cannot list a channel. Reading one needs a bot token; a
+  member's own Discord token would be a self-bot, against Discord's terms.
+  A token does not mean a bot that runs: the app calls Discord's REST API with
+  it on Import. The bot needs View Channel and Read Message History on the
+  share channels, and the Message Content intent on, or attachments come back
+  empty.
+- **A webhook post's author is the webhook**, so who shared an item has to be
+  inside the post, where anyone with the webhook URL could type any id.
+- **How SC Log Monitor links an account** (D:\projects\sc-log-monitor and its
+  bot, Y:\SC Blueprint AI Agent\sc-blueprint-bot): `/blueprint-link` makes a
+  10-minute code tied to your Discord id; the app posts it through the
+  webhook, the running bot answers by editing that post with your id, the
+  app reads it back and deletes the post. Its "guild token" is a password the
+  whole guild shares, checked by the bot, not a Discord token, and later posts
+  carry a user id the client chooses. It all depends on a bot running.
+- **Our link, with no running bot (the user's option B):** Link account makes
+  a key pair and shows a code; you post it in a share channel from your own
+  account, so Discord records the real author. Every share is signed; Import
+  checks it against the code its sharer posted. The code message must stay;
+  deleting it withdraws that key. Needs the `cryptography` package (Ed25519).
+- Choices: four channels (waypoints, surveys, reports, maps), each with a
+  webhook; a changed item is posted again as an update; Share all posts every
+  flagged item; height maps merge cell by cell; share is off on a new item;
+  clashes are settled in the import window; deletions do nothing; imported
+  items cannot be shared on; an allow list besides the blacklist, the
+  blacklist winning.
+- For testing, a separate read-only bot application, not the NAS bot's
+  token: that gives full control of a running bot.
+
+## Private and Share to Discord marks (2026-11-10)
+
+Phase 1 of the above: the marks only, nothing is sent yet.
+
+- **Every kind of item carries them the same way**: `private` and `share` on
+  its record (waypoint, report, trace, height map, map), each kept only while
+  true, as `private` always was on waypoints. Private wins: `set_private`
+  drops `share`, `set_share` refuses a private item. `flag_saved` sets one on
+  any kind by its key and saves the right file.
+- **The menus say what a click does, with no tick marks.** Windows drew a
+  `tk.Menu` checkbutton's tick over its text in our font and colours. Each way
+  is offered when it would change one of the rows picked, so a mix offers
+  both; asking "are all of them shared" first never offered Stop sharing on a
+  selection holding private items, which never are.
+- A trace merged with a private one is private. Imported reports drop both
+  marks (`prepare_report_import`), so a file cannot arrive set to share;
+  waypoint imports already dropped them (`IMPORT_FIELDS`).
+- Sorting by a column (`sort_key`): numbers by value, a sign only at the start
+  or after a space (railway-001 has no minus), thousands commas dropped but
+  not the commas between the Reports coordinates (12850,0,0).
+
 ## Still open
 
 - Two errors from the screen reader's side, each costing one frame:

@@ -366,6 +366,9 @@ def merge(ts, level=None):
         out["notes"] = notes
     if level is not None:
         out["level"] = level
+    if any(t.get("private") for t in ts):     # none of a private one shared
+        out["private"] = True
+        out.pop("share", None)
     return out
 
 

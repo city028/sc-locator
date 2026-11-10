@@ -110,6 +110,44 @@ def set_column(tree, name, width, **kw):
     tree.column(name, width=px(width), **kw)
 
 
+# Which column each sortable list is sorted by:
+# tree -> (column, descending, key of a cell's text).
+_sorted_by = {}
+
+
+def sortable(tree, key):
+    """Sort a list by clicking a column's heading, A to Z by `key` of each
+    cell's text (scl.sort_key), then Z to A on a second click; the heading
+    shows which way. Kept when the list is filled again: its refresh calls
+    sort_rows."""
+    titles = {c: tree.heading(c, "text") for c in tree["columns"]}
+
+    def click(col):
+        was, down, _ = _sorted_by.get(tree, (None, False, key))
+        down = was == col and not down
+        _sorted_by[tree] = (col, down, key)
+        for c, title in titles.items():
+            arrow = "" if c != col else " \u25bc" if down else " \u25b2"
+            tree.heading(c, text=title + arrow)
+        sort_rows(tree)
+
+    for c in titles:
+        tree.heading(c, command=lambda c=c: click(c))
+
+
+def sort_rows(tree):
+    """Put a sortable list's rows in the order its heading was clicked
+    for; as they were filled when none was. Rows the same stay in that
+    order."""
+    if tree not in _sorted_by:
+        return
+    col, down, key = _sorted_by[tree]
+    rows = sorted(tree.get_children(),
+                  key=lambda i: key(tree.set(i, col)), reverse=down)
+    for n, iid in enumerate(rows):
+        tree.move(iid, "", n)
+
+
 def window_dpi(win):
     """DPI of the screen `win` is on: 96 at 100 %, 144 at 150 %."""
     if os.name != "nt":
@@ -2875,7 +2913,8 @@ class HeightMapTab:
 
 class WaypointEditor:
     COLUMNS = (("name", 220), ("type", 70), ("sub", 120), ("qt", 40),
-               ("private", 70), ("system", 80), ("body", 110),
+               ("private", 70), ("discord", 70), ("system", 80),
+               ("body", 110),
                ("around", 120),
                ("lat", 80), ("lon", 85), ("height", 280), ("saved", 170),
                ("note", 200))
@@ -2917,6 +2956,7 @@ class WaypointEditor:
         for name, width in self.COLUMNS:
             self.tree.heading(name, text=name.upper())
             set_column(self.tree, name, width, stretch=name == "note")
+        sortable(self.tree, scl.sort_key)
         # Rebuilt on each right-click: the waypoint menu, then Copy/Export.
         self.menu = tk.Menu(self.tree, tearoff=False, font=mono(), bg=PANEL,
                             fg=FG, activebackground="#1d4f3a")
@@ -2956,7 +2996,16 @@ class WaypointEditor:
             self.menu.add_separator()
         self.menu.add_command(label="Copy", command=self.copy)
         self.menu.add_command(label="Export...", command=self.export)
+        self.menu.add_separator()
+        flag_menu(self.menu, self.chosen(), self.set_flag)
         self.menu.tk_popup(event.x_root, event.y_root)
+
+    def set_flag(self, flag, on):
+        """Private or Share to Discord on or off for the waypoints picked."""
+        found, skipped = self.scl.flag_saved(
+            self.state, "waypoint", self.tree.selection(), flag, on)
+        flash_flagged(self.state, found, skipped, flag, on)
+        self.refresh()
 
     def show_body(self, system, body):
         """Show a body's waypoints only: its system and body picked, every
@@ -3149,6 +3198,7 @@ class WaypointEditor:
         return (w["name"], TYPE_LABELS.get(w.get("type"), ""),
                 w.get("sub", ""), "yes" if w.get("qt") else "no",
                 "yes" if w.get("private") else "no",
+                "yes" if w.get("share") else "no",
                 w.get("system", "unknown"), w["planet"],
                 around or "", lat, lon,
                 self.scl.describe_height(w), w.get("saved", ""),
@@ -3169,7 +3219,7 @@ class WaypointEditor:
         seen = (tuple((w["id"], w["name"], w["planet"], w.get("note"),
                        w.get("parent"),
                        w.get("type"), w.get("sub"), w.get("qt"),
-                       w.get("private"))
+                       w.get("private"), w.get("share"))
                       for w in wps),
                 tuple((sys, tuple(p)) for sys, p in placed.items()),
                 self.sys_var.get(), self.body_var.get(), wtype,
@@ -3185,6 +3235,7 @@ class WaypointEditor:
                                             q["name"].lower())):
             self.tree.insert("", "end", iid=w["id"],
                              values=self.row_values(w, placed))
+        sort_rows(self.tree)
         chosen = [n for n in chosen if self.tree.exists(n)]
         if chosen:
             self.tree.selection_set(chosen)
@@ -3204,7 +3255,8 @@ class SurveysTab:
     the menu; deleted ones come back from Settings > Survey."""
 
     COLUMNS = (("name", 140), ("label", 200), ("kind", 100), ("body", 100),
-               ("started", 165), ("size", 235))
+               ("started", 165), ("size", 235), ("private", 70),
+               ("discord", 70))
 
     def __init__(self, parent, state, scl, nav):
         self.state, self.scl, self.nav = state, scl, nav
@@ -3223,6 +3275,7 @@ class SurveysTab:
         for name, width in self.COLUMNS:
             self.tree.heading(name, text=name.upper())
             set_column(self.tree, name, width, stretch=name == "label")
+        sortable(self.tree, scl.sort_key)
         scroll = ttk.Scrollbar(self.frame, orient="vertical",
                                command=self.tree.yview)
         self.tree.configure(yscrollcommand=scroll.set)
@@ -3308,11 +3361,16 @@ class SurveysTab:
     # Rows are keyed "trace:<name>" or "map:<body>".
 
     def refresh(self):
+        def flags(rec):
+            return tuple("yes" if rec.get(f) else "no"
+                         for f in self.scl.FLAGS)
+
         with self.state.lock:
             ts = [(t["name"], t["kind"], t.get("planet"), t.get("label", ""),
-                   t.get("started"), len(t["points"]))
+                   t.get("started"), len(t["points"]), flags(t))
                   for t in self.state.traces]
-            maps = {b: len(r["cells"]) for b, r in self.state.heightmap.items()}
+            maps = {b: (len(r["cells"]), flags(r))
+                    for b, r in self.state.heightmap.items()}
         seen = (tuple(ts), tuple(sorted(maps.items())))
         if seen == self.seen:
             return
@@ -3320,19 +3378,21 @@ class SurveysTab:
         with self.state.lock:
             lengths = {t["name"]: traces.length(t) for t in self.state.traces}
         rows = [(f"map:{b}", (b or "", 0, ""), ("height map", "",
-                 "height map", b, "", f"{n:,} cells"))
-                for b, n in maps.items()]
-        for name, kind, body, label, started, n in ts:
+                 "height map", b, "", f"{n:,} cells") + flagged)
+                for b, (n, flagged) in maps.items()]
+        for name, kind, body, label, started, n, flagged in ts:
             when = (time.strftime("%Y-%m-%d %H:%M", time.localtime(started))
                     if started else "")
             rows.append((f"trace:{name}", (body or "", 1, kind, name), (
                 name, label, kind, body or "?", when,
-                f"{n:,} points, {self.scl.fmt_dist(lengths.get(name, 0))}")))
+                f"{n:,} points, {self.scl.fmt_dist(lengths.get(name, 0))}")
+                + flagged))
         chosen = self.tree.selection()
         self.tree.delete(*self.tree.get_children())
         # By body, its height map first, then its traces by kind and name.
         for iid, _, values in sorted(rows, key=lambda r: r[1]):
             self.tree.insert("", "end", iid=iid, values=values)
+        sort_rows(self.tree)
         chosen = [i for i in chosen if self.tree.exists(i)]
         if chosen:
             self.tree.selection_set(chosen)
@@ -3367,7 +3427,29 @@ class SurveysTab:
         elif all(i.startswith("trace:") for i in sel):
             self.menu.add_command(label="Merge...", command=self.merge)
         self.menu.add_command(label="Delete...", command=self.delete)
+        self.menu.add_separator()
+        names, bodies = self.picked_keys()
+        with self.state.lock:
+            recs = ([dict(t) for t in self.state.traces if t["name"] in names]
+                    + [dict(r) for b, r in self.state.heightmap.items()
+                       if b in bodies])
+        flag_menu(self.menu, recs, self.set_flag)
         self.menu.tk_popup(*at)
+
+    def picked_keys(self):
+        """(trace names, height map bodies) of the rows picked."""
+        sel = self.tree.selection()
+        return ([i[6:] for i in sel if i.startswith("trace:")],
+                [i[4:] for i in sel if i.startswith("map:")])
+
+    def set_flag(self, flag, on):
+        """Private or Share to Discord on or off for the surveys picked."""
+        names, bodies = self.picked_keys()
+        found, skipped = (a + b for a, b in zip(
+            self.scl.flag_saved(self.state, "trace", names, flag, on),
+            self.scl.flag_saved(self.state, "heightmap", bodies, flag, on)))
+        flash_flagged(self.state, found, skipped, flag, on)
+        self.refresh()
 
     def delete(self):
         """Delete the selected traces and height maps, once asked."""
@@ -3376,7 +3458,8 @@ class SurveysTab:
             return
         lines = []
         for iid in sel:
-            name, label, kind, body, _, size = self.tree.item(iid, "values")
+            name, label, kind, body, _, size = self.tree.item(iid,
+                                                              "values")[:6]
             lines.append(f"  {body} height map ({size})" if iid.startswith(
                 "map:") else f"  {name}{' ' + label if label else ''} "
                              f"({kind}, {body})")
@@ -3876,6 +3959,20 @@ class MapsTab:
             side="left", padx=(6, 0))
         ttk.Button(box, text="Export PDF...", command=self.export_pdf).pack(
             anchor="w", pady=(6, 0))
+        row = tk.Frame(box, bg=BG)
+        row.pack(anchor="w", pady=(6, 0))
+        self.flag_vars = {f: tk.BooleanVar(value=bool(m.get(f)))
+                          for f in self.scl.FLAGS}
+        ttk.Checkbutton(row, text="Private - never shared",
+                        variable=self.flag_vars["private"],
+                        command=lambda: self.set_flag("private")).pack(
+            side="left")
+        self.share_box = ttk.Checkbutton(
+            row, text="Share to Discord", variable=self.flag_vars["share"],
+            command=lambda: self.set_flag("share"))
+        self.share_box.pack(side="left", padx=(12, 0))
+        self.share_box.state(["disabled" if m.get("private")
+                              else "!disabled"])
 
         box = self.box(" Surveys shown ")
         LayerTable(box, m["layers"],
@@ -3994,6 +4091,20 @@ class MapsTab:
             self.shown = m["updated"]
             self.show_info(m)
             self.render_soon()
+
+    def set_flag(self, flag):
+        """Private or Share to Discord ticked on the map picked. A private
+        map cannot be shared: its tick goes off and grey."""
+        if self.mid is None:
+            return
+        on = self.flag_vars[flag].get()
+        found, skipped = self.scl.flag_saved(self.state, "map", [self.mid],
+                                             flag, on)
+        flash_flagged(self.state, found, skipped, flag, on)
+        m = self.current() or {}
+        self.flag_vars["share"].set(bool(m.get("share")))
+        self.share_box.state(["disabled" if m.get("private")
+                              else "!disabled"])
 
     def compass_set(self):
         v = self.compass_vars
@@ -4806,10 +4917,48 @@ def ask_restore(parent, what, file, columns, rows):
 
 AROUND_AUTO = "auto (by distance)"     # Shown around: the nearest body
 
+# The flags every kind of item has (scl.FLAGS), as the menus name them.
+FLAG_LABELS = (("private", "Private"), ("share", "Share to Discord"))
+# A right-click menu's (turn on, turn off) for each flag. Words, not ticks:
+# Windows draws a menu's tick over its text in our font and colours.
+FLAG_ACTIONS = {"private": ("Make private", "Make not private"),
+                "share": ("Share to Discord", "Stop sharing to Discord")}
+
+
+def flag_menu(menu, recs, apply):
+    """Private and Share to Discord in a right-click menu, for the items
+    `recs` picked, by `apply(flag, on)`. Each way is offered when it would
+    change one of them, so a mix offers both: Make private and Make not
+    private, Share to Discord (the private ones left out) and Stop sharing.
+    With nothing to share, all private, Share is there but greyed out."""
+    for flag, _ in FLAG_LABELS:
+        if flag == "share":
+            ways = (any(not r.get("private") and not r.get("share")
+                        for r in recs),
+                    any(r.get("share") for r in recs))
+        else:
+            ways = (any(not r.get(flag) for r in recs),
+                    any(r.get(flag) for r in recs))
+        for on, label in zip((True, False), FLAG_ACTIONS[flag]):
+            if ways[not on]:
+                menu.add_command(label=label, command=lambda f=flag, v=on:
+                                 apply(f, v))
+            elif on and flag == "share" and not ways[1]:
+                menu.add_command(label=label, state="disabled")
+
+
+def flash_flagged(state, found, skipped, flag, on):
+    """Say in the status line what a flag_menu click did."""
+    n = found - skipped
+    with state.lock:
+        state.flash(f"{dict(FLAG_LABELS)[flag]} {'on' if on else 'off'}: "
+                    f"{n} item" + ("s" if n != 1 else "")
+                    + (f", {skipped} private left out" if skipped else ""))
+
 
 def ask_waypoint(parent, w, names, around, no_sub, at=None):
     """Edit... for waypoint `w`: its name (typed, or one in `names`), SUB,
-    QT, private, note and, if `around` is a list (deep space only), the body
+    QT, private, share to Discord, note and, if `around` is a list (deep space only), the body
     it is shown around, in a window by the screen point `at`. `no_sub` is the
     SUB list's "not said" (scl.NO_SUB). Returns the fields
     as scl.update_waypoint takes them, or None if cancelled (closing it, X
@@ -4844,9 +4993,21 @@ def ask_waypoint(parent, w, names, around, no_sub, at=None):
     ttk.Checkbutton(win, text="QT - can be jumped to", variable=qt).grid(
         row=3, column=1, sticky="w", pady=3)
     private = tk.BooleanVar(value=bool(w.get("private")))
-    ttk.Checkbutton(win, text="Private - never exported",
-                    variable=private).grid(row=4, column=1, sticky="w", pady=3)
-    row = 5
+    share = tk.BooleanVar(value=bool(w.get("share")))
+    share_box = ttk.Checkbutton(win, text="Share to Discord", variable=share)
+
+    def private_ticked():
+        """A private waypoint cannot be shared."""
+        if private.get():
+            share.set(False)
+        share_box.state(["disabled" if private.get() else "!disabled"])
+
+    ttk.Checkbutton(win, text="Private - never exported or shared",
+                    variable=private, command=private_ticked).grid(
+        row=4, column=1, sticky="w", pady=3)
+    share_box.grid(row=5, column=1, sticky="w", pady=3)
+    private_ticked()
+    row = 6
     parent_var = None
     if around is not None:
         label(row, "Shown around")
@@ -4870,7 +5031,7 @@ def ask_waypoint(parent, w, names, around, no_sub, at=None):
                       sub="" if sub.get() == no_sub else sub.get(),
                       qt=qt.get(), note=note.get("1.0", "end"),
                       parent=None if pick == AROUND_AUTO else pick,
-                      private=private.get())
+                      private=private.get(), share=share.get())
         win.destroy()
 
     ttk.Button(buttons, text="OK", command=ok).pack(side="left")
@@ -4968,7 +5129,8 @@ class ReportViewer:
         # Short enough to leave the report its width: coordinates in Mm and
         # the date only; the report has both in full.
         columns = (("name", 170), ("type", 150), ("system", 70), ("kind", 80),
-                   ("coordinates", 160), ("analysed", 100))
+                   ("coordinates", 160), ("analysed", 100), ("private", 70),
+                   ("discord", 70))
         self.tree = ttk.Treeview(self.frame, show="headings",
                                  selectmode="extended",
                                  columns=[n for n, _ in columns])
@@ -4976,6 +5138,7 @@ class ReportViewer:
             self.tree.heading(name, text="COORDINATES (Mm)"
                               if name == "coordinates" else name.upper())
             set_column(self.tree, name, width, stretch=name == "name")
+        sortable(self.tree, scl.sort_key)
         self.tree.pack(side="left", fill="y")
         self.tree.bind("<<TreeviewSelect>>", lambda e: self.show_selected())
         self.tree.bind("<Button-3>", self.popup)
@@ -5031,7 +5194,29 @@ class ReportViewer:
         self.menu.add_command(label="Copy", command=self.copy)
         self.menu.add_command(label="Export...", command=self.export)
         self.menu.add_command(label="Delete...", command=self.delete)
+        self.menu.add_separator()
+        flag_menu(self.menu, [r for _, r in self.chosen()], self.set_flag)
         self.menu.tk_popup(event.x_root, event.y_root)
+
+    def set_flag(self, flag, on):
+        """Private or Share to Discord on or off for the reports picked."""
+        found, skipped = self.scl.flag_saved(
+            self.state, "report", self.tree.selection(), flag, on)
+        flash_flagged(self.state, found, skipped, flag, on)
+        self.refresh()
+
+    def to_share(self, title, verb):
+        """([(key, report)], private ones left out) for Copy or Export, or
+        None to stop, as WaypointEditor.to_share."""
+        chosen = self.chosen()
+        if len(chosen) == 1 and chosen[0][1].get("private"):
+            if ask_buttons(title, f"'{self.title(*chosen[0])}' is a private "
+                           f"report. {verb} it anyway?", self.frame,
+                           ("OK", "Cancel")) != "OK":
+                return None
+            return chosen, 0
+        kept = [(k, r) for k, r in chosen if not r.get("private")]
+        return kept, len(chosen) - len(kept)
 
     def delete(self):
         """Delete the selected reports, once asked."""
@@ -5072,20 +5257,36 @@ class ReportViewer:
         return self.scl.place_report_lines(self.state, key)
 
     def copy(self):
+        got = self.to_share("Copy report", "Copy")
+        if got is None:
+            return
+        chosen, left = got
         texts = [self.scl.report_text(self.title(k, rec), rec,
                                       self.lines_for(k) or [])
-                 for k, rec in self.chosen()]
+                 for k, rec in chosen]
         if not texts:
+            if left:
+                with self.state.lock:
+                    self.state.flash("nothing copied: all private")
             return
         self.frame.clipboard_clear()
         self.frame.clipboard_append("\n\n".join(texts))
         with self.state.lock:
             self.state.flash(f"copied {len(texts)} report"
-                             + ("s" if len(texts) > 1 else ""))
+                             + ("s" if len(texts) > 1 else "")
+                             + (f", {left} private left out" if left else ""))
 
     def export(self):
-        reports = dict(self.chosen())
+        got = self.to_share("Export report", "Export")
+        if got is None:
+            return
+        chosen, left = got
+        reports = dict(chosen)
         if not reports:
+            if left:
+                show_message("Export reports",
+                             "Nothing to export: they are all private.",
+                             parent=self.frame)
             return
         first = next(iter(reports))
         path = filedialog.asksaveasfilename(
@@ -5102,7 +5303,8 @@ class ReportViewer:
             return
         with self.state.lock:
             self.state.flash(f"exported {len(reports)} to "
-                             f"{os.path.basename(path)}")
+                             f"{os.path.basename(path)}"
+                             + (f", {left} private left out" if left else ""))
 
     def restore(self, parent):
         """Put back reports deleted earlier, from the backups of
@@ -5201,8 +5403,9 @@ class ReportViewer:
         # Names come from the waypoints: a rename there shows here.
         cols = {k: self.scl.report_columns(k, v, wps) for k, v in
                 bodies.items() if pick == "all" or v.get("system", "?") == pick}
-        seen = (tuple((k, v.get("analysed"), v.get("label")) for k, v in
-                      bodies.items()), pick, tuple(cols.items()))
+        seen = (tuple((k, v.get("analysed"), v.get("label"), v.get("private"),
+                       v.get("share")) for k, v in bodies.items()),
+                pick, tuple(cols.items()))
         if seen != self.seen:
             self.seen = seen
             self.sys_pick.config(values=["all"] + systems)
@@ -5217,7 +5420,10 @@ class ReportViewer:
                 rec, (name, kind, at) = bodies[key], cols[key]
                 self.tree.insert("", "end", iid=key, values=(
                     name, kind, rec.get("system", "?"), rec.get("kind", "?"),
-                    at, rec.get("analysed", "")[:10]))
+                    at, rec.get("analysed", "")[:10],
+                    "yes" if rec.get("private") else "no",
+                    "yes" if rec.get("share") else "no"))
+            sort_rows(self.tree)
             chosen = [k for k in chosen if self.tree.exists(k)]
             if chosen:
                 self.tree.selection_set(chosen)
