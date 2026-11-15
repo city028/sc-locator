@@ -2668,6 +2668,18 @@ main window has every HUD function, for a second screen without the HUD.
 - Shared by both windows: `toggle_target`, `compass_arrow`, `label_place`,
   `discard_analysis`, `survey_menu_items` / `fill_menu`, `to_name`.
 
+## Starfield background image (2026-11-15)
+
+- `assets/starfield-3840x2160.png` is a 4K (16:9) deep-space background for
+  the app; `assets/starfield-grok-2816x1584.png` is the original it was made
+  from. Neither is used by the code yet.
+- The original came from Higgsfield's Grok Imagine 2.0 (request
+  `01a1dee0-e73d-7813-b5e8-5af80da3ce03`, about $0.08), generated through a
+  separate Higgsfield Studio app in `D:\projects\higgsfield-studio`.
+  Higgsfield's image models stop at 2K, so the 4K file is the original
+  enlarged with Lanczos, plus 3,000 sharp coloured stars added by a script
+  (fixed seed 7, screen blend).
+
 ## Still open
 
 - Two errors from the screen reader's side, each costing one frame:
