@@ -1550,6 +1550,9 @@ class StarMap:
         self.header(self.system.upper(),
                     "drag to rotate  -  wheel to zoom  -  click a planet or "
                     "moon to open it, a pin to edit it")
+        # Bodies are drawn at fixed sizes (SUN_PX, PLANET_PX, MOON_PX).
+        c.create_text(w - 10, h - 8, text="bodies not to scale", anchor="se",
+                      fill=DIM, font=mono(8))
 
     def draw_body(self, wps, bodies, around, w, h):
         # The body's own frame turns with it; its moons and stations do not.
