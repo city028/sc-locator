@@ -115,6 +115,10 @@ DEFAULT_CONFIG = {
     # Other > Find HUD text narrows the sides to your own screen.
     "region": [0.60, 0.00, 1.00, 0.28],
     "log": False,                        # the diagnostic log, session.log
+    # The first-start screen that finds the HUD text (first_setup) has been
+    # done or skipped. A new config file starts at False; one from before
+    # that screen existed has no key and counts as done.
+    "setup_done": True,
     "scale": 2.0,                        # upscale factor before OCR
     # Text is found by local contrast, not by one brightness cut-off: see
     # preprocess. The radius is the neighbourhood each pixel is compared with,
@@ -487,6 +491,7 @@ def load_config():
     cfg.update(load_json(CONFIG_FILE, {}))
     cfg["game_process"] = [n.lower() for n in cfg["game_process"]]
     if not CONFIG_FILE.exists():
+        cfg["setup_done"] = False
         save_json(CONFIG_FILE, cfg)
     return cfg
 
@@ -1476,6 +1481,15 @@ def find_region(sct, cfg):
     t = min(b[1] for b in boxes) / s
     r = max(b[2] for b in boxes) / s
     b = max(b[3] for b in boxes) / s
+    # The session QR code (r_DisplaySessionInfo, mostly on PTU) sits in the
+    # top-right corner and pushes the HUD left by its width. Text ending well
+    # short of the edge means it is showing: the area then already holds the
+    # HUD both ways once it reaches the edge. Text at the edge means it is
+    # not: reach further left by its width, for when it comes on.
+    qr = SESSION_QR_SIDE * raw.height
+    qr_on = raw.width - r > qr / 2
+    if not qr_on:
+        l -= qr
     # Pad vertically by ~3 rows: the block shifts as the number of Zone rows
     # changes with how deeply the player is nested in object containers.
     pad_x = 0.02 * raw.width
@@ -1488,7 +1502,7 @@ def find_region(sct, cfg):
     # the top, the number of rows above CamPos changes with location and
     # graphics settings, which slides the whole block up and down - a region
     # measured in one place otherwise stops working in another.
-    if right > 0.90:
+    if right > 0.90 or qr_on:
         right = 1.0
     if top < 0.33:
         top = 0.0
@@ -1501,6 +1515,9 @@ def find_region(sct, cfg):
 
 
 FIND_SECONDS = 30       # how long Find HUD text keeps looking
+# The session QR code's side as a fraction of the screen height: 200 px at
+# 2560x1440 (PTU, 2026-11-15). Assumed to grow with the screen's height.
+SESSION_QR_SIDE = 0.14
 
 
 def find_hud(sct, cfg, seconds=FIND_SECONDS, progress=lambda text: None):
@@ -6807,6 +6824,103 @@ def offer_old_data():
     root.mainloop()
 
 
+def keep_settings(cfg, values):
+    """Settings changed before the program's state exists: into `cfg` and
+    the config file, leaving the file's other keys as they are."""
+    cfg.update(values)
+    saved = load_json(CONFIG_FILE, {})
+    saved.update(values)
+    save_json(CONFIG_FILE, saved)
+
+
+def first_setup(cfg):
+    """First start: how to show the HUD text, and a search for it, before
+    the program opens. Calibrate (when found) or Skip mark it done; closing
+    the window leaves it for the next start."""
+    import tkinter as tk
+
+    root = tk.Tk()
+    root.withdraw()                     # placed before it is seen
+    root.title("SC Locator - first start")
+    try:
+        root.iconbitmap(str(ICON_FILE))
+    except tk.TclError:
+        pass
+    tk.Label(root, justify="left", wraplength=480, padx=14, pady=12, text=(
+        "SC Locator reads the game's debug text off your screen. Show it "
+        "where SC Locator can find it:\n\n"
+        "1. Start Star Citizen and set it to Borderless Window in its "
+        "graphics settings.\n"
+        "2. In the game, press ~ and type r_DisplayInfo 2. Text appears at "
+        "the top right. The session QR code (r_DisplaySessionInfo, mostly "
+        "on PTU) may be on or off: both work.\n"
+        "3. Look at a dark area, so the text stands out.\n"
+        f"4. Press Calibrate, then switch to the game. SC Locator keeps "
+        f"looking for {FIND_SECONDS} s.")).pack(anchor="w")
+    status = tk.Label(root, justify="left", wraplength=480, padx=14)
+    status.pack(anchor="w")
+    row = tk.Frame(root)
+    row.pack(anchor="e", padx=14, pady=12)
+    go = tk.Button(row, text="Calibrate", width=10)
+    go.pack(side="left")
+    skip = tk.Button(row, text="Skip", width=10)
+    skip.pack(side="left", padx=(6, 0))
+
+    def finish(text):
+        go.pack_forget()
+        skip.config(text="OK", state="normal", command=root.destroy)
+        status.config(text=text)
+
+    def skipped():
+        keep_settings(cfg, {"setup_done": True})
+        finish("You can do this later in Settings > Other > Find HUD text.")
+
+    def calibrate():
+        found = {"step": "starting"}
+
+        def run():
+            try:
+                with open_capture() as sct:
+                    found["result"] = find_hud(
+                        sct, dict(cfg),
+                        progress=lambda t: found.update(step=t))
+            except Exception as exc:        # shown, not lost on a thread
+                found["result"] = {"why": f"The search failed: {exc}"}
+
+        def watch():
+            if "result" not in found:
+                status.config(text="Switch to the game now. Looking: "
+                                   f"{found['step']}...")
+                root.after(250, watch)
+                return
+            res = found["result"]
+            if "why" in res:
+                go.config(text="Try again", state="normal")
+                skip.config(state="normal")
+                status.config(text=f"Not found. {res['why']}")
+                return
+            keep_settings(cfg, {"monitor": res["monitor"],
+                                "region": res["region"], "setup_done": True})
+            finish(f"Found on screen {res['monitor']}. A read there gave: "
+                   f"{res['read']}")
+
+        go.config(state="disabled")
+        skip.config(state="disabled")
+        threading.Thread(target=run, daemon=True).start()
+        root.after(250, watch)
+
+    go.config(command=calibrate)
+    skip.config(command=skipped)
+    root.update_idletasks()
+    x, y = root.winfo_pointerxy()
+    x = min(x + 12, root.winfo_screenwidth() - root.winfo_reqwidth() - 20)
+    y = min(y + 12, root.winfo_screenheight() - root.winfo_reqheight() - 80)
+    root.geometry(f"+{max(0, x)}+{max(0, y)}")
+    root.deiconify()
+    root.focus_force()
+    root.mainloop()
+
+
 def tell_already_running():
     """A second start: say so in a small window by the pointer, as there is
     no console to say it in. Two overlays draw in the same corner, so the
@@ -6877,6 +6991,8 @@ def run_program():
             and not CONFIG_FILE.exists() and not WAYPOINT_FILE.exists()):
         offer_old_data()
     cfg = load_config()
+    if not cfg["setup_done"]:
+        first_setup(cfg)
     state = State(cfg, load_waypoints())
     state.startup_notice = notice
     load_subtypes(state.waypoints)

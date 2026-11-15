@@ -62,8 +62,11 @@ game.
 
    This turns on the debug text in the top-right corner. It resets every time
    the game restarts, so do it each session.
-4. Start **SC Locator** from the Start menu. A small coloured dot (the **pin**)
-   appears in the bottom-right corner of the screen.
+4. Start **SC Locator** from the Start menu. The first time, a window repeats
+   these steps: look at a dark area, press **Calibrate** and switch to the
+   game, and it finds where the HUD text is on your screen. **Skip** leaves
+   that for later (Settings > Other > Find HUD text). Then a small coloured
+   dot (the **pin**) appears in the bottom-right corner of the screen.
 5. When the pin turns **green** you have a position fix.
 
 To click the overlay while in game, hold **`F`** (the game only shows a mouse
@@ -504,6 +507,8 @@ quits the program.
       reads it from there from then on; the overlay moves to that screen
       too. Press it, then switch to the game: it keeps looking for 30
       seconds, and says what most likely stopped it if it finds nothing.
+      The area it finds also holds the HUD text when the session QR code
+      (`r_DisplaySessionInfo`, mostly on PTU) is switched on or off later.
     - **Write a diagnostic log** switches `session.log` on and off at once;
       **Open log folder** shows where it is.
     - The version you have, and updates (see Updates above).

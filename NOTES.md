@@ -2594,6 +2594,35 @@ module had loaded, a second or two later. Now:
   text grows with the resolution is not known; no real capture other than
   2560x1440 has been tried.
 
+## First start and the session QR code (2026-11-15)
+
+- **First-start window** (`first_setup`), before the main window: the
+  steps (Borderless Window, `r_DisplayInfo 2`, QR code may be on or off,
+  look at a dark area) and **Calibrate** / **Skip**. Calibrate runs
+  `find_hud`; found saves `monitor`, `region`; not found says why and
+  offers Try again. Calibrate (found) and Skip set `setup_done`; closing
+  with X leaves it for the next start. `keep_settings` writes the config
+  file directly, as there is no state yet.
+- **When it shows**: `load_config` writes `setup_done: false` only when it
+  creates the config file. `DEFAULT_CONFIG` has `true`, so a config from
+  before (no key) counts as done. A wipe deletes the config, so it shows
+  again; a restore or the old-data import brings a config with it, so not.
+  Not limited to the .exe.
+- **The QR code** (`r_DisplaySessionInfo`) sits in the top-right corner,
+  200 px square at 2560x1440 (`SESSION_QR_SIDE` = 0.14 of the screen
+  height, assumed to scale with height), and pushes the HUD left by its
+  width. On two real PTU screenshots (examples/, kept local) `find_region`
+  found the HUD both ways, and the QR code inside the area did not stop a
+  read. But the area's left side came from how far the rows near CamPos
+  reach: with a short location row, an area found with the QR code off
+  started at 1896 px, while the CamPos row with it on starts at ~1830 px,
+  so nothing read. Now: text ending more than half a QR side short of the
+  right edge means it is on (area already fits both ways, right edge goes
+  to 1.0); otherwise the left side moves out by one QR side.
+  tests/test_ocr.py covers both screenshots and the short row, and fails
+  with `SESSION_QR_SIDE` at 0.
+- On those screenshots `find_region` took 3.4-3.9 s a screen, not 1-2 s.
+
 ## Still open
 
 - Two errors from the screen reader's side, each costing one frame:
