@@ -3975,7 +3975,7 @@ class MapsTab:
             command=lambda: self.set_flag("share"))
         self.share_box.pack(side="left", padx=(12, 0))
         self.share_box.state(["disabled" if m.get("private")
-                              else "!disabled"])
+                              or m.get(discordshare.FROM) else "!disabled"])
 
         box = self.box(" Surveys shown ")
         LayerTable(box, m["layers"],
@@ -4107,7 +4107,7 @@ class MapsTab:
         m = self.current() or {}
         self.flag_vars["share"].set(bool(m.get("share")))
         self.share_box.state(["disabled" if m.get("private")
-                              else "!disabled"])
+                              or m.get(discordshare.FROM) else "!disabled"])
 
     def compass_set(self):
         v = self.compass_vars
@@ -4622,14 +4622,18 @@ class SettingsTab:
                       "to Discord that has not been posted yet, or has "
                       "changed since: a changed one goes again as an "
                       "update. Share all posts every one of them again. "
-                      "Private items are never posted.")
+                      "Private items are never posted. Import... reads the "
+                      "channels and shows what others shared, to take in "
+                      "or skip.")
         row = tk.Frame(box, bg=BG)
         row.pack(anchor="w", fill="x")
         self.publish_buttons = [
             ttk.Button(row, text="Publish new", width=16,
                        command=self.publish),
             ttk.Button(row, text="Share all...", width=16,
-                       command=lambda: self.publish(everything=True))]
+                       command=lambda: self.publish(everything=True)),
+            ttk.Button(row, text="Import...", width=16,
+                       command=self.import_discord)]
         for button in self.publish_buttons:
             button.pack(side="left", padx=(0, 8))
         self.publish_status = tk.Label(row, font=mono(9), fg=DIM, bg=BG)
@@ -4735,6 +4739,16 @@ class SettingsTab:
         self.test_status.config(text="Testing...")
         threading.Thread(target=run, daemon=True).start()
         self.frame.after(200, done)
+
+    def import_discord(self):
+        """Open the Import window, or bring the open one to the front."""
+        if self.publishing or not self.save_discord():
+            return
+        if getattr(self, "importer", None) and \
+                self.importer.win.winfo_exists():
+            self.importer.win.lift()
+            return
+        self.importer = DiscordImport(self)
 
     def publish(self, everything=False):
         """Publish new, or Share all (`everything`): post on a thread of its
@@ -5179,6 +5193,281 @@ def ask_conflict(parent, text, can_keep=True):
     return answer["action"], to_all.get()
 
 
+# Import from Discord: what each group of sorted posts is called, and which
+# can be taken in.
+IMPORT_GROUPS = (("new", "New"), ("update", "Updates"),
+                 ("clash", "Clash with yours"), ("skipped", "Skipped before"),
+                 ("already", "Already have"), ("error", "Errors"),
+                 ("blacklisted", "Blacklisted"),
+                 ("not_allowed", "Not on the allow list"))
+TAKEABLE = ("new", "update", "clash", "skipped")
+
+
+class DiscordImport:
+    """Import from Discord: the share channels read on a thread, their posts
+    sorted (discordshare.sort_imports) into a list by group, to take in or
+    skip, item by item or all of a group at once. Sorted again after each
+    step, against our items as they are then."""
+
+    def __init__(self, tab):
+        self.tab, self.state, self.scl = tab, tab.state, tab.scl
+        self.cfg, self.lock = tab.discord, tab.discord_lock
+        self.rows, self.groups = {}, {}
+        self.messages, self.files, self.problems = [], {}, []
+        win = self.win = tk.Toplevel(tab.frame, bg=BG)
+        win.withdraw()                  # placed before it is seen
+        win.title("Import from Discord")
+        win.transient(tab.frame.winfo_toplevel())
+        self.status = tk.Label(win, font=mono(9), fg=DIM, bg=BG, anchor="w",
+                               text="Reading the channels...")
+        self.status.pack(anchor="w", fill="x", padx=10, pady=(10, 4))
+        frame = tk.Frame(win, bg=BG)
+        frame.pack(fill="both", expand=True, padx=10)
+        cols = (("kind", "KIND", 110), ("from", "FROM", 140),
+                ("when", "POSTED", 140), ("detail", "", 380))
+        tree = self.tree = ttk.Treeview(frame, columns=[c for c, _, _ in cols],
+                                        selectmode="extended", height=20)
+        tree.heading("#0", text="NAME", anchor="w")
+        set_column(tree, "#0", 300)
+        for col, title, width in cols:
+            tree.heading(col, text=title, anchor="w")
+            set_column(tree, col, width)
+        bar = ttk.Scrollbar(frame, orient="vertical", command=tree.yview)
+        tree.configure(yscrollcommand=bar.set)
+        tree.pack(side="left", fill="both", expand=True)
+        bar.pack(side="right", fill="y")
+        tree.bind("<Double-1>", lambda e: self.details())
+        row = tk.Frame(win, bg=BG)
+        # Packed ahead of the list, so a short window shrinks the list,
+        # not the buttons off the bottom.
+        row.pack(side="bottom", anchor="e", padx=10, pady=10, before=frame)
+        self.buttons = []
+        for label, command in (("Take in", self.take), ("Skip", self.skip),
+                               ("Details", self.details),
+                               ("Close", win.destroy)):
+            b = ttk.Button(row, text=label, command=command)
+            b.pack(side="left", padx=(6, 0))
+            self.buttons.append(b)
+        for b in self.buttons[:3]:
+            b.state(["disabled"])
+        win.bind("<Escape>", lambda e: win.destroy())
+        place_near(win)
+        win.deiconify()
+        self.read()
+
+    def read(self):
+        """Read the channels on a thread; sort when they are in."""
+        with self.lock:
+            cfg = json.loads(json.dumps(self.cfg))
+        found = {"step": "Reading the channels..."}
+
+        def run():
+            try:
+                found["got"] = discordapi.read_channels(
+                    cfg, progress=lambda text: found.update(step=text))
+            except Exception as exc:        # shown, not lost on a thread
+                found["got"] = ([], {}, [f"Reading failed: {exc}"])
+
+        def watch():
+            if not self.win.winfo_exists():
+                return
+            if "got" not in found:
+                self.status.config(text=found["step"])
+                self.win.after(250, watch)
+                return
+            self.messages, self.files, problems = found["got"]
+            self.problems = problems
+            for b in self.buttons[:3]:
+                b.state(["!disabled"])
+            self.sort()
+
+        threading.Thread(target=run, daemon=True).start()
+        self.win.after(250, watch)
+
+    def sort(self):
+        """Sort the posts against our items as they are now, and list
+        them."""
+        scl, cfg = self.scl, self.cfg
+        with self.lock:
+            try:
+                mine = discordshare.public_of(cfg["key"]) \
+                    if cfg["key"] else None
+            except ImportError:
+                mine = None
+            self.groups = discordshare.sort_imports(
+                self.messages, self.files, mine=mine,
+                allow=discordshare.user_ids(cfg["allow"]),
+                block=discordshare.user_ids(cfg["block"]),
+                imported=dict(cfg["imported"]),
+                skipped=dict(cfg["skipped"]), checks=scl.DISCORD_CHECKS,
+                clash=scl.discord_clash(self.state))
+        tree = self.tree
+        was_open = {g for g, _ in IMPORT_GROUPS
+                    if tree.exists(g) and tree.item(g, "open")}
+        tree.delete(*tree.get_children())
+        self.rows = {}
+        for group, title in IMPORT_GROUPS:
+            entries = self.groups.get(group) or []
+            if not entries:
+                continue
+            tree.insert("", "end", iid=group, text=f"{title} "
+                        f"({len(entries)})", open=group in was_open or (
+                            not was_open and group in TAKEABLE
+                            and group != "skipped"))
+            for n, e in enumerate(entries):
+                iid = f"{group}:{n}"
+                self.rows[iid] = (group, e)
+                tree.insert(group, "end", iid=iid, text=self.label(e),
+                            values=(scl.SHARE_KIND_NAMES.get(
+                                        e.get("kind"), "?"),
+                                    e.get("name", "?"), self.when(e),
+                                    self.detail(group, e)))
+        total = sum(len(v) for v in self.groups.values())
+        text = (f"{total} shared item" + ("s" if total != 1 else "")
+                + f" in {len(self.messages)} messages. Pick some and Take "
+                "in or Skip; a group's row picks all of it.")
+        if self.problems:
+            text += "  Not read: " + "; ".join(self.problems)
+        self.status.config(text=text)
+
+    def label(self, e):
+        if "item" not in e:
+            return f"message {e['message']}"
+        return self.scl.share_label(e["kind"], e["id"], e["item"])
+
+    @staticmethod
+    def when(e):
+        at = e.get("at")
+        if isinstance(at, (int, float)):
+            return time.strftime("%Y-%m-%d %H:%M", time.localtime(at))
+        return str(at or "")
+
+    @staticmethod
+    def detail(group, e):
+        if e.get("problems"):
+            return "; ".join(e["problems"])
+        if e.get("clashes"):
+            return "clashes with " + ", ".join(e["clashes"][:3])
+        if e.get("ours") and group in ("update", "already"):
+            return "yours already, as it came in before"
+        return ""
+
+    def picked(self):
+        """The (group, entry) rows picked: a group's row stands for all of
+        its rows."""
+        out, seen = [], set()
+        for iid in self.tree.selection():
+            kids = self.tree.get_children(iid) if iid in self.groups else ()
+            for one in (kids or (iid,)):
+                if one in self.rows and one not in seen:
+                    seen.add(one)
+                    out.append(self.rows[one])
+        return out
+
+    def note(self, record, *args):
+        """Note in discord.json what was done with a post."""
+        with self.lock:
+            record(self.cfg, *args)
+            try:
+                discordshare.save_settings(self.scl.DISCORD_FILE, self.cfg)
+            except OSError as exc:
+                return str(exc)
+        return None
+
+    def take(self):
+        """Take in the rows picked: a new one or an update straight away,
+        one that clashes after asking (Yes as well, No skips it, Replace)."""
+        scl, rows = self.scl, [r for r in self.picked() if r[0] in TAKEABLE]
+        if not rows:
+            show_message("Take in", "Pick something new, an update, a clash "
+                         "or one skipped before.", self.win)
+            return
+        now = time.strftime("%Y-%m-%d %H:%M:%S")
+        taken, skipped, failed, always = 0, 0, [], None
+        for group, e in rows:
+            clashes = [] if e.get("ours") else scl.discord_clash(
+                self.state)(e["kind"], e["id"], e["item"])
+            action = "update" if e.get("ours") else "add"
+            if clashes:
+                can_keep = not (e["kind"] == "report"
+                                and clashes[0] == e["id"])
+                answer = always if always != "yes" or can_keep else None
+                if answer is None:
+                    answer, to_all = ask_conflict(
+                        self.win, self.clash_text(e, clashes, can_keep),
+                        can_keep)
+                    if to_all:
+                        always = answer
+                if answer == "no":
+                    self.note(discordshare.record_skipped, e)
+                    skipped += 1
+                    continue
+                action = "replace" if answer == "replace" else "add"
+            try:
+                ours = scl.take_in(self.state, e, action, now)
+            except ValueError as exc:
+                failed.append(f"{self.label(e)}: {exc}")
+                continue
+            problem = self.note(discordshare.record_imported, e, ours,
+                                time.time())
+            if problem:
+                failed.append(f"{self.label(e)}: taken in, but not noted "
+                              f"as taken in: {problem}")
+            taken += 1
+        self.refresh_tabs()
+        self.sort()
+        text = f"Took in {taken}" + (f", skipped {skipped}" if skipped
+                                     else "") + "."
+        if failed:
+            text += "\n\nNot taken in:\n" + "\n".join(
+                f"  {line}" for line in failed[:30])
+        show_message("Take in", text, self.win)
+
+    def clash_text(self, e, clashes, can_keep):
+        what = self.label(e)
+        out = [f"{what}, shared by {e['name']}, clashes with yours: "
+               f"{', '.join(clashes)}.", ""]
+        if can_keep:
+            out.append("YES takes it in as well (under a name of its own "
+                       "if the name is taken).")
+        out += ["NO leaves it out: skipped until it changes.",
+                f"REPLACE puts it in place of {clashes[0]}."]
+        return "\n".join(out)
+
+    def skip(self):
+        """Skip the rows picked: not offered again until they change."""
+        rows = [r for r in self.picked() if r[0] in ("new", "update",
+                                                     "clash")]
+        for _group, e in rows:
+            self.note(discordshare.record_skipped, e)
+        self.sort()
+
+    def details(self):
+        """What a picked post holds, as its text would say it."""
+        rows = self.picked()
+        if not rows:
+            return
+        group, e = rows[0]
+        if "item" not in e:
+            text = "\n".join(e.get("problems") or ["(nothing)"])
+        else:
+            text = self.scl.share_text(e["kind"], e["id"], e["item"]).replace(
+                "**", "")
+            text += f"\n\nShared by {e.get('name', '?')} on {self.when(e)}"
+            more = self.detail(group, e)
+            if more:
+                text += f"\n{more}"
+        details_window(self.win, self.label(e), text)
+
+    def refresh_tabs(self):
+        """Every tab shows what came in now, not at the next tick."""
+        nav = self.tab.nav
+        nav.refresh_tabs()
+        for tab in (nav.reports, nav.surveys, nav.maps):
+            if tab is not None:
+                tab.refresh()
+
+
 def ask_restore(parent, what, file, columns, rows):
     """Restore deleted `what` (reports, waypoints, surveys) found in the
     backups of `file`: `rows` as (key, *values for `columns`) in a list to
@@ -5239,12 +5528,13 @@ def flag_menu(menu, recs, apply):
     """Private and Share to Discord in a right-click menu, for the items
     `recs` picked, by `apply(flag, on)`. Each way is offered when it would
     change one of them, so a mix offers both: Make private and Make not
-    private, Share to Discord (the private ones left out) and Stop sharing.
-    With nothing to share, all private, Share is there but greyed out."""
+    private, Share to Discord (the private ones and those from someone
+    else left out) and Stop sharing. With nothing that can be shared, Share
+    is there but greyed out."""
     for flag, _ in FLAG_LABELS:
         if flag == "share":
             ways = (any(not r.get("private") and not r.get("share")
-                        for r in recs),
+                        and not r.get(discordshare.FROM) for r in recs),
                     any(r.get("share") for r in recs))
         else:
             ways = (any(not r.get(flag) for r in recs),
@@ -5263,7 +5553,8 @@ def flash_flagged(state, found, skipped, flag, on):
     with state.lock:
         state.flash(f"{dict(FLAG_LABELS)[flag]} {'on' if on else 'off'}: "
                     f"{n} item" + ("s" if n != 1 else "")
-                    + (f", {skipped} private left out" if skipped else ""))
+                    + (f", {skipped} private or from others left out"
+                       if skipped else ""))
 
 
 def ask_waypoint(parent, w, names, around, no_sub, at=None):
@@ -5307,10 +5598,12 @@ def ask_waypoint(parent, w, names, around, no_sub, at=None):
     share_box = ttk.Checkbutton(win, text="Share to Discord", variable=share)
 
     def private_ticked():
-        """A private waypoint cannot be shared."""
+        """A private waypoint cannot be shared, nor one from someone
+        else."""
         if private.get():
             share.set(False)
-        share_box.state(["disabled" if private.get() else "!disabled"])
+        share_box.state(["disabled" if private.get()
+                         or w.get(discordshare.FROM) else "!disabled"])
 
     ttk.Checkbutton(win, text="Private - never exported or shared",
                     variable=private, command=private_ticked).grid(

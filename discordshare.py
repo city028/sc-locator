@@ -45,8 +45,8 @@ FROM = "from"                   # on an item imported from someone else
 # What sort_imports sorts a channel's posts into. A post in none of them is
 # not shown: our own, an older version of an item, a message that is not a
 # post.
-GROUPS = ("new", "update", "already", "clash", "error", "blacklisted",
-          "not_allowed")
+GROUPS = ("new", "update", "already", "clash", "skipped", "error",
+          "blacklisted", "not_allowed")
 
 _LINK_RE = re.compile(LINK_PREFIX + r"\s+([A-Za-z0-9_-]{43})(?![A-Za-z0-9_-])")
 
@@ -232,7 +232,7 @@ def uid(key, kind, item_id):
 
 
 def sort_imports(messages, files, *, mine=None, allow=(), block=(),
-                 imported=None, checks=None, clash=None):
+                 imported=None, checks=None, clash=None, skipped=None):
     """{group: [entry]} for the posts in `messages`, for GROUPS.
 
     messages: the share channels' messages, as Discord gives them, with
@@ -246,6 +246,8 @@ def sort_imports(messages, files, *, mine=None, allow=(), block=(),
     checks:   {kind: f(id, item) -> [problems]}, sc_locator's checks for
               shared files. A kind without one is an error for now.
     clash:    f(kind, id, item) -> [what of ours it clashes with].
+    skipped:  {uid: hash} of what was skipped: shown apart, until the
+              sharer changes it.
 
     Each entry is a dict: message, kind, id, item, at, uid, hash, user,
     name; "problems" on an error, "clashes" on a clash, "ours" (what it
@@ -253,7 +255,7 @@ def sort_imports(messages, files, *, mine=None, allow=(), block=(),
     newest post of an item counts; a post that fails its signature cannot
     hide an older one that does not.
     """
-    imported = imported or {}
+    imported, skipped = imported or {}, skipped or {}
     checks = checks or {}
     allow, block = {str(u) for u in allow}, {str(u) for u in block}
     keys = linked_keys(messages)
@@ -309,10 +311,18 @@ def sort_imports(messages, files, *, mine=None, allow=(), block=(),
             out["error"].append(entry)
             continue
         before = imported.get(entry["uid"])
+        if before and before["hash"] == entry["hash"]:
+            entry["ours"] = before["ours"]
+            out["already"].append(entry)
+            continue
+        if skipped.get(entry["uid"]) == entry["hash"]:
+            if before:
+                entry["ours"] = before["ours"]
+            out["skipped"].append(entry)
+            continue
         if before:
             entry["ours"] = before["ours"]
-            out["already" if before["hash"] == entry["hash"]
-                else "update"].append(entry)
+            out["update"].append(entry)
             continue
         found = clash(entry["kind"], entry["id"], entry["item"]) if clash \
             else []
@@ -334,10 +344,17 @@ def mark_imported(rec, entry):
     return rec
 
 
-def record_imported(imported, entry, ours, now):
-    """Note in `imported` that `entry` was taken in as our item `ours`."""
-    imported[entry["uid"]] = {"hash": entry["hash"], "ours": str(ours),
-                              "at": now}
+def record_imported(cfg, entry, ours, now):
+    """Note in cfg["imported"] that `entry` was taken in as our item
+    `ours`; it is no longer skipped."""
+    cfg["imported"][entry["uid"]] = {"hash": entry["hash"],
+                                     "ours": str(ours), "at": now}
+    cfg["skipped"].pop(entry["uid"], None)
+
+
+def record_skipped(cfg, entry):
+    """Note that `entry` was skipped: not offered again as it is."""
+    cfg["skipped"][entry["uid"]] = entry["hash"]
 
 
 # --- settings: discord.json -------------------------------------------------
@@ -356,7 +373,8 @@ _ID_RE = re.compile(r"\s*(\d{17,20})(?!\d)")
 
 def blank_settings():
     return {"webhooks": {c: "" for c in CHANNELS}, "token": "", "key": "",
-            "allow": [], "block": [], "posted": {}, "imported": {}}
+            "allow": [], "block": [], "posted": {}, "imported": {},
+            "skipped": {}}
 
 
 def load_settings(path):

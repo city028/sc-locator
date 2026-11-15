@@ -18,6 +18,7 @@ import time
 import urllib.error
 import urllib.request
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 
 import discordshare
 import updater
@@ -291,3 +292,79 @@ def publish(cfg, items, describe, now, everything=False, progress=None,
     if progress:
         progress(len(todo), len(todo))
     return sent, failed
+
+
+# --- reading the channels ---------------------------------------------------
+
+DOWNLOADS = 8                   # post files fetched at once
+
+
+def download(url, opener=urllib.request.urlopen, timeout=30):
+    """A post file from Discord's file server: no token, refused over
+    MAX_FILE."""
+    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+    try:
+        with opener(req, timeout=timeout) as resp:
+            data = resp.read(MAX_FILE + 1)
+    except (urllib.error.URLError, OSError, ValueError) as exc:
+        raise DiscordError(f"could not be downloaded: "
+                           f"{getattr(exc, 'reason', exc)}") from None
+    if len(data) > MAX_FILE:
+        raise DiscordError("too big to be a post")
+    return data
+
+
+def read_channels(cfg, progress=None, opener=urllib.request.urlopen):
+    """(messages, files, problems) from the share channels, for
+    discordshare.sort_imports.
+
+    Each webhook says which channel it posts in; all of each channel is
+    read with the token. The post files are downloaded a few at a time,
+    except our own latest posts, which Import leaves out anyway. A file
+    that cannot be downloaded is left out of `files`, so its post shows as
+    an error. `problems` are lines saying what could not be read; with no
+    token, or Discord not reached, nothing is read.
+    progress: f(text), with how far it has got.
+    """
+    token = cfg.get("token", "").strip()
+    if not token:
+        return [], {}, ["No read token: set one above."]
+    channels, problems = {}, []
+    for name in discordshare.CHANNELS:
+        url = cfg["webhooks"].get(name, "").strip()
+        if not url:
+            continue
+        try:
+            channels.setdefault(get_webhook(url, opener)["channel_id"], name)
+        except DiscordError as exc:
+            if exc.status is None:
+                return [], {}, [str(exc)]
+            problems.append(f"{name.capitalize()}: {_problem(exc)}")
+    msgs = []
+    for channel, name in channels.items():
+        if progress:
+            progress(f"Reading #{name}...")
+        try:
+            msgs += messages(channel, token, None, opener)
+        except DiscordError as exc:
+            if exc.status is None:
+                return [], {}, [str(exc)]
+            problems.append(f"{name.capitalize()} channel: {_problem(exc)}")
+    ours = {p["message"] for p in cfg.get("posted", {}).values()}
+    wanted = [(m["id"], discordshare.post_file(m)["url"]) for m in msgs
+              if discordshare.post_file(m) and m["id"] not in ours]
+    files, done = {}, [0]
+
+    def fetch(job):
+        mid, url = job
+        try:
+            files[mid] = download(url, opener)
+        except DiscordError:
+            pass
+        done[0] += 1
+        if progress:
+            progress(f"Downloading {done[0]} of {len(wanted)}...")
+
+    with ThreadPoolExecutor(DOWNLOADS) as pool:
+        list(pool.map(fetch, wanted))
+    return msgs, files, problems

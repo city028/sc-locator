@@ -2446,6 +2446,52 @@ Phase 4: the two buttons in Settings > Discord > Share.
 - Not yet: posting on a change without pressing anything, and a column
   saying whether an item has gone.
 
+## Import from Discord (2026-11-15)
+
+Phase 5: Settings > Discord > Import... opens a window listing the
+channels' posts by group (sort_imports), to take in or skip.
+
+- **Reading**: each webhook gives its channel id; every message of each
+  channel is read with the token (100 a page), and post files are
+  downloaded 8 at a time from the file server (no token there), except our
+  own latest posts, which are left out anyway. ~150 files: a few seconds.
+  A file that cannot be downloaded shows its post as an error.
+- **Checks** for surveys, height maps and maps are new
+  (`check_trace_record`, `check_heightmap_record`, `check_map_record`);
+  waypoints and reports use the file-import checks. All in
+  `DISCORD_CHECKS`.
+- **Clashes** (`discord_clash`): a waypoint by nearness (1 km, as file
+  import), a report by its place (same key, or a place in space nearby), a
+  survey or map by name. Asked one by one with the file import's
+  Yes / No / Replace window: Yes takes it in as well (a survey or map
+  under "name (sharer)"), No skips it, Replace puts it in place of the
+  first clash. A report for a place we have can only be replaced.
+- **Taking in** (`take_in`): the file-import preparation (an "Imported on"
+  note, a waypoint id of ours), then the `from` mark. An update goes in
+  place of what it came in as, keeping its id or name and our Private
+  mark; one whose item we deleted comes in as new. A map gets an id of
+  ours and loses its `numbers` (keyed by the sharer's waypoint ids).
+- **Height maps are merged, never marked `from`**: cells we lack are
+  added, ours kept where both have one, so taking it in again changes
+  nothing. A grid of another size is refused. Not marked, because our own
+  surveying keeps adding to the same record: marking it would stop us
+  sharing our own cells. Sharing it does post the merged cells too.
+- **Skipped** (`record_skipped`): not offered again until the sharer
+  changes it; listed apart as "Skipped before", where it can still be
+  taken in. Taking one in clears it.
+- Share to Discord is greyed out for an item with `from`: in the
+  right-click menus, a waypoint's Edit..., a map's tick.
+- Tested with a second copy of the program in another folder as a second
+  member (one copy runs at a time: the single-instance lock), its own key
+  linked from the same Discord account (2026-11-15). It posted 5 items;
+  Import took in the new waypoint and map, merged nyx1 (no cells new),
+  replaced railway-001 on REPLACE, skipped Grim Hex on NO; the map
+  changed and posted again came in as an update. No errors in either log.
+  A map that comes in is numbered afresh by our own waypoints when drawn.
+- **Replace hands the item over**: a survey of ours replaced by a shared
+  one is then theirs (`from`), so no longer ours to share, even when the
+  two were the same (railway-001 in the test).
+
 ## Still open
 
 - Two errors from the screen reader's side, each costing one frame:

@@ -3736,6 +3736,296 @@ def prepare_report_import(rec, now):
     return out
 
 
+# --- Taking in what org mates shared on Discord ------------------------------
+#
+# discordshare sorts a channel's posts; these check each kind of item, find
+# what of ours one clashes with, and put it in. What comes in is marked as
+# its sharer's (discordshare.FROM), so it cannot be shared on, except a
+# height map: its cells are merged into ours, and ours are kept where both
+# have one.
+
+_CELL_RE = re.compile(r"\d+,\d+,\d+")
+
+
+def _is_point(p):
+    return (isinstance(p, list) and len(p) == 3
+            and all(_is_number(c) for c in p))
+
+
+def _text_problems(rec, keys):
+    return [f"{k} is not text" for k in keys
+            if k in rec and not isinstance(rec[k], str)]
+
+
+def check_trace_record(name, rec):
+    """What stops a shared survey (trace) being used; [] if nothing."""
+    if not isinstance(rec, dict):
+        return ["not a survey"]
+    problems = []
+    if not isinstance(rec.get("name"), str) or not rec["name"].strip():
+        problems.append("name missing")
+    elif rec["name"] != name:
+        problems.append(f"posted as '{name}', named '{rec['name']}'")
+    if rec.get("kind") not in traces.KINDS:
+        problems.append(f"kind '{rec.get('kind')}' unknown")
+    if rec.get("planet") is not None and not isinstance(rec["planet"], str):
+        problems.append("planet is not a name")
+    pts = rec.get("points")
+    if not isinstance(pts, list) or not pts:
+        problems.append("points missing")
+    elif not all(map(_is_point, pts)):
+        problems.append("points are not positions")
+    elif "breaks" in rec and not (
+            isinstance(rec["breaks"], list)
+            and all(isinstance(b, int) and 0 < b < len(pts)
+                    for b in rec["breaks"])
+            and rec["breaks"] == sorted(set(rec["breaks"]))):
+        problems.append("breaks are not places in its points")
+    for key in ("started", "level", "width_m", "offset_m"):
+        if key in rec and not _is_number(rec[key]):
+            problems.append(f"{key} is not a number")
+    return problems + _text_problems(rec, ("label", "notes", "shape"))
+
+
+def check_heightmap_record(body, rec):
+    """What stops a shared height map being used; [] if nothing."""
+    if not isinstance(rec, dict):
+        return ["not a height map"]
+    problems = []
+    if not body.strip():
+        problems.append("body missing")
+    if not isinstance(rec.get("n"), int) or isinstance(rec.get("n"), bool) \
+            or rec["n"] <= 0:
+        problems.append("n is not a grid size")
+    if not _is_number(rec.get("radius")) or rec["radius"] <= 0:
+        problems.append("radius is not a size")
+    cells = rec.get("cells")
+    if not isinstance(cells, dict):
+        problems.append("cells missing")
+    elif not all(_CELL_RE.fullmatch(k) and isinstance(v, list)
+                 and len(v) == 2 and _is_number(v[0])
+                 and isinstance(v[1], int) and v[1] > 0
+                 for k, v in cells.items()):
+        problems.append("cells are not heights")
+    return problems
+
+
+def check_map_record(mid, rec):
+    """What stops a shared map being used; [] if nothing."""
+    if not isinstance(rec, dict):
+        return ["not a map"]
+    problems = []
+    for key in ("name", "body"):
+        if not isinstance(rec.get(key), str) or not rec[key].strip():
+            problems.append(f"{key} missing")
+    if not _is_point(rec.get("centre")):
+        problems.append("centre is not a position")
+    if not _is_number(rec.get("width_m")) or rec["width_m"] <= 0:
+        problems.append("width_m is not a size")
+    for key in ("switches", "layers", "legend", "compass"):
+        if key in rec and not isinstance(rec[key], dict):
+            problems.append(f"{key} is not a set of settings")
+    if "hidden" in rec and not (isinstance(rec["hidden"], list) and all(
+            isinstance(h, str) for h in rec["hidden"])):
+        problems.append("hidden is not a list of kinds")
+    return problems + _text_problems(rec, ("ink", "notes"))
+
+
+# sort_imports' checks: (id, item) -> problems.
+DISCORD_CHECKS = {"waypoint": lambda _id, w: check_import_record(w),
+                  "report": check_report_record,
+                  "trace": check_trace_record,
+                  "heightmap": check_heightmap_record,
+                  "map": check_map_record}
+
+
+def discord_clash(state):
+    """sort_imports' clash test, f(kind, id, item) -> [what of ours it
+    clashes with], against a copy of our items as they are now. A waypoint
+    clashes by nearness, a report by its place, a survey or map by name; a
+    height map never: it is merged."""
+    with state.lock:
+        wps = json.loads(json.dumps(state.waypoints))
+        bodies = json.loads(json.dumps(state.bodies))
+        trace_names = {t["name"] for t in state.traces}
+        map_names = {m["name"] for m in state.maps}
+
+    def clash(kind, item_id, item):
+        if kind == "waypoint":
+            return [q["name"] for _gap, q in import_conflicts(item, wps)]
+        if kind == "report":
+            same, nearby = report_conflicts(item_id, item, bodies)
+            return ([item_id] if same is not None else []) \
+                + [k for _gap, k, _q in nearby]
+        if kind == "trace":
+            return [item["name"]] if item["name"] in trace_names else []
+        if kind == "map":
+            return [item["name"]] if item["name"] in map_names else []
+        return []
+    return clash
+
+
+def free_name(names, name, sharer):
+    """`name`, or if one of ours has it, `name (sharer)`, numbered on if
+    that is taken too."""
+    if name not in names:
+        return name
+    n, out = 1, f"{name} ({sharer})"
+    while out in names:
+        n += 1
+        out = f"{name} ({sharer} {n})"
+    return out
+
+
+def _keep_private(new, old):
+    """An update keeps our own Private mark on the item it replaces."""
+    if old and old.get("private"):
+        new["private"] = True
+
+
+def _take_waypoint(st, entry, action, now):
+    w = discordshare.mark_imported(prepare_import(entry["item"], now), entry)
+    old = find_waypoint(st.waypoints, entry.get("ours")) \
+        if action == "update" else None
+    if old is not None:
+        _keep_private(w, old)
+        w["id"] = old["id"]
+        st.waypoints[st.waypoints.index(old)] = w
+    else:
+        replace = None
+        if action == "replace":
+            nearby = import_conflicts(w, st.waypoints)
+            if not nearby:
+                raise ValueError("it no longer clashes with any of yours")
+            replace = nearby[0][1]["id"]
+        import_waypoint(st.waypoints, w, replace)
+        if replace is not None and st.target == replace:
+            st.target = w["id"]
+    save_json(WAYPOINT_FILE, st.waypoints)
+    if sync_subs(st.waypoints):             # a SUB of theirs, now ours
+        save_json(SUBTYPES_FILE, subtypes.current())
+    return w["id"]
+
+
+def _take_report(st, entry, action, now):
+    key = entry["id"]
+    rec = discordshare.mark_imported(
+        prepare_report_import(entry["item"], now), entry)
+    replace = None
+    if action == "update" and entry.get("ours") in st.bodies:
+        replace = entry["ours"]
+        _keep_private(rec, st.bodies[replace])
+    elif action in ("replace", "update"):
+        same, nearby = report_conflicts(key, rec, st.bodies)
+        if same is not None:
+            replace = key
+        elif nearby:
+            replace = nearby[0][1]
+        elif action == "replace":
+            raise ValueError("it no longer clashes with any of yours")
+    import_report(st.bodies, key, rec, replace)
+    save_json(BODIES_FILE, st.bodies)
+    return key
+
+
+def _take_named(items, entry, action, sharer, fresh):
+    """Put a survey or map, `fresh`, among `items` (ours, named): in place
+    of ours on an update or a replace, else under a free name. Returns it."""
+    if action == "update":
+        old = next((x for x in items if x.get(fresh["key"]) ==
+                    entry.get("ours")), None)
+    elif action == "replace":
+        old = next((x for x in items if x["name"] == fresh["item"]["name"]),
+                   None)
+        if old is None:
+            raise ValueError("it no longer clashes with any of yours")
+    else:
+        old = None
+    new = fresh["item"]
+    if old is not None:
+        _keep_private(new, old)
+        if action == "update":
+            new["name"] = old["name"]
+        if "id" in old:                     # a map keeps its place
+            new["id"] = old["id"]
+        items[items.index(old)] = new
+    else:
+        new["name"] = free_name({x["name"] for x in items}, new["name"],
+                                sharer)
+        items.append(new)
+    return new
+
+
+def _take_trace(st, entry, action, now):
+    t = discordshare.mark_imported(dict(entry["item"]), entry)
+    _take_named(st.traces, entry, action, entry["name"],
+                {"key": "name", "item": t})
+    st.traces_dirty = True
+    return t["name"]
+
+
+def _take_map(st, entry, action, now):
+    m = discordshare.mark_imported(dict(entry["item"]), entry)
+    m.pop("numbers", None)          # theirs are by their waypoints' ids
+    m["id"] = uuid.uuid4().hex[:12]
+    m["updated"] = time.time()
+    return _take_named(st.maps, entry, action, entry["name"],
+                       {"key": "id", "item": m})["id"]
+
+
+def merge_heights(ours, theirs):
+    """Their height map's cells into ours, where ours has none: ours are
+    kept where both have one. ValueError if the grids differ. Returns how
+    many cells were added."""
+    if ours["n"] != theirs["n"] or ours["radius"] != theirs["radius"]:
+        raise ValueError(
+            f"their grid differs from yours ({theirs['n']} cells a face at "
+            f"{theirs['radius']:,.0f} m, yours {ours['n']} at "
+            f"{ours['radius']:,.0f} m)")
+    added = 0
+    for k, v in theirs["cells"].items():
+        if k not in ours["cells"]:
+            ours["cells"][k] = list(v)
+            added += 1
+    return added
+
+
+def _take_heightmap(st, entry, action, now):
+    body, item = entry["id"], entry["item"]
+    if body in st.heightmap:
+        merge_heights(st.heightmap[body], item)
+    else:
+        st.heightmap[body] = {"n": item["n"], "radius": item["radius"],
+                              "cells": {k: list(v) for k, v in
+                                        item["cells"].items()}}
+    st.heightmap_dirty = True
+    return body
+
+
+_TAKE = {"waypoint": _take_waypoint, "report": _take_report,
+         "trace": _take_trace, "heightmap": _take_heightmap,
+         "map": _take_map}
+
+
+def take_in(state, entry, action, now):
+    """Put one sorted post's item (discordshare.sort_imports) among ours,
+    and save. `action`: "add" (a new one, or one that clashes, as well),
+    "replace" (in place of what it clashes with) or "update" (in place of
+    what it came in as before). Returns its key with us, for the imported
+    history. ValueError, changing nothing, if it cannot go in."""
+    if entry["kind"] not in _TAKE:
+        raise ValueError(f"a {entry['kind']} cannot be taken in")
+    entry = dict(entry, item=json.loads(json.dumps(entry["item"])))
+    with state.lock:
+        ours = _TAKE[entry["kind"]](state, entry, action, now)
+    if entry["kind"] == "trace":
+        save_traces(state, force=True)
+    elif entry["kind"] == "heightmap":
+        save_heightmap(state, force=True)
+    elif entry["kind"] == "map":
+        save_maps(state)
+    return ours
+
 def place_gap(a, b):
     """Metres between two places in space, or None where they cannot be
     compared. As spin.nearest_space matches them: a place that turns with a

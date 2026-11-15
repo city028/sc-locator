@@ -563,8 +563,8 @@ private. Reports imported from a file come in neither private nor shared.
 
 ### Discord settings
 
-**Settings > Discord** is where sharing is set up, and where items are
-posted. Taking in what others shared is still being built.
+**Settings > Discord** is where sharing is set up, where items are posted
+and where what others shared is taken in.
 
 - **Channels**: a webhook URL for each of the org's four share channels
   (Waypoints, Surveys, Reports, Maps), from the channel's settings >
@@ -586,6 +586,23 @@ posted. Taking in what others shared is still being built.
   again. It runs in the background and says at the end what went and
   what did not. Each post carries the item in a file, signed with your
   key, and a few lines for people to read.
+- **Import...**: reads the channels and lists what others shared, by
+  group: **New**, **Updates** (of something you took in before), **Clash
+  with yours**, **Skipped before**, **Already have**, **Errors** (not
+  signed by a linked member, or not a sound item), **Blacklisted** and
+  **Not on the allow list**. Pick rows, or a group's row for all of it, and
+  **Take in** or **Skip**; **Details** shows what a post holds.
+  - A clash is asked about one by one: **Yes** takes it in as well (a
+    survey or map with a name you have gets the sharer's name after it),
+    **No** skips it, **Replace** puts it in place of yours. A report for a
+    place you have a report for can only be replaced.
+  - An update goes in place of the one it came in as, keeping your
+    Private mark. Something skipped is not offered again until its sharer
+    changes it.
+  - A shared height map is merged into yours: the cells you have not
+    measured are added, and yours are kept where both have one.
+  - What comes in says who shared it and cannot be shared on: Share to
+    Discord is greyed out for it.
 
 Everything is saved as you type, in `discord.json`, which is never put in a
 backup.
