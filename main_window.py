@@ -968,6 +968,12 @@ class StarMap:
         self.pois.pack(side="left", fill="both", expand=True)
         self.pois.bind("<Button-3>", self.poi_menu)
 
+        # Hides the left menu, to give the map the room on a small screen.
+        self.side = side
+        self.fold = ttk.Button(self.frame, text="◀", width=2,
+                               command=self.toggle_side)
+        self.fold.pack(side="left", anchor="n", padx=(0, 4))
+
         self.canvas = tk.Canvas(self.frame, bg=BG, highlightthickness=0)
         self.canvas.pack(side="left", fill="both", expand=True)
         self.canvas.bind("<Configure>", lambda e: self.draw())
@@ -1007,6 +1013,16 @@ class StarMap:
                              lambda e: self.canvas.config(cursor="hand2"))
         self.canvas.tag_bind("pin", "<Leave>",
                              lambda e: self.canvas.config(cursor=""))
+
+    def toggle_side(self):
+        """Fold the left menu away, or bring it back."""
+        if self.side.winfo_manager():
+            self.side.pack_forget()
+            self.fold.config(text="▶")
+        else:
+            self.side.pack(side="left", fill="y", padx=(0, 8),
+                           before=self.fold)
+            self.fold.config(text="◀")
 
     # --- navigation ---------------------------------------------------------
 
