@@ -266,12 +266,12 @@ class Section:
         self.set_title(self.title)
 
 
-def kept_section(state, scl, parent, title, key=None, **kw):
-    """A Section of a tab's menu, open or folded as it was last left by
-    hand (`key`, else its title, in the menu_sections setting); folded
-    until then."""
+def kept_section(state, scl, parent, title, key=None, make=Section, **kw):
+    """A Section (or `make`) of a tab's menu, open or folded as it was last
+    left by hand (`key`, else its title, in the menu_sections setting);
+    folded until then."""
     key = key or title
-    return Section(
+    return make(
         parent, title, opened=state.cfg["menu_sections"].get(key, False),
         remember=lambda o: scl.save_setting(
             state, "menu_sections", dict(state.cfg["menu_sections"],
@@ -720,6 +720,170 @@ class Pill:
             c.create_image(0, 0, image=self.slash_photo, anchor="nw")
 
 
+# An open menu pill's box: dark, but not BG, which is see-through.
+BOX = "#070B10"
+
+
+def box_image(w, h, r, scale=3):
+    """A w x h RGBA box with corners of radius r: BOX inside, the pills'
+    outline round it. Drawn `scale` times as big and shrunk, so smooth."""
+    big = Image.new("RGBA", (w * scale, h * scale), (0, 0, 0, 0))
+    ImageDraw.Draw(big).rounded_rectangle(
+        (scale, scale, (w - 1) * scale - 1, (h - 1) * scale - 1), r * scale,
+        fill=ImageColor.getrgb(BOX) + (255,),
+        outline=ImageColor.getrgb(PILL_LINE) + (255,), width=2 * scale)
+    return big.resize((w, h), Image.LANCZOS)
+
+
+def on_box(w):
+    """`w` and everything in it on BOX instead of BG: in a box, BG would
+    show the window's picture through it rather than the box."""
+    if isinstance(w, ttk.Widget):
+        if w.winfo_class() in ("TCheckbutton", "TMenubutton"):
+            w.configure(style="Box." + w.winfo_class())
+    elif str(w.cget("bg")).lower() == BG.lower():
+        w.configure(bg=BOX)
+    for child in w.winfo_children():
+        on_box(child)
+
+
+def stack_boxes(heights, top, gap):
+    """The top of each of the left menu's pills, one under the other, for
+    the height of each (with its box, when open)."""
+    out = []
+    for h in heights:
+        out.append(top)
+        top += h + gap
+    return out
+
+
+class MenuPill:
+    """A section of the star map's left menu: a pill with its title and an
+    arrow, opening into a box with its contents (.body) under the title.
+    Used as a Section is (fold, set_title, open); show(False) takes it out
+    of the menu (Target, while there is none). Laid out by PillMenu."""
+
+    def __init__(self, menu, title, opened=True, remember=None):
+        self.menu, self.title, self.open = menu, title.strip(), opened
+        self.remember, self.shown = remember, True
+        self.body = tk.Frame(menu.canvas, bg=BOX)
+        self.window = menu.canvas.create_window(
+            0, 0, window=self.body, anchor="nw", state="hidden",
+            tags=("menu",))
+        # Its contents grew or shrank: the pills under it move.
+        self.body.bind("<Configure>", lambda e: menu.layout())
+        menu.items.append(self)
+
+    def clicked(self):
+        self.fold(not self.open)
+        if self.remember:
+            self.remember(self.open)
+
+    def fold(self, open_):
+        """Open the box (True) or fold it to its pill (False)."""
+        self.open = open_
+        self.menu.layout()
+
+    def set_title(self, title):
+        self.title = title.strip()
+        self.menu.layout()
+
+    def show(self, shown):
+        self.shown = shown
+        self.menu.layout()
+
+
+class PillMenu:
+    """The star map's left menu: MenuPills one under the other at the top
+    left of its canvas, over the map, all as wide as the widest box. Drawn
+    on the canvas (tag "menu"), so the map keeps its size and zoom whatever
+    is open, and shows between and around the pills."""
+
+    def __init__(self, canvas):
+        self.canvas, self.items = canvas, []
+        self.shown = True       # the window's menu / collapse button
+        self.laid = None        # what it was last laid out from
+        self.images = {}        # the pictures in use: Tk drops what nothing holds
+        # MenuPill -> (its pill image item, its texts, the pill's size)
+        self.pills = {}
+        self.arrows = icon("", "▼"), icon("", "▲")
+
+    def layout(self):
+        """Draw the pills and open boxes again, if anything they are drawn
+        from has changed."""
+        c, f = self.canvas, ui_font()
+        h = f.metrics("linespace") + px(12)
+        pad, x = px(10), px(10)
+        width = max(s.body.winfo_reqwidth() for s in self.items) + 2 * pad
+        rows = [s for s in self.items if s.shown and self.shown]
+        key = (h, width, tuple((s.title, s.open, s.body.winfo_reqheight()
+                                if s.open else 0) for s in rows))
+        if key == self.laid:
+            return
+        self.laid = key
+        c.delete("menuart")
+        self.pills.clear()
+        used, self.images = self.images, {}
+
+        def picture(k, make):
+            """The picture for `k`: one drawn already, else drawn now."""
+            if k not in self.images:
+                self.images[k] = used.get(k) or ImageTk.PhotoImage(make())
+            return self.images[k]
+
+        heights = [h + (2 * pad + s.body.winfo_reqheight() if s.open else 0)
+                   for s in rows]
+        for s in self.items:
+            if s not in rows or not s.open:
+                c.itemconfigure(s.window, state="hidden")
+        for s, top, tall in zip(rows, stack_boxes(heights, px(6), px(8)),
+                                heights):
+            tag = f"pill{self.items.index(s)}"
+            if s.open:
+                box = picture(("box", width, tall, h // 2),
+                              lambda: box_image(width, tall, h // 2))
+                c.create_image(x, top, image=box, anchor="nw",
+                               tags=("menu", "menuart"))
+                c.coords(s.window, x + pad, top + h + pad)
+                c.itemconfigure(s.window, width=width - 2 * pad,
+                                state="normal")
+            tags = ("menu", "menuart", tag)
+            pill = c.create_image(x, top, anchor="nw", tags=tags, image=picture(
+                ("pill", width, h, s.open, False),
+                lambda: pill_image(width, h, s.open, False)))
+            colour = PILL_DARK if s.open else PILL_TEXT
+            glyph, glyph_font = self.arrows[s.open]
+            texts = (c.create_text(x + px(16), top + h / 2, text=s.title,
+                                   font=f, fill=colour, anchor="w",
+                                   tags=tags),
+                     c.create_text(x + width - px(16), top + h / 2,
+                                   text=glyph, font=glyph_font, fill=colour,
+                                   anchor="e", tags=tags))
+            self.pills[s] = (pill, texts, (width, h))
+            c.tag_bind(tag, "<Button-1>", lambda e, s=s: s.clicked())
+            c.tag_bind(tag, "<Enter>", lambda e, s=s: self.hovered(s, True))
+            c.tag_bind(tag, "<Leave>", lambda e, s=s: self.hovered(s, False))
+
+    def hovered(self, s, on):
+        """The pointer came onto (on) or left pill `s`: lit while on it."""
+        self.canvas.config(cursor="hand2" if on else "")
+        if s not in self.pills:
+            return
+        pill, texts, (w, h) = self.pills[s]
+        k = ("pill", w, h, s.open, on)
+        if k not in self.images:
+            self.images[k] = ImageTk.PhotoImage(pill_image(w, h, s.open, on))
+        self.canvas.itemconfigure(pill, image=self.images[k])
+        colour = (PILL_DARK if s.open else PILL_HOVER if on else PILL_TEXT)
+        for t in texts:
+            self.canvas.itemconfigure(t, fill=colour)
+
+    def show(self, on):
+        """The window's menu (True) or collapse (False) button."""
+        self.shown = on
+        self.layout()
+
+
 def open_main(root, state, scl, set_hud):
     win = tk.Toplevel(root)
     win.title("SC Locator")
@@ -750,6 +914,9 @@ def open_main(root, state, scl, set_hud):
     style.configure("Treeview.Heading", background=BG, foreground=DIM)
     style.configure("TButton", background=PANEL, foreground=ACCENT)
     style.configure("TCheckbutton", background=BG, foreground=ACCENT)
+    # In the star map's menu boxes (on_box).
+    style.configure("Box.TCheckbutton", background=BOX)
+    style.configure("Box.TMenubutton", background=BOX)
     style.configure("TCombobox", foreground=BG)
     fit_to_screen(win, style)
 
@@ -889,6 +1056,7 @@ def open_main(root, state, scl, set_hud):
                                        if i + 1 < len(sibs) else None))
             for w, _, _ in hidden:
                 w.pack_forget()
+        star.pill_menu.show(on)     # over its map: the map stays as it is
         menu_btn.hint = "collapse" if on else "menu"
         menu_btn.set(slash=on)
         if state.cfg["menu_collapsed"] != (not on):
@@ -1511,12 +1679,20 @@ class StarMap:
         self.track, self.track_t, self.refused = None, None, 0
         self.mesh_key, self.mesh_tiles = None, ([], 0.0, 0.0)
 
-        side = tk.Frame(self.frame, bg=BG)
-        side.pack(side="left", fill="y", padx=(0, 8))
-        # Each block of the menu folds to its title (Section). The HUD's
+        # The map fills the tab whatever its menu does: the menu is drawn
+        # over it (PillMenu), so opening a section never moves or zooms it.
+        self.canvas = tk.Canvas(self.frame, bg=BG, highlightthickness=0)
+        self.canvas.pack(fill="both", expand=True)
+        self.canvas.bind("<Configure>", lambda e: self.draw())
+        self.canvas.bind("<ButtonPress-1>", self.on_press)
+        self.canvas.bind("<B1-Motion>", self.on_drag)
+        self.canvas.bind("<ButtonRelease-1>", self.on_release)
+        self.canvas.bind("<MouseWheel>", self.on_wheel)
+        self.canvas.bind("<Button-3>", self.context_menu)
+        # Each block of the menu is a pill that opens into a box. The HUD's
         # functions are here too, for a second screen without the HUD.
-        sec = self.section(side, "Location")
-        sec.pack()
+        self.pill_menu = PillMenu(self.canvas)
+        sec = self.section("Location")
         self.location = tk.Label(sec.body, font=mono(9), fg=FG, bg=BG,
                                  justify="left", anchor="w")
         self.location.pack(anchor="w", fill="x")
@@ -1529,8 +1705,7 @@ class StarMap:
         self.location_sec = sec
         if state.cfg["menu_sections"].get("Report"):    # as it was left
             self.toggle_report(True, open_section=False)
-        sec = self.section(side, "System")
-        sec.pack(pady=(8, 0))
+        sec = self.section("System")
         self.system_var = tk.StringVar(value=self.system)
         pick = ttk.Combobox(sec.body, textvariable=self.system_var,
                             state="readonly", values=starmap.SYSTEMS, width=14)
@@ -1546,22 +1721,10 @@ class StarMap:
         self.back = ttk.Button(sec.body, text="< back to system",
                                command=lambda: self.show(self.system, self.up))
         # Packed by show, in a body's view: the system view has no way back.
-        # One framed box, title, hint and list together, so it is plain which
-        # list the words are about. Packed under the waypoints, below.
-        self.box = self.section(side, "", key="Not analysed yet")
-        box = self.box.body
-        self.unplaced_hint = tk.Label(box, font=mono(9), fg=DIM, bg=BG,
-                                      justify="left", anchor="w")
-        self.unplaced_hint.pack(anchor="w", fill="x", pady=(0, 6))
-        self.unplaced = tk.Listbox(box, font=mono(), bg=PANEL, fg=FG, width=22,
-                                   height=4, relief="flat",
-                                   selectbackground="#1F3A52")
-        self.unplaced.pack(fill="both", expand=True)
-        self.unplaced.bind("<<ListboxSelect>>", self.open_unplaced)
-        self.unplaced.bind("<Button-3>", self.unplaced_menu)
 
         # The way to the target, the HUD's: only while there is one.
-        self.target_sec = self.section(side, "Target")
+        self.target_sec = self.section("Target")
+        self.target_sec.shown = False
         self.target_text = tk.Label(self.target_sec.body, font=mono(9), fg=FG,
                                     bg=BG, justify="left", anchor="w")
         self.target_text.pack(anchor="w", fill="x")
@@ -1572,8 +1735,7 @@ class StarMap:
 
         # SURVEY as on the HUD: its menu, then END and the directions while
         # one runs. Folded until one starts.
-        self.survey_sec = self.section(side, "Survey")
-        self.survey_sec.pack(pady=(8, 0))
+        self.survey_sec = self.section("Survey")
         row = tk.Frame(self.survey_sec.body, bg=BG)
         row.pack(fill="x")
         # Wide enough for END BUILDING, so the label can swap.
@@ -1596,8 +1758,7 @@ class StarMap:
 
         # ANALYSE as on the HUD; the report is in the Location section.
         # Folded until one starts.
-        self.analysis_sec = self.section(side, "Analysis")
-        self.analysis_sec.pack(pady=(8, 0))
+        self.analysis_sec = self.section("Analysis")
         body = self.analysis_sec.body
         self.analysis_text = tk.Label(body, font=mono(9), fg=FG, bg=BG,
                                       justify="left", anchor="w")
@@ -1642,10 +1803,7 @@ class StarMap:
         # whichever view is open; SAVE and TARGET as on the HUD.
         self.poi_seen, self.poi_closed = None, set()
         self.targeted = None    # the target the Target section was shown for
-        self.wp_sec = self.section(side, "Waypoints", expand=True)
-        self.wp_sec.pack(pady=(8, 0))
-        # Every section stacks from the top, each under the one before.
-        self.box.pack(pady=(8, 0))
+        self.wp_sec = self.section("Waypoints")
         box = self.wp_sec.body
         tk.Label(box, text="Search", font=mono(), fg=DIM, bg=BG).pack(anchor="w")
         self.poi_search = tk.StringVar()
@@ -1678,17 +1836,23 @@ class StarMap:
         self.pois.bind("<Button-3>", self.poi_menu)
         self.pois.bind("<<TreeviewSelect>>", lambda e: self.label_target_btn())
 
-        # Hidden by the window's menu / collapse button (show_menus).
-        self.panels = [side]
+        # Title, hint and list in one box, so it is plain which list the
+        # words are about. Last in the menu.
+        self.box = self.section("", key="Not analysed yet")
+        box = self.box.body
+        self.unplaced_hint = tk.Label(box, font=mono(9), fg=DIM, bg=BG,
+                                      justify="left", anchor="w")
+        self.unplaced_hint.pack(anchor="w", fill="x", pady=(0, 6))
+        self.unplaced = tk.Listbox(box, font=mono(), bg=PANEL, fg=FG, width=22,
+                                   height=4, relief="flat",
+                                   selectbackground="#1F3A52")
+        self.unplaced.pack(fill="both", expand=True)
+        self.unplaced.bind("<<ListboxSelect>>", self.open_unplaced)
+        self.unplaced.bind("<Button-3>", self.unplaced_menu)
+        for s in self.pill_menu.items:
+            on_box(s.body)
+        self.pill_menu.layout()
 
-        self.canvas = tk.Canvas(self.frame, bg=BG, highlightthickness=0)
-        self.canvas.pack(side="left", fill="both", expand=True)
-        self.canvas.bind("<Configure>", lambda e: self.draw())
-        self.canvas.bind("<ButtonPress-1>", self.on_press)
-        self.canvas.bind("<B1-Motion>", self.on_drag)
-        self.canvas.bind("<ButtonRelease-1>", self.on_release)
-        self.canvas.bind("<MouseWheel>", self.on_wheel)
-        self.canvas.bind("<Button-3>", self.context_menu)
         # Right-click on a pin or a body: the menus every tab shares.
         self.menu = tk.Menu(self.canvas, tearoff=False, font=mono(), bg=PANEL,
                             fg=FG, activebackground="#1d4f3a")
@@ -1716,8 +1880,9 @@ class StarMap:
         self.canvas.tag_bind("pin", "<Leave>",
                              lambda e: self.canvas.config(cursor=""))
 
-    def section(self, side, title, key=None, **kw):
-        return kept_section(self.state, self.scl, side, title, key, **kw)
+    def section(self, title, key=None):
+        return kept_section(self.state, self.scl, self.pill_menu, title, key,
+                            make=MenuPill)
 
     # --- navigation ---------------------------------------------------------
 
@@ -1914,11 +2079,9 @@ class StarMap:
         with self.state.lock:
             target = self.state.target
         sec = self.target_sec
-        if target is None:
-            sec.frame.pack_forget()
-        else:
-            if not sec.frame.winfo_manager():
-                sec.pack(pady=(8, 0), before=self.survey_sec.frame)
+        if (target is not None) != sec.shown:
+            sec.show(target is not None)
+        if target is not None:
             if target != self.targeted:
                 sec.fold(True)
             self.target_text.config(text=self.scl.render_target(self.state))
@@ -1941,6 +2104,7 @@ class StarMap:
         self.fill_target()
         self.fill_survey()
         self.fill_analysis()
+        self.pill_menu.layout()     # the Windows scale may have changed
 
     def fill_location(self):
         """The HUD's location readout, in its colour for the fix's health."""
@@ -2121,8 +2285,13 @@ class StarMap:
         if sel:
             self.show(self.system, self.unplaced.get(sel[0]))
 
+    def on_menu(self):
+        """True while the pointer is on the left menu, not on the map."""
+        return "menu" in self.canvas.gettags("current")
+
     def on_press(self, e):
-        self.press, self.dragged = (e.x, e.y), False
+        self.press, self.dragged = (None if self.on_menu()
+                                    else (e.x, e.y)), False
 
     def on_drag(self, e):
         if self.press is None:
@@ -2161,6 +2330,8 @@ class StarMap:
     def context_menu(self, e):
         """Right-click: the waypoint menu on a pin, the body menu on a planet
         or moon -- or, in a body's own view, anywhere else on it."""
+        if self.on_menu():
+            return
         c = self.canvas
         under = c.find_overlapping(e.x - 2, e.y - 2, e.x + 2, e.y + 2)
         pins = [self.pins[i] for i in under if i in self.pins]
@@ -2192,6 +2363,8 @@ class StarMap:
         self.menu.tk_popup(e.x_root, e.y_root)
 
     def on_wheel(self, e):
+        if self.on_menu():
+            return
         self.zoom = max(0.2, min(200.0, self.zoom * 1.15 ** (e.delta / 120)))
         self.draw()
 
@@ -2224,7 +2397,10 @@ class StarMap:
 
     def draw(self):
         c = self.canvas
-        c.delete("all")
+        # All but the menu, which is laid out on its own (PillMenu).
+        c.addtag_all("old")
+        c.dtag("menu", "old")
+        c.delete("old")
         self.pins.clear()
         w, h = c.winfo_width(), c.winfo_height()
         if w < 50 or h < 50:
@@ -2254,6 +2430,7 @@ class StarMap:
                           "them\nto show them here.\nClick one to open it.",
                           "None for this body.")
             self.draw_body(wps, bodies, around, w, h)
+        c.tag_raise("menuart")          # the menu over the map
 
     def fill_box(self, title, keys, hint, empty):
         """The side box: what is not on the view, and why."""

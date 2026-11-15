@@ -373,7 +373,8 @@ quits the program.
 - The **menu** button, round with three lines at the top left: while the
   menu is open its lines are struck through, and a click hides the tabs and
   the side panels (Star map and Height map menus, the Maps tab's list and
-  options), leaving only the open tab's map or list; a click on the plain
+  options), leaving only the open tab's map or list (the star map stays
+  exactly as it is: its menu lies over it); a click on the plain
   lines brings them back. Kept for the next start. The tabs are on the
   same row, to its right: Star map, Height map, Maps, Waypoints, Reports,
   Surveys, Settings.
@@ -390,8 +391,11 @@ quits the program.
   the map picked, Map, Surveys shown, Also shown, Legend, Compass and Notes.
 - **Star map** left menu: the panel's sections too (Location with
   **REPORT**, Target, Survey, Analysis, Waypoints with **SAVE**, **TARGET**,
-  **EDIT**, **DELETE**), for a second screen without the HUD. Click a
-  section's title to fold it.
+  **EDIT**, **DELETE**), for a second screen without the HUD. Each is a
+  pill at the top left, over the map; click it to open it into a box under
+  its title, and again to fold it. The map never moves or zooms as they
+  open and close: a box may cover its left side, so drag the map aside if
+  you need that part.
 - **Star map**: pick Stanton, Pyro or Nyx. The star is at the centre; planets
   are placed where ANALYSE measured them, deep-space waypoints where they were
   saved. Moons and places in space close to a body are left to that body's

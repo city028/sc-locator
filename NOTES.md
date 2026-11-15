@@ -2731,6 +2731,36 @@ The program is DPI aware at run time (the main window is laid out in real
 pixels), so tests of these windows have to be too
 (`SetProcessDpiAwareness(2)`), or they see Windows' scaled coordinates.
 
+## The star map's left menu as pills over the map (2026-11-15)
+
+Picked by the user from mock-ups: "grows in place" (an open pill becomes
+the light-blue head of a rounded box, the pills under it move down) over
+"flies out" (box to the right of a fixed pill column). The map must not
+move or zoom as sections open and close: easier on the eyes.
+
+- The map canvas fills the whole tab; the menu is drawn **on** it
+  (`PillMenu`, `MenuPill`), not in a frame beside or over it. A frame over
+  the canvas would show the window's picture through its `BG` gaps, not
+  the map; canvas items show the map between and through the pills
+  (their RGBA images blend over it).
+- Pills, boxes and texts are canvas items tagged `menu` / `menuart`; each
+  box's contents is a frame in a canvas window item, hidden while folded.
+  `StarMap.draw` deletes everything but `menu` and raises `menuart` after.
+  Clicks, the wheel and right-click on a `menu` item leave the map alone
+  (`on_menu`).
+- Inside a box `BG` would show the picture, not the box: `on_box` recolours
+  the contents to `BOX` (`#070B10`), with `Box.TCheckbutton` and
+  `Box.TMenubutton` styles for the ttk ones.
+- All pills are as wide as the widest box. Laid out again only when a
+  title, an open state, a box's height or the font changes (the once-a-
+  second `fill_sections`, and each box's `<Configure>`).
+- Found on the way: pills with the same look share one cached picture; a
+  second `PhotoImage` stored under the same key replaced the first, and Tk
+  blanked every pill but the last. The cache now returns the one already
+  made.
+- With every pill open, a short window cuts off the bottom ones; no
+  scrolling.
+
 ## Still open
 
 - Two errors from the screen reader's side, each costing one frame:
