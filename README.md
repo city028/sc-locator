@@ -367,7 +367,22 @@ habs, cargo). The station list is downloaded once a week and cached in
 Next to the overlay a normal window opens, with a taskbar entry. Closing it
 quits the program.
 
-- **HUD overlay** switch: hide or show the in-game pin and panel.
+- **collapse** / **menu**, the one button at the top left: **collapse**
+  hides the tabs and the side panels (Star map and Height map menus, the
+  Maps tab's list and options) and leaves only the open tab's map or list;
+  **menu** brings them back. Kept for the next start. The tabs are on the
+  same row, to its right: Star map, Height map, Maps, Waypoints, Reports,
+  Surveys, Settings; status messages are at the far right of that row.
+- **HUD overlay** and **follow me** switches, in Settings > Other: hide or
+  show the in-game pin and panel, and keep the maps on you. Both are kept
+  for the next start.
+- **Height map** and **Maps** left menus fold the same way: the Height
+  map's Body, Info, Show, Map and Key; the Maps tab's list (Maps) and, for
+  the map picked, Map, Surveys shown, Also shown, Legend, Compass and Notes.
+- **Star map** left menu: the panel's sections too (Location with
+  **REPORT**, Target, Survey, Analysis, Waypoints with **SAVE**, **TARGET**,
+  **EDIT**, **DELETE**), for a second screen without the HUD. Click a
+  section's title to fold it.
 - **Star map**: pick Stanton, Pyro or Nyx. The star is at the centre; planets
   are placed where ANALYSE measured them, deep-space waypoints where they were
   saved. Moons and places in space close to a body are left to that body's
@@ -961,6 +976,19 @@ versions of each file are kept. If something goes wrong, copy one back.
 
 ## The panel, button by button
 
+The panel is in sections: **Location** (with the report on this place),
+**Target** (while there is one), **Survey**, **Analysis** and **Waypoints**,
+with the status line, **CLOSE** and **QUIT** next to the screen corner the
+panel is anchored to. Press a section's title to fold it or open it again.
+At a bottom corner a section's title is under what it holds, so it opens
+upward and the title stays under the mouse; at a top corner, the other way
+round. A section's main button (**REPORT**, **SURVEY**, **ANALYSE**) is in
+its title row while the section is open; folded, it shows only its title.
+Every section starts folded; one you open or fold stays that way at the
+next start, and so does the report shown or hidden (the Star map's left
+menu too). **Survey** and **Analysis** also
+open by themselves when a survey, trace or analysis starts.
+
 | button | what it does |
 |---|---|
 | **SAVE** | save a waypoint where you are (same as left-clicking the pin) |
@@ -968,12 +996,13 @@ versions of each file are kept. If something goes wrong, copy one back.
 | **EDIT** | edit the selected waypoint: its name, its **sub** (what kind of place it is) and **QT** (can be jumped to). Press **OK** or Enter; **X** or Escape cancels. |
 | **DELETE** | delete the selected waypoint |
 | **ANALYSE** / **STOP** | start a body or place analysis |
-| **REPORT** / **HIDE** | show or hide the analysis for where you are |
+| **REPORT** / **HIDE** | in the Location title: show or hide the analysis for where you are, beside the location readout |
+| **KEEP** / **DISCARD** | in Analysis, after a run: keep its result, or put back the one it replaced |
 | **SURVEY** / **END SURVEY** | record the ground's height under you into the height map, or stop and save |
 | **END TRACE** | stop tracing a railway (started from the **SURVEY** menu) and save it |
 | **END LAKE** | stop surveying a lake (started from the **SURVEY** menu) and save it |
 | **END BUILDING** | stop surveying a building (started from the **SURVEY** menu) and save it |
-| **CANCEL** | shown under the survey block while tracing: stop and throw the trace away |
+| **CANCEL** | in Survey while tracing: stop and throw the trace away |
 | **CLOSE** | collapse the panel back to the pin |
 | **QUIT** | exit the program |
 

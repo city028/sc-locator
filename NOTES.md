@@ -838,8 +838,8 @@ prints them on its position rows (`Pos: 22487898.6236km`).
 
 ## Where you are on the star map
 
-A green `+` marks you on both maps, and one **follow me** switch beside
-**HUD overlay** keeps both on you. It never changes the kind of view: the
+A green `+` marks you on both maps, and one **follow me** switch (Settings >
+Other, beside **HUD overlay**, kept since 2026-11-15) keeps both on you. It never changes the kind of view: the
 system view stays the system view, a body view stays a body view (turned so
 you face the viewer, and moving to the next body when you reach it). A drag
 or zoom leaves it on -- the drag becomes an offset from you that travels with
@@ -2622,6 +2622,51 @@ module had loaded, a second or two later. Now:
   tests/test_ocr.py covers both screenshots and the short row, and fails
   with `SESSION_QR_SIDE` at 0.
 - On those screenshots `find_region` took 3.4-3.9 s a screen, not 1-2 s.
+
+## The panel and the left menu in sections (2026-11-15)
+
+The HUD panel and the star map's left menu hold the same sections: Location
+(with the report on this place), Target, Survey, Analysis, Waypoints. The
+main window has every HUD function, for a second screen without the HUD.
+
+- At a bottom anchor (the usual `br`) a section's title row is under what
+  it holds: opening it grows the panel upward, and the title just pressed
+  stays under the mouse. At a top anchor, the other way round. Status,
+  CLOSE and QUIT sit by the anchored corner.
+- Section titles fold on press, not release, like the HUD's buttons.
+- Every section starts folded. One opened or folded by hand stays so for
+  the next start (`hud_sections` and `menu_sections` in the config, by
+  title; the menu's "not analysed yet" box by that name, as its title
+  changes). One the program opens (a survey or run starting, a result
+  waiting, a new target) is not kept. The report in Location is kept the
+  same way, as `Report` in those settings; shown at a start it stays inside
+  Location if that is folded.
+- A section's main button is in its title row while it is open; a folded
+  section shows only its title (asked 2026-11-15). Survey and Analysis open
+  by themselves when one starts, Analysis again while a result waits for
+  KEEP / DISCARD.
+- The report sits with the location, as it was liked in game: REPORT /
+  HIDE in the Location title. Hiding it no longer keeps the result; KEEP
+  does (it clears `state.replaced`), in either window.
+- An analysis finishes in the HUD's 250 ms loop (`poll_analysis`), which
+  runs while the HUD is hidden too; the main window only shows the result.
+- The main window has one button at the top left, collapse / menu
+  (`show_menus` in `open_main`, kept as `menu_collapsed`), and the tabs to
+  its right on the same row: the main notebook's own tabs are never drawn
+  (a tab layout of [] on its own style, `Main.TNotebook`, so Settings'
+  section tabs stay), a `Tab.Toolbutton` radio button each stands in, and
+  `<<NotebookTabChanged>>` lights the right one when a page is picked from
+  elsewhere. Collapse hides that row and every tab's `.panels`, re-packed
+  in place by the sibling each was before. It took over from the star
+  map's own ◀ button.
+- The Height map and Maps tabs have the same folding left menus
+  (`kept_section`, kept in `menu_sections` as "Height map: Show",
+  "Maps: Legend" and so on; the star map's keep their bare titles). The
+  Maps tab's options moved from a right-hand panel into its left menu, so
+  the page preview has that room. Framing a new map opens the Height map's
+  Map section, for Save and Cancel.
+- Shared by both windows: `toggle_target`, `compass_arrow`, `label_place`,
+  `discard_analysis`, `survey_menu_items` / `fill_menu`, `to_name`.
 
 ## Still open
 

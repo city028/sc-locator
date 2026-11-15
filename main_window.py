@@ -219,10 +219,12 @@ def waypoint_tree(groups, system, ids, fmt):
 class Section:
     """A framed block of the star map's left menu that folds to its title:
     click the title to hide what is in it, again to bring it back. Its
-    contents go in .body; `opened` False starts it folded."""
+    contents go in .body; `opened` False starts it folded. `remember`, if
+    given, is called with open or not each time its title is clicked."""
 
-    def __init__(self, parent, title, expand=False, opened=True):
-        self.expand, self.open = expand, True
+    def __init__(self, parent, title, expand=False, opened=True,
+                 remember=None):
+        self.expand, self.open, self.remember = expand, True, remember
         self.head = tk.Label(parent, font=mono(), fg=ACCENT, bg=BG,
                              cursor="hand2")
         self.frame = tk.LabelFrame(parent, labelwidget=self.head, bg=BG, bd=2,
@@ -231,9 +233,14 @@ class Section:
         tk.Frame(self.frame, height=0, bg=BG).pack()
         self.body = tk.Frame(self.frame, bg=BG)
         self.body.pack(fill="both", expand=True)
-        self.head.bind("<Button-1>", lambda e: self.fold(not self.open))
+        self.head.bind("<Button-1>", lambda e: self.clicked())
         self.title = title
         self.fold(opened)
+
+    def clicked(self):
+        self.fold(not self.open)
+        if self.remember:
+            self.remember(self.open)
 
     def pack(self, **kw):
         grow = self.open and self.expand
@@ -256,6 +263,19 @@ class Section:
             self.frame.pack_configure(fill="both" if grow else "x",
                                       expand=grow)
         self.set_title(self.title)
+
+
+def kept_section(state, scl, parent, title, key=None, **kw):
+    """A Section of a tab's menu, open or folded as it was last left by
+    hand (`key`, else its title, in the menu_sections setting); folded
+    until then."""
+    key = key or title
+    return Section(
+        parent, title, opened=state.cfg["menu_sections"].get(key, False),
+        remember=lambda o: scl.save_setting(
+            state, "menu_sections", dict(state.cfg["menu_sections"],
+                                         **{key: o})),
+        **kw)
 
 
 def draw_icon(c, sub, x, y, size, tags=(), icon=None):
@@ -331,24 +351,31 @@ def open_main(root, state, scl, set_hud):
 
     bar = tk.Frame(win, bg=BG)
     bar.pack(fill="x", padx=8, pady=(6, 0))
-    hud_var = tk.BooleanVar(value=True)
-    ttk.Checkbutton(bar, text="HUD overlay", variable=hud_var,
-                    command=lambda: set_hud(hud_var.get())).pack(side="left")
-    # One switch for both maps: each keeps you in view while it is on.
-    follow = tk.BooleanVar(value=True)
-    ttk.Checkbutton(bar, text="follow me", variable=follow,
-                    command=lambda: [tab.recentre() for tab in tabs[:2]]).pack(
-        side="left", padx=(12, 0))
+    # The one button at the top left: collapse leaves only the open tab's
+    # map or list; menu brings the tabs and side panels back (show_menus).
+    menu_btn = ttk.Button(bar, text="collapse", width=9,
+                          command=lambda: show_menus(
+                              state.cfg["menu_collapsed"]))
+    menu_btn.pack(side="left")
+    # The tabs, to the right of it: the notebook's own are never shown.
+    tab_row = tk.Frame(bar, bg=BG)
+    tab_row.pack(side="left", padx=(12, 0))
+    # One switch for both maps: each keeps you in view while it is on. Set
+    # in Settings > Other, with the HUD's.
+    follow = tk.BooleanVar(value=state.cfg["follow_me"])
     updates = Updates(root, win, scl)
     # A line to click rather than a pop-up: this may be over the game.
     notice = tk.Label(bar, text="", font=mono(), fg=UPDATE_NOTICE, bg=BG,
                       cursor="hand2")
     notice.pack(side="left", padx=(12, 0))
     notice.bind("<Button-1>", lambda e: updates.offer())
+    # Status messages at the far right.
     status = tk.Label(bar, text="", font=mono(), fg=DIM, bg=BG, anchor="e")
     status.pack(side="right", fill="x", expand=True)
 
-    nb = ttk.Notebook(win)
+    # Its own style, so hiding its tabs leaves Settings' sections alone.
+    style.layout("Main.TNotebook.Tab", [])
+    nb = ttk.Notebook(win, style="Main.TNotebook")
     nb.pack(fill="both", expand=True, padx=8, pady=8)
     nav = Navigator(nb, state, scl)
     editor = WaypointEditor(nb, state, scl, nav)
@@ -359,12 +386,60 @@ def open_main(root, state, scl, set_hud):
     maps_tab = MapsTab(nb, state, scl, nav)
     nav.star, nav.height, nav.editor, nav.reports = star, height, editor, reports
     nav.surveys, nav.maps, nav.updates = surveys, maps_tab, updates
-    settings = SettingsTab(nb, state, scl, nav, editor)
+    settings = SettingsTab(nb, state, scl, nav, editor, set_hud, follow)
+    if not state.cfg["hud_on"]:
+        set_hud(False)
     nav.settings = settings         # Remove from Discord goes through it
-    tabs = [star, height, editor, reports, surveys, maps_tab, settings]
-    for tab, title in zip(tabs, ("Star map", "Height map", "Waypoints",
-                                 "Reports", "Surveys", "Maps", "Settings")):
+    # The graphics first, then the lists and text. A button each in the
+    # top row, looking like a tab; one picked elsewhere (Show on star map)
+    # lights its button too.
+    tabs = [star, height, maps_tab, editor, reports, surveys, settings]
+    style.configure("Tab.Toolbutton", background=PANEL, foreground=DIM,
+                    padding=(14, 4))
+    style.map("Tab.Toolbutton", background=[("selected", BG),
+                                             ("active", "#1d2a38")],
+              foreground=[("selected", ACCENT)])
+    tab_var = tk.IntVar(value=0)
+    for i, (tab, title) in enumerate(zip(tabs, (
+            "Star map", "Height map", "Maps", "Waypoints", "Reports",
+            "Surveys", "Settings"))):
         nb.add(tab.frame, text=title)
+        ttk.Radiobutton(tab_row, text=title, value=i, variable=tab_var,
+                        style="Tab.Toolbutton",
+                        command=lambda i=i: nb.select(i)).pack(side="left")
+    nb.bind("<<NotebookTabChanged>>",
+            lambda e: tab_var.set(nb.index("current")))
+
+    hidden = []         # (panel, its pack info, the sibling it was before)
+
+    def show_menus(on):
+        """menu (True) or collapse (False): the tabs and every tab's side
+        panels (its .panels), or only the open tab's map or list. Kept for
+        the next start."""
+        if on and not tab_row.winfo_manager():
+            tab_row.pack(side="left", padx=(12, 0), after=menu_btn)
+        elif not on:
+            tab_row.pack_forget()
+        if on:
+            for w, info, before in reversed(hidden):
+                w.pack(**info, **({"before": before} if before else {}))
+            hidden.clear()
+        elif not hidden:
+            for tab in tabs:
+                for w in getattr(tab, "panels", ()):
+                    if w.winfo_manager():
+                        sibs = w.master.pack_slaves()
+                        i = sibs.index(w)
+                        hidden.append((w, w.pack_info(), sibs[i + 1]
+                                       if i + 1 < len(sibs) else None))
+            for w, _, _ in hidden:
+                w.pack_forget()
+        menu_btn.config(text="collapse" if on else "menu")
+        if state.cfg["menu_collapsed"] != (not on):
+            scl.save_setting(state, "menu_collapsed", not on)
+
+    if state.cfg["menu_collapsed"]:
+        show_menus(False)
 
     # Dragged to another screen: refit when it lands, not a second later.
     win.bind("<Configure>", lambda e: e.widget is win
@@ -978,12 +1053,21 @@ class StarMap:
         side.pack(side="left", fill="y", padx=(0, 8))
         # Each block of the menu folds to its title (Section). The HUD's
         # functions are here too, for a second screen without the HUD.
-        sec = Section(side, "Location")
+        sec = self.section(side, "Location")
         sec.pack()
         self.location = tk.Label(sec.body, font=mono(9), fg=FG, bg=BG,
                                  justify="left", anchor="w")
         self.location.pack(anchor="w", fill="x")
-        sec = Section(side, "System")
+        # The report on this place under where you are, as on the HUD.
+        self.report_btn = ttk.Button(sec.body, text="REPORT", width=8,
+                                     command=self.report_clicked)
+        self.report_btn.pack(anchor="w", pady=(6, 0))
+        self.report = tk.Label(sec.body, font=mono(9), fg=FG, bg=PANEL,
+                               justify="left", anchor="w", padx=4, pady=4)
+        self.location_sec = sec
+        if state.cfg["menu_sections"].get("Report"):    # as it was left
+            self.toggle_report(True, open_section=False)
+        sec = self.section(side, "System")
         sec.pack(pady=(8, 0))
         self.system_var = tk.StringVar(value=self.system)
         pick = ttk.Combobox(sec.body, textvariable=self.system_var,
@@ -1002,7 +1086,7 @@ class StarMap:
         # Packed by show, in a body's view: the system view has no way back.
         # One framed box, title, hint and list together, so it is plain which
         # list the words are about. Packed under the waypoints, below.
-        self.box = Section(side, "")
+        self.box = self.section(side, "", key="Not analysed yet")
         box = self.box.body
         self.unplaced_hint = tk.Label(box, font=mono(9), fg=DIM, bg=BG,
                                       justify="left", anchor="w")
@@ -1015,7 +1099,7 @@ class StarMap:
         self.unplaced.bind("<Button-3>", self.unplaced_menu)
 
         # The way to the target, the HUD's: only while there is one.
-        self.target_sec = Section(side, "Target")
+        self.target_sec = self.section(side, "Target")
         self.target_text = tk.Label(self.target_sec.body, font=mono(9), fg=FG,
                                     bg=BG, justify="left", anchor="w")
         self.target_text.pack(anchor="w", fill="x")
@@ -1026,7 +1110,7 @@ class StarMap:
 
         # SURVEY as on the HUD: its menu, then END and the directions while
         # one runs. Folded until one starts.
-        self.survey_sec = Section(side, "Survey", opened=False)
+        self.survey_sec = self.section(side, "Survey")
         self.survey_sec.pack(pady=(8, 0))
         row = tk.Frame(self.survey_sec.body, bg=BG)
         row.pack(fill="x")
@@ -1048,9 +1132,9 @@ class StarMap:
             lbl.pack(anchor="w", fill="x")
         self.surveying = False
 
-        # ANALYSE as on the HUD; the full report is in the Reports tab.
+        # ANALYSE as on the HUD; the report is in the Location section.
         # Folded until one starts.
-        self.analysis_sec = Section(side, "Analysis", opened=False)
+        self.analysis_sec = self.section(side, "Analysis")
         self.analysis_sec.pack(pady=(8, 0))
         body = self.analysis_sec.body
         self.analysis_text = tk.Label(body, font=mono(9), fg=FG, bg=BG,
@@ -1061,8 +1145,6 @@ class StarMap:
         self.analyse_btn = ttk.Button(row, text="ANALYSE", width=9,
                                       command=self.on_analyse)
         self.analyse_btn.pack(side="left")
-        ttk.Button(row, text="Show report", command=self.show_report).pack(
-            side="left", padx=(6, 0))
         self.label_row = row = tk.Frame(body, bg=BG)
         row.pack(fill="x", pady=(6, 0))
         tk.Label(row, text="label  ", font=mono(9), fg=DIM, bg=BG).pack(
@@ -1092,13 +1174,13 @@ class StarMap:
                    command=lambda: self.run("discard",
                                             self.scl.discard_analysis)).pack(
             side="left", padx=(6, 0))
-        self.analysing = False
+        self.analysing = self.reviewing = False
 
         # The waypoints of the system you are in (all when none is known),
         # whichever view is open; SAVE and TARGET as on the HUD.
         self.poi_seen, self.poi_closed = None, set()
         self.targeted = None    # the target the Target section was shown for
-        self.wp_sec = Section(side, "Waypoints", expand=True)
+        self.wp_sec = self.section(side, "Waypoints", expand=True)
         self.wp_sec.pack(pady=(8, 0))
         # Every section stacks from the top, each under the one before.
         self.box.pack(pady=(8, 0))
@@ -1134,11 +1216,8 @@ class StarMap:
         self.pois.bind("<Button-3>", self.poi_menu)
         self.pois.bind("<<TreeviewSelect>>", lambda e: self.label_target_btn())
 
-        # Hides the left menu, to give the map the room on a small screen.
-        self.side = side
-        self.fold = ttk.Button(self.frame, text="◀", width=2,
-                               command=self.toggle_side)
-        self.fold.pack(side="left", anchor="n", padx=(0, 4))
+        # Hidden by the window's menu / collapse button (show_menus).
+        self.panels = [side]
 
         self.canvas = tk.Canvas(self.frame, bg=BG, highlightthickness=0)
         self.canvas.pack(side="left", fill="both", expand=True)
@@ -1180,15 +1259,8 @@ class StarMap:
         self.canvas.tag_bind("pin", "<Leave>",
                              lambda e: self.canvas.config(cursor=""))
 
-    def toggle_side(self):
-        """Fold the left menu away, or bring it back."""
-        if self.side.winfo_manager():
-            self.side.pack_forget()
-            self.fold.config(text="▶")
-        else:
-            self.side.pack(side="left", fill="y", padx=(0, 8),
-                           before=self.fold)
-            self.fold.config(text="◀")
+    def section(self, side, title, key=None, **kw):
+        return kept_section(self.state, self.scl, side, title, key, **kw)
 
     # --- navigation ---------------------------------------------------------
 
@@ -1420,6 +1492,8 @@ class StarMap:
         scl = self.scl
         self.location.config(text=scl.render_location(self.state),
                              fg=scl.STATUS_COLOURS[scl.health(self.state)])
+        if self.report.winfo_manager():
+            self.report.config(text="\n".join(scl.body_report(self.state)))
 
     def on_picked(self, fn):
         """EDIT or DELETE: fn(id) on the selected waypoint (the Navigator's
@@ -1497,14 +1571,28 @@ class StarMap:
             self.state.replaced = None
         self.fill_sections()
 
-    def show_report(self):
-        """This place's full report, in the Reports tab."""
-        with self.state.lock:
-            key, rec = self.scl.current_place(self.state)
-            if rec is None:
-                self.state.flash("analyse this place first")
-                return
-        self.nav.body_to_report(key)
+    def report_clicked(self):
+        """REPORT / HIDE clicked: kept for the next start, with the
+        sections. A report shown by the program is not kept."""
+        self.toggle_report()
+        st = self.state
+        self.scl.save_setting(st, "menu_sections", dict(
+            st.cfg["menu_sections"], Report=bool(self.report.winfo_manager())))
+
+    def toggle_report(self, show=None, open_section=True):
+        """This place's report under the location readout, or not. `show`
+        True opens it whatever it was (a run just finished)."""
+        if show is None:
+            show = not self.report.winfo_manager()
+        if show:
+            if open_section:
+                self.location_sec.fold(True)
+            self.report.pack(anchor="w", fill="x", pady=(6, 0),
+                             before=self.report_btn)
+            self.fill_location()
+        else:
+            self.report.pack_forget()
+        self.report_btn.config(text="HIDE" if show else "REPORT")
 
     def fill_station_menu(self):
         """The station picker's choices, rebuilt each time it opens: the
@@ -1558,7 +1646,9 @@ class StarMap:
         busy = bool(running) or review
         if busy and not self.analysing:
             self.analysis_sec.fold(True)
-        self.analysing = busy
+        if review and not self.reviewing:   # a result: its report with you
+            self.toggle_report(True)
+        self.analysing, self.reviewing = busy, review
 
     def poi_menu(self, e):
         """Right-click a waypoint in the list: select it and give its menu.
@@ -2234,31 +2324,75 @@ class HeightMapTab:
 
         side = tk.Frame(self.frame, bg=BG)
         side.pack(side="left", fill="y", padx=(0, 8))
-        tk.Label(side, text="Body", font=mono(), fg=DIM, bg=BG).pack(anchor="w")
+        self.panels = [side]    # hidden by the window's menu / collapse
+
+        def section(title):
+            """A folding section of the menu, as the star map's."""
+            sec = kept_section(state, scl, side, title,
+                               key=f"Height map: {title}")
+            sec.pack(pady=(8, 0) if side.pack_slaves() else 0)
+            return sec
+
+        body = section("Body").body
         self.body_var = tk.StringVar()
-        self.pick = ttk.Combobox(side, textvariable=self.body_var, width=14,
+        self.pick = ttk.Combobox(body, textvariable=self.body_var, width=14,
                                  state="readonly")
         self.pick.pack(anchor="w", pady=(0, 8))
         self.pick.bind("<<ComboboxSelected>>",
                        lambda e: self.open(self.body_var.get()))
         # Packed by place_star_back, while the body open is on a star map.
         self.star_back = ttk.Button(
-            side, text="< back to star map",
+            body, text="< back to star map",
             command=lambda: nav.back_to_star(self.body))
-        tk.Label(side, text="Go to", font=mono(), fg=DIM, bg=BG).pack(anchor="w")
+        tk.Label(body, text="Go to", font=mono(), fg=DIM, bg=BG).pack(anchor="w")
         self.goto_var = tk.StringVar()
-        self.goto = ttk.Combobox(side, textvariable=self.goto_var, width=14,
+        self.goto = ttk.Combobox(body, textvariable=self.goto_var, width=14,
                                  state="readonly")
-        self.goto.pack(anchor="w", pady=(0, 8))
+        self.goto.pack(anchor="w")
         self.goto.bind("<<ComboboxSelected>>", lambda e: self.go_to())
+
+        # What the map shows: its cells and contours, its colours.
+        body = section("Info").body
+        self.info = tk.Label(body, font=mono(), fg=FG, bg=BG, justify="left",
+                             anchor="w")
+        self.info.pack(anchor="w", fill="x")
+        self.legend = tk.Canvas(body, width=170, height=34, bg=BG,
+                                highlightthickness=0)
+        self.legend.pack(anchor="w", pady=(8, 0))
+        self.legend_key = None      # what the legend's bar was drawn for
+
+        # The switches: layers, waypoint types, names.
+        body = section("Show").body
+        on = height_switch_starts(state.cfg)
+        self.show = {}
+        for name, text, _ in HEIGHT_LAYERS:
+            self.show[name] = tk.BooleanVar(value=on[name])
+            ttk.Checkbutton(body, text=text, variable=self.show[name],
+                            command=self.draw).pack(anchor="w")
+        self.types = type_switches(body, [t for t in TYPE_LABELS if on[t]],
+                                   self.draw)
+        self.show["poi_height"] = tk.BooleanVar(value=on["poi_height"])
+        ttk.Checkbutton(body, text="POI heights",
+                        variable=self.show["poi_height"],
+                        command=self.draw).pack(anchor="w")
+        self.show["names"] = tk.BooleanVar(value=on["names"])
+        ttk.Checkbutton(body, text="Waypoint names",
+                        variable=self.show["names"],
+                        command=self.draw).pack(anchor="w")
+        self.show["frames"] = tk.BooleanVar(value=on["frames"])
+        ttk.Checkbutton(body, text="Map frames",
+                        variable=self.show["frames"],
+                        command=self.draw).pack(anchor="w")
+
         # Maps kept to print (maps.py): a new one from the view, framed
         # here; the rest of them is in the Maps tab.
-        tk.Label(side, text="Map", font=mono(), fg=DIM, bg=BG).pack(anchor="w")
-        self.new_button = ttk.Button(side, text="New map...",
+        self.map_sec = section("Map")
+        body = self.map_sec.body
+        self.new_button = ttk.Button(body, text="New map...",
                                      command=self.new_map)
         self.new_button.pack(anchor="w")
         # Shown while a map's frame is being set (see frame_map).
-        self.framing_row = tk.Frame(side, bg=BG)
+        self.framing_row = tk.Frame(body, bg=BG)
         self.framing_text = tk.Label(self.framing_row, font=mono(9),
                                      fg=ACCENT, bg=BG, justify="left")
         self.framing_text.pack(anchor="w")
@@ -2269,35 +2403,10 @@ class HeightMapTab:
         # While a frame is set: {"map", "was": (centre, mpp), "back": what
         # to do once saved or cancelled, or None}. See frame_map.
         self.framing = None
-        tk.Frame(side, bg=BG, height=8).pack()
-        self.info = tk.Label(side, font=mono(), fg=FG, bg=BG, justify="left",
-                             anchor="w")
-        self.info.pack(anchor="w", fill="x")
-        self.legend = tk.Canvas(side, width=170, height=34, bg=BG,
-                                highlightthickness=0)
-        self.legend.pack(anchor="w", pady=(8, 4))
-        self.legend_key = None      # what the legend's bar was drawn for
-        on = height_switch_starts(state.cfg)
-        self.show = {}
-        for name, text, _ in HEIGHT_LAYERS:
-            self.show[name] = tk.BooleanVar(value=on[name])
-            ttk.Checkbutton(side, text=text, variable=self.show[name],
-                            command=self.draw).pack(anchor="w")
-        self.types = type_switches(side, [t for t in TYPE_LABELS if on[t]],
-                                   self.draw)
-        self.show["poi_height"] = tk.BooleanVar(value=on["poi_height"])
-        ttk.Checkbutton(side, text="POI heights",
-                        variable=self.show["poi_height"],
-                        command=self.draw).pack(anchor="w")
-        self.show["names"] = tk.BooleanVar(value=on["names"])
-        ttk.Checkbutton(side, text="Waypoint names",
-                        variable=self.show["names"],
-                        command=self.draw).pack(anchor="w")
-        self.show["frames"] = tk.BooleanVar(value=on["frames"])
-        ttk.Checkbutton(side, text="Map frames",
-                        variable=self.show["frames"],
-                        command=self.draw).pack(anchor="w")
-        tk.Label(side, font=mono(9), fg=DIM, bg=BG, justify="left",
+
+        # How to read the map.
+        tk.Label(section("Key").body, font=mono(9), fg=DIM, bg=BG,
+                 justify="left",
                  anchor="w",
                  text="grey: not measured\nbrown: contour lines\n"
                       "pin number: ground height\n"
@@ -2462,6 +2571,7 @@ class HeightMapTab:
         """New map... unless a frame is being set; Save and Cancel while
         one is."""
         if self.framing:
+            self.map_sec.fold(True)     # Save and Cancel in sight
             self.new_button.state(["disabled"])
             self.framing_text.config(
                 text=f"Framing {self.framing['map']['name']}:\ndrag and "
@@ -4116,24 +4226,30 @@ class MapsTab:
         self.render_job = None      # a draw waiting for changes to stop
         self.picture = None         # the page drawn, held for Tk
 
+        # The left menu, in folding sections as the star map's: the maps,
+        # then what can be set for the one picked (show_options).
         left = tk.Frame(self.frame, bg=BG)
         left.pack(side="left", fill="y", padx=(0, 8))
-        tk.Label(left, text="Search", font=mono(), fg=DIM,
+        self.panels = [left]            # hidden by menu / collapse
+        sec = kept_section(state, scl, left, "Maps", key="Maps: Maps",
+                           expand=True)
+        sec.pack()
+        tk.Label(sec.body, text="Search", font=mono(), fg=DIM,
                  bg=BG).pack(anchor="w")
         self.search = tk.StringVar()
-        tk.Entry(left, textvariable=self.search, font=mono(), bg=PANEL,
+        tk.Entry(sec.body, textvariable=self.search, font=mono(), bg=PANEL,
                  fg=FG, insertbackground=FG, relief="flat",
                  width=24).pack(anchor="w", fill="x", pady=(0, 6))
         self.search.trace_add("write", lambda *a: self.fill())
-        tk.Label(left, text="Body", font=mono(), fg=DIM,
+        tk.Label(sec.body, text="Body", font=mono(), fg=DIM,
                  bg=BG).pack(anchor="w")
         self.body_var = tk.StringVar(value=self.ALL)
-        self.body_pick = ttk.Combobox(left, textvariable=self.body_var,
+        self.body_pick = ttk.Combobox(sec.body, textvariable=self.body_var,
                                       state="readonly", width=22,
                                       values=[self.ALL])
         self.body_pick.pack(anchor="w", pady=(0, 6))
         self.body_pick.bind("<<ComboboxSelected>>", lambda e: self.fill())
-        box = tk.Frame(left, bg=BG)
+        box = tk.Frame(sec.body, bg=BG)
         box.pack(fill="both", expand=True)
         self.tree = ttk.Treeview(box, show="tree", selectmode="browse")
         set_column(self.tree, "#0", 260)
@@ -4143,14 +4259,12 @@ class MapsTab:
         scroll.pack(side="right", fill="y")
         self.tree.pack(side="left", fill="both", expand=True)
         self.tree.bind("<<TreeviewSelect>>", lambda e: self.picked())
-        tk.Label(left, font=mono(9), fg=DIM, bg=BG, justify="left",
+        tk.Label(sec.body, font=mono(9), fg=DIM, bg=BG, justify="left",
                  text="New maps are made on the height\nmap: New map..."
                  ).pack(anchor="w", pady=(6, 0))
-
-        right = tk.Frame(self.frame, bg=BG, width=px(470))
-        right.pack(side="right", fill="y", padx=(8, 0))
-        right.pack_propagate(False)
-        self.options = scrolled(right)
+        # The picked map's sections, under the list.
+        self.options = tk.Frame(left, bg=BG)
+        self.options.pack(fill="x")
 
         # The map picked: a page of it as it prints, as big as fits.
         middle = tk.Frame(self.frame, bg=BG)
@@ -4476,10 +4590,13 @@ class MapsTab:
         self.notes.bind("<FocusOut>", lambda e: self.save_notes())
 
     def box(self, title):
-        box = tk.LabelFrame(self.options, text=title, font=mono(), fg=ACCENT,
-                            bg=BG, bd=2, relief="groove", padx=10, pady=6)
-        box.pack(anchor="nw", fill="x", padx=4, pady=4)
-        return box
+        """A folding section of the left menu for the picked map; returns
+        what to put in it."""
+        title = title.strip()
+        sec = kept_section(self.state, self.scl, self.options, title,
+                           key=f"Maps: {title}")
+        sec.pack(pady=(8, 0))
+        return sec.body
 
     def show_info(self, m):
         """Where map `m` is, how big, and when it was made and changed."""
@@ -4674,7 +4791,7 @@ class SettingsTab:
     SECTIONS = ("Star map", "Height map", "Waypoints", "Reports", "Survey",
                 "Discord", "Backup", "Other")
 
-    def __init__(self, parent, state, scl, nav, editor):
+    def __init__(self, parent, state, scl, nav, editor, set_hud, follow):
         self.state, self.scl, self.nav = state, scl, nav
         self.frame = tk.Frame(parent, bg=BG)
         self.seen = None
@@ -4685,6 +4802,7 @@ class SettingsTab:
         for name in self.SECTIONS:
             page[name] = tk.Frame(self.sections, bg=BG)
             self.sections.add(page[name], text=name)
+        self.switch_box(page["Other"], set_hud, follow)
         self.reader_boxes(page["Other"])
         self.version_box(page["Other"])
         self.backup_page(page["Backup"])
@@ -5450,6 +5568,37 @@ class SettingsTab:
             show_message("Not wiped", f"Nothing was changed.\n\n{exc}", parent)
             return
         self.close_for_restart()
+
+    def switch_box(self, page, set_hud, follow):
+        """The HUD overlay and follow me: kept, in use at once."""
+        scl, state = self.scl, self.state
+        box = tk.LabelFrame(page, text=" HUD and maps ", font=mono(),
+                            fg=ACCENT, bg=BG, bd=2, relief="groove", padx=10,
+                            pady=8)
+        box.pack(anchor="nw", fill="x", padx=4, pady=4)
+        hud = tk.BooleanVar(value=state.cfg["hud_on"])
+
+        def switch_hud():
+            scl.save_setting(state, "hud_on", hud.get())
+            set_hud(hud.get())
+
+        def switch_follow():
+            scl.save_setting(state, "follow_me", follow.get())
+            self.nav.star.recentre()
+            self.nav.height.recentre()
+
+        for var, text, command, hint in (
+                (hud, "HUD overlay", switch_hud,
+                 "The overlay over the game. Off for a second screen: "
+                 "the Star map's left menu has all it does."),
+                (follow, "follow me", switch_follow,
+                 "The star map and the height map keep you in view.")):
+            row = tk.Frame(box, bg=BG)
+            row.pack(anchor="w", fill="x")
+            ttk.Checkbutton(row, text=text, variable=var, width=14,
+                            command=command).pack(side="left", anchor="n")
+            tk.Label(row, font=mono(9), fg=DIM, bg=BG, justify="left",
+                     text=hint).pack(side="left", padx=(12, 0))
 
     def reader_boxes(self, page):
         """Finding the HUD text on screen, and the diagnostic log."""

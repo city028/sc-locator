@@ -115,6 +115,18 @@ DEFAULT_CONFIG = {
     # Other > Find HUD text narrows the sides to your own screen.
     "region": [0.60, 0.00, 1.00, 0.28],
     "log": False,                        # the diagnostic log, session.log
+    # Settings > Other: the overlay on screen, and the maps keeping you in
+    # view. Kept, so a second screen without the HUD stays that way.
+    "hud_on": True,
+    "follow_me": True,
+    # Which sections of the HUD panel and of the star map's left menu were
+    # left open or folded by hand: {section: open}. One missing starts
+    # folded.
+    "hud_sections": {},
+    "menu_sections": {},
+    # The main window's menu / collapse button: collapsed shows only the
+    # open tab's map or list, without the tabs and side panels.
+    "menu_collapsed": False,
     # The first-start screen that finds the HUD text (first_setup) has been
     # done or skipped. A new config file starts at False; one from before
     # that screen existed has no key and counts as done.
@@ -6007,62 +6019,91 @@ def run_overlay(state, cfg):
         pin.create_oval(PIN_W * 0.37, PIN_W * 0.30,
                         PIN_W * 0.63, PIN_W * 0.56, fill=FIELD, outline="")
 
-    # --- expanded: the waypoint panel ---------------------------------------
-    panel = tk.Frame(root, bg=BG)
+    # --- expanded: the panel, in sections ------------------------------------
+    panel = tk.Frame(root, bg=BG, pady=4)
+    # Anchored at a bottom corner the panel grows upward, so each section's
+    # title row sits under what it holds: opening one pushes the panel up and
+    # leaves the title just pressed under the mouse. At a top corner, the
+    # other way round.
+    up = "b" in anchor
+
+    class Section:
+        """A block of the panel that folds to its title row. The row holds
+        the title, pressed to fold or open the block, and the section's main
+        button, which the caller packs into .tools: shown only while the
+        block is open. What the block holds goes in .body."""
+
+        def __init__(self, title, opened=False):
+            self.title = title
+            # As it was left by hand, else folded.
+            opened = state.cfg["hud_sections"].get(title, opened)
+            self.frame = tk.Frame(panel, bg=BG, highlightthickness=1,
+                                  highlightbackground="#243040")
+            self.frame.pack(fill="x", padx=10, pady=(6, 0))
+            self.head = tk.Frame(self.frame, bg=BG)
+            self.head.pack(side="bottom" if up else "top", fill="x", padx=6,
+                           pady=3)
+            self.lbl = tk.Label(self.head, font=("Consolas", 11, "bold"),
+                                fg=ACCENT, bg=BG, cursor="hand2")
+            self.lbl.pack(side="left")
+            # On press, as the buttons are (see button).
+            self.lbl.bind("<ButtonPress-1>", lambda e: self.pressed())
+            self.tools = tk.Frame(self.head, bg=BG)
+            self.body = tk.Frame(self.frame, bg=BG)
+            self.fold(opened)
+
+        def fold(self, opened):
+            self.open = opened
+            if opened:
+                self.body.pack(side="bottom" if up else "top", fill="x",
+                               padx=6, pady=(4, 0) if up else (0, 4))
+                self.tools.pack(side="right")
+            else:
+                self.body.pack_forget()
+                self.tools.pack_forget()
+            mark = ("▲" if up else "▼") if opened else ("▼" if up else "▶")
+            self.lbl.config(text=f"{mark} {self.title}")
+
+        def pressed(self):
+            """Its title pressed: fold or open it, and keep that for the
+            next start. A section opened by the program is not kept."""
+            self.fold(not self.open)
+            save_setting(state, "hud_sections",
+                         dict(state.cfg["hud_sections"],
+                              **{self.title: self.open}))
+
+    # The health line, which a save, an edit or a running analysis takes over
+    # as a toast while it has something to say. Two rows so a long message
+    # wraps rather than resizing the window. With CLOSE and QUIT, next to the
+    # anchored corner: packed first at a top corner, last at a bottom one.
+    status_row = tk.Frame(panel, bg=BG)
+    health_lbl = tk.Label(status_row, text="", justify="left", anchor="nw",
+                          width=READOUT_COLS - 14, height=2, wraplength=330,
+                          font=("Consolas", 11), fg=ACCENT, bg=BG)
+    health_lbl.pack(side="left")
+    button(status_row, "QUIT", lambda: root.destroy(), width=5,
+           bg="#6A7785").pack(side="right", anchor="n")
+    button(status_row, "CLOSE", lambda: collapse()).pack(side="right",
+                                                         anchor="n",
+                                                         padx=(0, 6))
+    if not up:
+        status_row.pack(fill="x", padx=10, pady=(4, 0))
 
     # Fixed width and height in characters. A Label sizes itself to its text,
     # so a readout that gains a line when a target is set, or widens when a
     # distance grows a digit, would resize the window on an ordinary frame.
-    def rule(parent=panel):
-        """A hairline across the panel, separating one block from the next."""
-        line = tk.Frame(parent, height=1, bg="#243040")
-        line.pack(fill="x", padx=10, pady=5)
-        return line
-
-    # The health line, which a save, an edit or a running analysis takes over
-    # as a toast while it has something to say. Two rows so a long message
-    # wraps rather than resizing the window.
-    health_lbl = tk.Label(panel, text="", justify="left", anchor="nw",
-                          width=READOUT_COLS, height=2, wraplength=420,
-                          font=("Consolas", 11), fg=ACCENT, bg=BG)
-    health_lbl.pack(fill="x", padx=10, pady=(8, 0))
-
-    top_rule = rule()
-
-    # The body analysis sits under the status like the target block sits under
-    # the location: shown on request, with the waypoint list and the buttons
-    # staying where they are and the window growing to make room.
-    report_block = tk.Frame(panel, bg=BG)
-    block_rule = rule(report_block)
-
-    # One row shorter than LOCATION_ROWS: the status line is above, not in it.
-    fix_lbl = tk.Label(panel, text="", justify="left", anchor="nw",
+    loc_sec = Section("Location")
+    # One row shorter than LOCATION_ROWS: the status line is apart from it.
+    fix_lbl = tk.Label(loc_sec.body, text="", justify="left", anchor="nw",
                        width=READOUT_COLS, height=LOCATION_ROWS - 1,
                        font=("Consolas", 11), fg=ACCENT, bg=BG)
-    fix_lbl.pack(fill="x", padx=10, pady=(0, 0))
-
-    # Shown only while surveying; refresh packs and forgets it.
-    survey_block = tk.Frame(panel, bg=BG)
-    rule(survey_block)
-    # Three labels so the directions can be bold and their own colours; the
-    # rows add up to SURVEY_ROWS, so the block never changes height.
-    survey_lbls = [tk.Label(survey_block, text="", justify="left", anchor="nw",
-                            width=READOUT_COLS, height=rows,
-                            font=("Consolas", 11), fg=ACCENT, bg=BG)
-                   for rows in (1, 2, SURVEY_ROWS - 3)]
-    for lbl in survey_lbls:
-        lbl.pack(fill="x", padx=10)
-    # Under them while tracing only: throw away a trace that has gone wrong.
-    # Here, as the button rows are full. refresh packs and forgets it.
-    cancel_row = tk.Frame(survey_block, bg=BG)
-    button(cancel_row, "CANCEL", lambda: fire("cancel", cancel_trace)(),
-           bg="#FF9B9B").pack(side="left")
+    fix_lbl.pack(fill="x")
 
     # Shown only while there is a target; refresh packs and forgets it.
-    target_block = tk.Frame(panel, bg=BG)
-    rule(target_block)
-    target_row = tk.Frame(target_block, bg=BG)
-    target_row.pack(fill="x", padx=10)
+    target_sec = Section("Target")
+    target_sec.frame.pack_forget()
+    target_row = tk.Frame(target_sec.body, bg=BG)
+    target_row.pack(fill="x")
     target_lbl = tk.Label(target_row, text="", justify="left", anchor="nw",
                           width=TARGET_COLS, height=TARGET_ROWS,
                           font=("Consolas", 11), fg=ACCENT, bg=BG)
@@ -6075,13 +6116,45 @@ def run_overlay(state, cfg):
     def draw_compass(rel):
         compass_arrow(compass, rel)
 
-    rule()
+    # Folded until a survey or trace starts; refresh opens it then.
+    survey_sec = Section("Survey")
+    survey_idle = tk.Label(survey_sec.body, font=("Consolas", 10), fg=DIM,
+                           bg=BG, anchor="w",
+                           text="SURVEY picks a pattern or a trace")
+    survey_idle.pack(fill="x")
+    # Shown only while surveying; refresh packs and forgets it.
+    survey_block = tk.Frame(survey_sec.body, bg=BG)
+    # Three labels so the directions can be bold and their own colours; the
+    # rows add up to SURVEY_ROWS, so the block never changes height.
+    survey_lbls = [tk.Label(survey_block, text="", justify="left", anchor="nw",
+                            width=READOUT_COLS, height=rows,
+                            font=("Consolas", 11), fg=ACCENT, bg=BG)
+                   for rows in (1, 2, SURVEY_ROWS - 3)]
+    for lbl in survey_lbls:
+        lbl.pack(fill="x")
+    # Under them while tracing only: throw away a trace that has gone wrong.
+    # refresh packs and forgets it.
+    cancel_row = tk.Frame(survey_block, bg=BG)
+    button(cancel_row, "CANCEL", lambda: fire("cancel", cancel_trace)(),
+           bg="#FF9B9B").pack(side="left")
+
+    # Folded until a run starts or a result waits; refresh opens it then.
+    analysis_sec = Section("Analysis")
+    # How a run is going, or what this place has.
+    analysis_lbl = tk.Label(analysis_sec.body, text="", justify="left",
+                            anchor="nw", width=READOUT_COLS, height=2,
+                            font=("Consolas", 10), fg=ACCENT, bg=BG)
+    analysis_lbl.pack(fill="x")
+
+    wp_sec = Section("Waypoints")
+    if up:
+        status_row.pack(fill="x", padx=10, pady=(6, 0))
 
     # Only shown while a waypoint is being edited (EDIT opens it, OK or
     # Enter accepts, X or Escape cancels). SAVE auto-names, like the pin.
-    name_row = tk.Frame(panel, bg=BG)
+    name_row = tk.Frame(wp_sec.body, bg=BG)
     # Below the name: what kind of place it is, and whether it can be jumped to.
-    kind_row = tk.Frame(panel, bg=BG)
+    kind_row = tk.Frame(wp_sec.body, bg=BG)
     tk.Label(kind_row, text="sub ", font=("Consolas", 10), fg=DIM,
              bg=BG).pack(side="left")
     sub_var = tk.StringVar(value=NO_SUB)
@@ -6118,7 +6191,7 @@ def run_overlay(state, cfg):
     # (traces.KINDS): what it is. Not unique (there is a Mining Control at
     # every mining area), so the names given before to that kind are
     # offered under the arrow. OK or Enter keeps it; X or Escape, no name.
-    bname_row = tk.Frame(panel, bg=BG)
+    bname_row = tk.Frame(survey_sec.body, bg=BG)
     tk.Label(bname_row, text="name", font=("Consolas", 10), fg=DIM,
              bg=BG).pack(side="left")
     bname_var = tk.StringVar()
@@ -6153,11 +6226,11 @@ def run_overlay(state, cfg):
     # Column titles outside the list, so they stay put when it scrolls and
     # cannot be selected. The two spaces match the indent on every row, and
     # padx=11 is the list's 10 plus its 1 px border, so the text lines up.
-    tk.Label(panel, text="  " + list_header(), font=("Consolas", 10), fg=DIM,
-             bg=BG, anchor="w", padx=0, borderwidth=0).pack(
-                 fill="x", padx=11, pady=(8, 0))
-    list_frame = tk.Frame(panel, bg=BG)
-    list_frame.pack(fill="both", expand=True, padx=10, pady=(0, 6))
+    tk.Label(wp_sec.body, text="  " + list_header(), font=("Consolas", 10),
+             fg=DIM, bg=BG, anchor="w", padx=0, borderwidth=0).pack(
+                 fill="x", padx=1)
+    list_frame = tk.Frame(wp_sec.body, bg=BG)
+    list_frame.pack(fill="both", expand=True, pady=(0, 6))
     listbox = tk.Listbox(list_frame, height=9, font=("Consolas", 10), bg=FIELD,
                          fg="#DCE6F0", selectbackground="#1d4f3a",
                          selectforeground="#FFFFFF", highlightthickness=0,
@@ -6171,13 +6244,12 @@ def run_overlay(state, cfg):
     listbox.pack(side="left", fill="both", expand=True)
     scroll.pack(side="right", fill="y")
 
-    # The body analysis takes the list's place on request, rather than adding a
-    # second window over a game that is already fighting for the screen.
-    report_box = tk.Text(report_block, height=REPORT_ROWS, width=READOUT_COLS,
+    # The report on this place, with where you are: REPORT in the Location
+    # title shows it, under the readout. show_report packs it.
+    report_box = tk.Text(loc_sec.body, height=REPORT_ROWS, width=READOUT_COLS,
                          font=("Consolas", 10), bg=FIELD, fg="#DCE6F0",
                          relief="flat", wrap="none", highlightthickness=0,
                          state="disabled", cursor="arrow")
-    report_box.pack(fill="x", padx=10, pady=(0, 6), before=block_rule)
 
     # What the place is, which the measurement cannot say: a jump point, a
     # mining base and a Lagrange station all just sit still. Picking one
@@ -6193,7 +6265,7 @@ def run_overlay(state, cfg):
         fire(label, fn)()
         give_focus_to(menu_from["hwnd"])
 
-    label_row = tk.Frame(report_block, bg=BG)
+    label_row = tk.Frame(analysis_sec.body, bg=BG)
     tk.Label(label_row, text="label", font=("Consolas", 10), fg=DIM,
              bg=BG).pack(side="left")
     label_var = tk.StringVar(value=NO_LABEL)
@@ -6208,11 +6280,12 @@ def run_overlay(state, cfg):
                               activebackground="#1d4f3a",
                               postcommand=menu_opened)
     label_menu.pack(side="left", padx=6)
-    label_row.pack(fill="x", padx=10, pady=(0, 6), before=block_rule)
+    label_row.pack(fill="x", pady=(4, 0))
 
     # Which station this is, from UEX's list. The menu is rebuilt each time it
     # opens: the list arrives on another thread and depends on where you are.
-    station_row = tk.Frame(report_block, bg=BG)
+    # Only for a place in space; refresh packs and forgets it.
+    station_row = tk.Frame(analysis_sec.body, bg=BG)
     tk.Label(station_row, text="station", font=("Consolas", 10), fg=DIM,
              bg=BG).pack(side="left")
     station_var = tk.StringVar(value=NO_STATION)
@@ -6246,24 +6319,21 @@ def run_overlay(state, cfg):
 
     station_menu.config(postcommand=fill_station_menu)
     station_btn.pack(side="left", padx=6)
-    station_row.pack(fill="x", padx=10, pady=(0, 6), before=block_rule)
 
-    # Under the report of a fresh analysis. Either button returns to the list;
-    # the result is already saved, so KEEP only closes the report.
-    review_row = tk.Frame(report_block, bg=BG)
+    # After a run that wrote a result, while state.replaced holds the record
+    # it replaced. The result is already saved, so KEEP only lets it be;
+    # refresh packs and forgets the row.
+    review_row = tk.Frame(analysis_sec.body, bg=BG)
     tk.Label(review_row, text="new analysis", font=("Consolas", 10), fg=DIM,
              bg=BG).pack(side="left")
-    button(review_row, "KEEP", lambda: fire("keep", lambda st: hide_report())(),
+    button(review_row, "KEEP", lambda: fire("keep", do_keep)(),
            width=7).pack(side="left", padx=(8, 0))
     button(review_row, "DISCARD", lambda: fire("discard", do_discard)(),
            width=9, bg="#FF9B9B").pack(side="left", padx=(6, 0))
 
-    # Two rows, by what they act on: waypoints, then the body and the window.
-    btn_row = tk.Frame(panel, bg=BG)
-    btn_row.pack(fill="x", padx=10)
-    rule()
-    btn_row2 = tk.Frame(panel, bg=BG)
-    btn_row2.pack(fill="x", padx=10, pady=(0, 8))
+    # The waypoints' buttons, under the list.
+    btn_row = tk.Frame(wp_sec.body, bg=BG)
+    btn_row.pack(fill="x", pady=(0, 4))
 
     shown = []            # (kind, id) per visible line; kind is row or head
 
@@ -6306,7 +6376,8 @@ def run_overlay(state, cfg):
     def start_bname(name, kind):
         naming["trace"], naming["kind"] = name, kind
         bname_var.set("")
-        bname_row.pack(fill="x", padx=10, pady=(0, 6), before=btn_row)
+        bname_row.pack(fill="x", pady=(4, 0))
+        survey_sec.fold(True)
         # Typing takes focus, as EDIT does; end_bname gives it back.
         set_no_activate(root, False)
         root.focus_force()
@@ -6344,8 +6415,8 @@ def run_overlay(state, cfg):
             qt_var.set(w.get("qt", default_qt(w.get("frame", "planet"))))
         editing["old"] = chosen
         name_var.set(w.get("name", ""))
-        name_row.pack(fill="x", padx=10, pady=(0, 2), before=btn_row)
-        kind_row.pack(fill="x", padx=10, pady=(0, 6), before=btn_row)
+        name_row.pack(fill="x", pady=(0, 2), before=btn_row)
+        kind_row.pack(fill="x", pady=(0, 6), before=btn_row)
         # The only place anything is typed, so the only time the overlay
         # takes focus; end_rename gives the game its clicks back.
         set_no_activate(root, False)
@@ -6395,23 +6466,14 @@ def run_overlay(state, cfg):
     def do_target(st):
         toggle_target(st, selected_id())
 
-    view = {"report": False, "was_analysing": False}
+    view = {"report": False, "busy": False, "analysing": False}
 
     def do_label(st, value):
         label_place(st, value)
         refresh_report()
 
     def refresh_report():
-        with state.lock:
-            rec = current_place(state)[1]
-        label_var.set((rec or {}).get("label") or NO_LABEL)
-        station_var.set(((rec or {}).get("station") or {}).get("name")
-                        or NO_STATION)
-        # A running analysis reports its progress here, not in the status row,
-        # so the status stays put at the top.
-        running = analysis_progress(state)
-        text = (f"{running}{chr(10)}{ANALYSIS_ADVICE}" if running
-                else chr(10).join(body_report(state)))
+        text = chr(10).join(body_report(state))
         if text == report_box.get("1.0", "end-1c"):
             return
         report_box.config(state="normal")
@@ -6419,39 +6481,43 @@ def run_overlay(state, cfg):
         report_box.insert("end", text)
         report_box.config(state="disabled")
 
-    def show_report():
-        if view["report"]:
-            refresh_report()
-            return
-        report_block.pack(fill="x", after=top_rule)
-        report_btn.config(text="HIDE")
-        view["report"] = True
+    def show_report(open_section=True):
+        """The report in the Location section, under the readout."""
+        if open_section:
+            loc_sec.fold(True)
+        if not view["report"]:
+            report_box.pack(fill="x", pady=(6, 0), after=fix_lbl)
+            report_btn.config(text="HIDE")
+            view["report"] = True
         refresh_report()
 
     def hide_report():
         if not view["report"]:
             return
-        review_row.pack_forget()
-        with state.lock:
-            state.replaced = None       # leaving the report keeps the result
-        report_block.pack_forget()
+        report_box.pack_forget()
         report_btn.config(text="REPORT")
         view["report"] = False
 
     def do_report(st):
+        """REPORT / HIDE pressed: kept for the next start, with the
+        sections. A report shown by the program is not kept."""
         hide_report() if view["report"] else show_report()
+        save_setting(state, "hud_sections",
+                     dict(state.cfg["hud_sections"], Report=view["report"]))
 
     def show_review():
-        """A just-finished analysis: the report, with KEEP / DISCARD under it."""
+        """A just-finished analysis: its report with where you are, and the
+        Analysis section open for KEEP / DISCARD."""
         show_report()
-        with state.lock:
-            fresh_result = state.replaced is not None
-        if fresh_result:
-            review_row.pack(fill="x", padx=10, pady=(0, 6), before=block_rule)
+        analysis_sec.fold(True)
+
+    def do_keep(st):
+        with st.lock:
+            st.replaced = None
 
     def do_discard(st):
         discard_analysis(st)
-        hide_report()
+        refresh_report()
 
     def do_analyse(st):
         """Start sampling the spin, or stop and keep what there is so far."""
@@ -6472,12 +6538,13 @@ def run_overlay(state, cfg):
         side="left", padx=(6, 0))
     button(btn_row, "DELETE", fire("delete", do_delete),
            bg="#FF9B9B").pack(side="left", padx=(6, 0))
-    # The body's own controls on the left, the window's on the right.
-    analyse_btn = button(btn_row2, "ANALYSE", fire("analyse", do_analyse),
-                         width=8)
-    analyse_btn.pack(side="left")
-    report_btn = button(btn_row2, "REPORT", fire("report", do_report), width=7)
-    report_btn.pack(side="left", padx=(6, 0))
+    # Each section's main button in its title row, while it is open.
+    analyse_btn = button(analysis_sec.tools, "ANALYSE",
+                         fire("analyse", do_analyse), width=8)
+    analyse_btn.pack(side="right")
+    report_btn = button(loc_sec.tools, "REPORT", fire("report", do_report),
+                        width=7)
+    report_btn.pack(side="right")
     # SURVEY asks which pattern to fly; END SURVEY just ends it.
     survey_menu = tk.Menu(root, tearoff=False, font=("Consolas", 10),
                           bg=FIELD, fg="#DCE6F0", activebackground="#1d4f3a")
@@ -6501,12 +6568,10 @@ def run_overlay(state, cfg):
                              + survey_btn.winfo_height())
 
     # Wide enough for "END BUILDING", so swapping the label cannot resize it.
-    survey_btn = button(btn_row2, "SURVEY", on_survey, width=12)
-    survey_btn.pack(side="left", padx=(6, 0))
-    button(btn_row2, "QUIT", lambda: root.destroy(), width=5,
-           bg="#6A7785").pack(side="right")
-    button(btn_row2, "CLOSE", lambda: collapse()).pack(side="right",
-                                                       padx=(0, 6))
+    survey_btn = button(survey_sec.tools, "SURVEY", on_survey, width=12)
+    survey_btn.pack(side="right")
+    if state.cfg["hud_sections"].get("Report"):     # as it was left
+        show_report(open_section=False)
 
     # --- collapse / expand --------------------------------------------------
     showing = {"panel": False}
@@ -6633,15 +6698,21 @@ def run_overlay(state, cfg):
         if showing["panel"]:
             fix_lbl.config(text=render_location(state, with_status=False),
                            fg=colour)
-            busy = state.survey or state.trace is not None
+            busy = bool(state.survey) or state.trace is not None
             if busy != bool(survey_block.winfo_manager()):
                 if busy:
-                    survey_block.pack(fill="x", after=fix_lbl)
+                    survey_idle.pack_forget()
+                    survey_block.pack(fill="x", before=bname_row
+                                      if bname_row.winfo_manager() else None)
                 else:
                     survey_block.pack_forget()
+                    survey_idle.pack(fill="x")
+            if busy and not view["busy"]:
+                survey_sec.fold(True)       # one just started: show its way
+            view["busy"] = busy
             if (state.trace is not None) != bool(cancel_row.winfo_manager()):
                 if state.trace is not None:
-                    cancel_row.pack(fill="x", padx=10, pady=(2, 4))
+                    cancel_row.pack(fill="x", pady=(2, 4))
                 else:
                     cancel_row.pack_forget()
             *texts, directions = survey_parts(state)
@@ -6650,11 +6721,13 @@ def run_overlay(state, cfg):
             if directions:
                 survey_lbls[1].config(fg=directions,
                                       font=("Consolas", 11, "bold"))
-            if (state.target is not None) != bool(target_block.winfo_manager()):
-                if state.target is not None:
-                    target_block.pack(fill="x", after=fix_lbl)
+            targeting = state.target is not None
+            if targeting != bool(target_sec.frame.winfo_manager()):
+                if targeting:
+                    target_sec.frame.pack(fill="x", padx=10, pady=(6, 0),
+                                          before=survey_sec.frame)
                 else:
-                    target_block.pack_forget()
+                    target_sec.frame.pack_forget()
             target_lbl.config(text=render_target(state), fg=colour)
             draw_compass(target_turn(state))
             chosen = selected_id()
@@ -6662,9 +6735,34 @@ def run_overlay(state, cfg):
                 targeted = chosen is not None and chosen == state.target
             target_btn.config(text="UNTARGET" if targeted else "TARGET")
             analysing = analysis_progress(state)
-            if analysing and not view["was_analysing"]:
-                show_report()               # a run just began: open its block
-            view["was_analysing"] = bool(analysing)
+            with state.lock:
+                key, rec = current_place(state)
+                review = state.replaced is not None
+                had, rec = rec is not None, dict(rec or {})
+            if analysing:
+                place = f"{analysing}{chr(10)}{ANALYSIS_ADVICE}"
+            elif key is None:
+                place = "no fix - nothing to analyse"
+            else:
+                place = f"{key}: {'analysed' if had else 'not analysed yet'}"
+            analysis_lbl.config(text=place, fg=colour)
+            label_var.set(rec.get("label") or NO_LABEL)
+            station_var.set((rec.get("station") or {}).get("name")
+                            or NO_STATION)
+            space = rec.get("scope") == "space"
+            if space != bool(station_row.winfo_manager()):
+                if space:
+                    station_row.pack(fill="x", pady=(4, 0), after=label_row)
+                else:
+                    station_row.pack_forget()
+            if review != bool(review_row.winfo_manager()):
+                if review:
+                    review_row.pack(fill="x", pady=(4, 0))
+                else:
+                    review_row.pack_forget()
+            if (analysing or review) and not view["analysing"]:
+                analysis_sec.fold(True)     # a run began, or a result waits
+            view["analysing"] = bool(analysing or review)
             analyse_btn.config(text="STOP" if analysing else "ANALYSE")
             tracing = state.trace       # once: END can clear it meanwhile
             survey_btn.config(
