@@ -2488,6 +2488,10 @@ channels' posts by group (sort_imports), to take in or skip.
   replaced railway-001 on REPLACE, skipped Grim Hex on NO; the map
   changed and posted again came in as an update. No errors in either log.
   A map that comes in is numbered afresh by our own waypoints when drawn.
+- **The admin's guide** is DISCORD-SETUP.md (phase 6): channels,
+  webhooks, the read-only bot, keeping its role to the four channels,
+  what to hand out, what to do when something leaks, and what each Test
+  connection line means.
 - **Replace hands the item over**: a survey of ours replaced by a shared
   one is then theirs (`from`), so no longer ours to share, even when the
   two were the same (railway-001 in the test).

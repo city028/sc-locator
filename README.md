@@ -230,8 +230,8 @@ A waypoint is a saved position on a body (or in deep space).
   when it is the only one you picked (see
   [Sharing](#sharing-waypoints-and-reports)). Set it in the main window's
   **Edit...** window, or in the Waypoints tab's right-click menu.
-- A waypoint can also be marked **Share to Discord** (no to start with), for
-  the Discord sharing still being built (see
+- A waypoint can also be marked **Share to Discord** (no to start with), to
+  post it to your org's Discord channels (see
   [Marking items private or to share](#marking-items-private-or-to-share)).
   A private waypoint cannot be: ticking Private clears and greys it.
 - Set SUB and QT with **EDIT** in the panel (just after saving, in game) or in
@@ -564,7 +564,9 @@ private. Reports imported from a file come in neither private nor shared.
 ### Discord settings
 
 **Settings > Discord** is where sharing is set up, where items are posted
-and where what others shared is taken in.
+and where what others shared is taken in. Your org's admin sets up the
+channels and the bot once: see [DISCORD-SETUP.md](DISCORD-SETUP.md); they
+then give you the webhook URLs and the read token.
 
 - **Channels**: a webhook URL for each of the org's four share channels
   (Waypoints, Surveys, Reports, Maps), from the channel's settings >
@@ -1095,6 +1097,10 @@ command prompt, reproduce it, and attach `session.log`.
   spikes.
 - It depends on the debug HUD's layout. A game patch that changes it can break
   reading until the program is updated.
+- Discord sharing: deleting an item does nothing in Discord, and a shared
+  item is not posted on its own when it changes: press **Publish new**.
+  If someone copies your link code and you delete yours, their copy takes
+  over your posts; keep your code message.
 
 ---
 
