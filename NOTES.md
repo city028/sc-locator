@@ -2520,6 +2520,38 @@ channels' posts by group (sort_imports), to take in or skip.
   private items and items from someone else stay out; no settings, no
   survey being resumed, no bak/. Height maps unmarked, as on import.
   Checked by restoring a built zip in the tests' sandbox.
+- **Remove from Discord** (2026-11-15). Stop sharing or Make private
+  left every post up, and others kept taking it in. Now `posted` keeps
+  every message an item went out as (`messages`; an entry from before
+  has only `message`), and wherever sharing is switched off for a posted
+  item (`offer_unpost`: the three right-click menus, Edit..., a map's
+  ticks) it asks; Remove deletes each through its channel's webhook
+  (`discordapi.unpost`, DELETE on the webhook's message) and forgets the
+  item, so shared again it goes out afresh. A webhook deletes only its
+  own posts: for one made by a webhook since replaced Discord says
+  "Unknown Message" (10008), as for one deleted already, so that is
+  reported, not counted as removed. A webhook gone (10015) keeps the item
+  noted to try again. Deleting an item still does nothing on Discord.
+  First try (test server): Arccorp Mining Area 061, posted at 08:37 and
+  again as an update at 08:41 before `messages` existed, lost only the
+  08:41 post; the 08:37 one stayed, unknown to the history, and was
+  deleted by hand. Only items posted before this change are affected.
+  Tried again for maps: posted, removed, gone. Feedback, asked for after
+  that try: a small window by the pointer counts the posts while they go
+  ("post 2 of 3"), then a message lists each item deleted with its number
+  of posts, and what was not. Publish new's end message likewise lists
+  each item posted, updates marked, the first 40.
+- **The key goes in backups** (2026-11-15). A new key (new PC, wipe,
+  reinstall) made every item a new one, posted again under new uids, and
+  clashing for everyone. The settings are now two files, one dict in
+  memory: `discord.json` keeps the org's secrets (webhooks, token), never
+  backed up; `discord-id.json` (`DISCORD_ID_FILE`, in `data_files`) keeps
+  key, link channel, lists and histories, backed up and wiped like the
+  rest. Until it is first written, `load_settings` reads them from
+  discord.json, where they all were. A restore from a backup without it
+  (older ones, the sample data) leaves ours: `apply_pending(keep=...)`.
+  The trade: a backup zip now lets whoever holds it sign as you; it
+  already held all your private waypoints.
 - **Replace hands the item over**: a survey of ours replaced by a shared
   one is then theirs (`from`), so no longer ours to share, even when the
   two were the same (railway-001 in the test).

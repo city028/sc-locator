@@ -38,11 +38,12 @@ TEST_READ = 500                  # how far back Test connection looks
 
 
 class DiscordError(Exception):
-    """A call that failed, with the HTTP status if Discord answered."""
+    """A call that failed, with the HTTP status if Discord answered, and
+    Discord's own error code (10008: no such message) if it gave one."""
 
-    def __init__(self, text, status=None):
+    def __init__(self, text, status=None, code=None):
         super().__init__(text)
-        self.status = status
+        self.status, self.code = status, code
 
 
 def webhook_parts(url):
@@ -52,17 +53,19 @@ def webhook_parts(url):
 
 
 def request(path, token=None, opener=urllib.request.urlopen, timeout=15,
-            tries=3, sleep=time.sleep, data=None, content_type=None):
-    """GET `path` (under API), or POST `data` to it, and return its JSON.
-    When Discord says to slow down, waits as long as it asks, up to
-    `tries` times."""
+            tries=3, sleep=time.sleep, data=None, content_type=None,
+            method=None):
+    """GET `path` (under API), or POST `data` to it, or `method` it (a
+    DELETE), and return its JSON. When Discord says to slow down, waits as
+    long as it asks, up to `tries` times."""
     headers = {"User-Agent": USER_AGENT, "Accept": "application/json"}
     if token:
         headers["Authorization"] = f"Bot {token}"
     if content_type:
         headers["Content-Type"] = content_type
     for attempt in range(tries):
-        req = urllib.request.Request(API + path, data=data, headers=headers)
+        req = urllib.request.Request(API + path, data=data, headers=headers,
+                                     method=method)
         try:
             with opener(req, timeout=timeout) as resp:
                 return json.loads(resp.read() or b"null")
@@ -75,7 +78,7 @@ def request(path, token=None, opener=urllib.request.urlopen, timeout=15,
                 sleep(min(float(body.get("retry_after", 1)), 30))
                 continue
             raise DiscordError(body.get("message") or exc.reason,
-                               exc.code) from None
+                               exc.code, body.get("code")) from None
         except (urllib.error.URLError, OSError, ValueError) as exc:
             raise DiscordError(f"Discord could not be reached: "
                                f"{getattr(exc, 'reason', exc)}") from None
@@ -364,6 +367,80 @@ def publish(cfg, items, describe, now, everything=False, progress=None,
     if progress:
         progress(len(todo), len(todo))
     return sent, failed
+
+
+# --- taking posts off Discord ----------------------------------------------
+
+UNKNOWN_MESSAGE = 10008         # Discord's code for a message not there
+
+
+def delete_post(url, message_id, opener=urllib.request.urlopen,
+                sleep=time.sleep):
+    """Delete a message the webhook at `url` posted. A webhook can delete
+    only its own: for one made by an earlier webhook, Discord answers as
+    for one deleted already."""
+    parts = webhook_parts(url)
+    if not parts:
+        raise DiscordError("not a Discord webhook URL")
+    request(f"/webhooks/{parts[0]}/{parts[1]}/messages/{message_id}",
+            opener=opener, tries=5, sleep=sleep, method="DELETE")
+
+
+def unpost(cfg, items, lock=None, save=None, opener=urllib.request.urlopen,
+           sleep=time.sleep, progress=None):
+    """Take every post of each item in `items` [(kind, id)] off Discord,
+    through its channel's webhook, and forget it in cfg["posted"], so that
+    shared again it goes out afresh. Members who took it in keep their
+    copy.
+
+    Returns (removed, failed): [(kind, id)], [(kind, id, why)]. A post not
+    found counts as failed, with why: it may be gone already, or have been
+    posted through a webhook since replaced, which cannot delete it.
+    progress: f(done, total) in posts.
+    """
+    lock = lock or threading.Lock()
+    with lock:
+        hooks = dict(cfg["webhooks"])
+        work = [(kind, item_id, discordshare.posted_messages(
+                    cfg["posted"], kind, item_id)) for kind, item_id in items]
+    total = sum(len(mids) for _k, _i, mids in work)
+    removed, failed, done = [], [], 0
+    for kind, item_id, mids in work:
+        name = discordshare.CHANNEL_OF[kind].capitalize()
+        missing, why = 0, None
+        for mid in mids:
+            if progress:
+                progress(done, total)
+            done += 1
+            try:
+                delete_post(hooks.get(discordshare.CHANNEL_OF[kind], ""),
+                            mid, opener, sleep)
+            except DiscordError as exc:
+                if exc.code == UNKNOWN_MESSAGE:
+                    missing += 1
+                elif exc.status is None:
+                    failed += [(k, i, str(exc)) for k, i, _m in
+                               work[work.index((kind, item_id, mids)):]]
+                    return removed, failed
+                else:
+                    why = _webhook_problem(exc, name)
+        if why:
+            failed.append((kind, item_id, why))
+            continue
+        with lock:
+            discordshare.forget_posted(cfg["posted"], kind, item_id)
+            if save:
+                save()
+        if missing:
+            failed.append((kind, item_id, f"{missing} of its {len(mids)} "
+                           "posts not found: gone already, or posted "
+                           "through an earlier webhook (delete those by "
+                           "hand in Discord)"))
+        else:
+            removed.append((kind, item_id))
+    if progress:
+        progress(total, total)
+    return removed, failed
 
 
 # --- reading the channels ---------------------------------------------------

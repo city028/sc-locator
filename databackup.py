@@ -212,9 +212,12 @@ def _replace(source, target):
     temporary.replace(target)
 
 
-def apply_pending(files, bak_dir, pending, extras=(), version="", now=None):
+def apply_pending(files, bak_dir, pending, extras=(), version="", now=None,
+                  keep=()):
     """Carry out what was requested: "restored", "wiped", or None if nothing
-    was. Call before any data is loaded. The request is removed last, so if
+    was. Call before any data is loaded. A restore removes a data file the
+    backup does not hold, except those in `keep`, which are left as they
+    are. The request is removed last, so if
     this is cut short the next start does it again; the safety copy is made
     only the first time, while the data is still all as it was."""
     if not pending.is_dir():
@@ -238,7 +241,7 @@ def apply_pending(files, bak_dir, pending, extras=(), version="", now=None):
         new = pending / path.name
         if new.exists():
             _replace(new, path)
-        else:
+        elif path not in keep:
             path.unlink(missing_ok=True)
     names = [f.name for f in files]
     for old in automatic_backups(bak_dir, names):

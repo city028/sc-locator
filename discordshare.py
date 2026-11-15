@@ -187,9 +187,28 @@ def to_publish(items, posted, everything=False):
 
 
 def record_posted(posted, kind, item_id, item, message_id, now):
-    """Note in `posted` that `item` went out as message `message_id`."""
-    posted[f"{kind}/{item_id}"] = {"hash": item_hash(clean(item)),
-                                   "message": str(message_id), "at": now}
+    """Note in `posted` that `item` went out as message `message_id`: the
+    latest, and among all its posts, so that every version can be taken
+    off Discord again."""
+    key = f"{kind}/{item_id}"
+    before = posted_messages(posted, kind, item_id)
+    posted[key] = {"hash": item_hash(clean(item)),
+                   "message": str(message_id), "at": now,
+                   "messages": before + [str(message_id)]}
+
+
+def posted_messages(posted, kind, item_id):
+    """Every message an item went out as, oldest first. Noted before every
+    one was kept, only the latest is known."""
+    rec = posted.get(f"{kind}/{item_id}")
+    if not rec:
+        return []
+    return list(rec.get("messages") or [rec["message"]])
+
+
+def forget_posted(posted, kind, item_id):
+    """The item's posts are gone: shared again, it goes out afresh."""
+    posted.pop(f"{kind}/{item_id}", None)
 
 
 # --- importing --------------------------------------------------------------
@@ -377,12 +396,18 @@ def record_skipped(cfg, entry):
     cfg["skipped"][entry["uid"]] = entry["hash"]
 
 
-# --- settings: discord.json -------------------------------------------------
+# --- settings: discord.json and discord-id.json ------------------------------
 #
-# The org's share channels, the read token, our private key and both
-# histories. It holds secrets (anyone with a webhook URL can post as it,
-# anyone with the key can sign as you), so it is kept out of backups and
-# out of bak/, and written without a copy.
+# Kept as one dict in memory, in two files. discord.json holds the org's
+# secrets, the same for every member (anyone with a webhook URL can post
+# as it, anyone with the token can read the channels): never backed up.
+# discord-id.json holds what is yours: the key (anyone with it can sign as
+# you), the link channel, the lists and the histories. It is backed up,
+# so that a new PC keeps the key, and with it the same items, rather than
+# posting everything again as new. Both are written without a copy in
+# bak/.
+
+ORG_FIELDS = ("webhooks", "token")
 
 CHANNELS = ("waypoints", "surveys", "reports", "maps")
 CHANNEL_OF = {"waypoint": "waypoints", "trace": "surveys",
@@ -415,34 +440,55 @@ def link_channel_id(text):
     return m.group(1) if m else None
 
 
-def load_settings(path):
-    """discord.json, with whatever it lacks as new. A missing file is a
-    blank one; one that cannot be read raises ValueError, so that it is
-    not saved over (it may hold the only copy of the key)."""
-    out = blank_settings()
+def _read(path):
+    """A settings file's dict; {} if there is none. ValueError if it
+    cannot be read, so that it is not saved over (it may hold the only
+    copy of the key)."""
     path = Path(path)
     if not path.exists():
-        return out
+        return {}
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
         raise ValueError(f"{path.name} cannot be read: {exc}") from None
     if not isinstance(data, dict):
         raise ValueError(f"{path.name} is not Discord settings")
+    return data
+
+
+def load_settings(path, id_path=None):
+    """The Discord settings from discord.json and discord-id.json
+    (`id_path`), with whatever they lack as new. Until discord-id.json is
+    first written, what is yours is read from discord.json, where it all
+    was before the two were split."""
+    out = blank_settings()
+    data = _read(path)
+    mine = _read(id_path) if id_path and Path(id_path).exists() else data
     for key, blank in out.items():
-        if isinstance(data.get(key), type(blank)):
-            out[key] = data[key]
+        got = (data if key in ORG_FIELDS else mine).get(key)
+        if isinstance(got, type(blank)):
+            out[key] = got
     out["webhooks"] = {c: str(out["webhooks"].get(c) or "")
                        for c in CHANNELS}
     return out
 
 
-def save_settings(path, cfg):
-    """Write discord.json in one step: whole before and whole after."""
+def _write(path, data):
+    """Write a settings file in one step: whole before and whole after."""
     path = Path(path)
     temporary = path.with_name(path.name + ".saving")
-    temporary.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
+    temporary.write_text(json.dumps(data, indent=2), encoding="utf-8")
     os.replace(temporary, path)
+
+
+def save_settings(path, cfg, id_path=None):
+    """Write the settings: with `id_path`, the org's to `path` and ours to
+    `id_path`; without, all of it to `path`."""
+    if id_path is None:
+        _write(path, cfg)
+        return
+    _write(id_path, {k: v for k, v in cfg.items() if k not in ORG_FIELDS})
+    _write(path, {k: v for k, v in cfg.items() if k in ORG_FIELDS})
 
 
 def user_ids(lines):

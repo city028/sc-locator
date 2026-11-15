@@ -301,6 +301,7 @@ def open_main(root, state, scl, set_hud):
     nav.star, nav.height, nav.editor, nav.reports = star, height, editor, reports
     nav.surveys, nav.maps, nav.updates = surveys, maps_tab, updates
     settings = SettingsTab(nb, state, scl, nav, editor)
+    nav.settings = settings         # Remove from Discord goes through it
     tabs = [star, height, editor, reports, surveys, maps_tab, settings]
     for tab, title in zip(tabs, ("Star map", "Height map", "Waypoints",
                                  "Reports", "Surveys", "Maps", "Settings")):
@@ -532,7 +533,7 @@ class Navigator:
     def __init__(self, nb, state, scl):
         self.nb, self.state, self.scl = nb, state, scl
         self.star = self.height = self.editor = self.reports = None
-        self.surveys = self.maps = None
+        self.surveys = self.maps = self.settings = None
 
     # --- going to a tab -------------------------------------------------
 
@@ -707,6 +708,8 @@ class Navigator:
             scl.save_json(scl.WAYPOINT_FILE, st.waypoints)
             st.flash(f"saved {got['name'].strip()}")
         self.refresh_tabs()
+        if got.get("private") or got.get("share") is False:
+            offer_unpost(self, [("waypoint", wid)], "share", False, self.nb)
 
     def delete_waypoint(self, wid):
         """Delete a waypoint, once asked; a target that was it is cleared."""
@@ -3005,10 +3008,13 @@ class WaypointEditor:
 
     def set_flag(self, flag, on):
         """Private or Share to Discord on or off for the waypoints picked."""
+        picked = self.tree.selection()
         found, skipped = self.scl.flag_saved(
-            self.state, "waypoint", self.tree.selection(), flag, on)
+            self.state, "waypoint", picked, flag, on)
         flash_flagged(self.state, found, skipped, flag, on)
         self.refresh()
+        offer_unpost(self.nav, [("waypoint", k) for k in picked], flag, on,
+                     self.frame)
 
     def show_body(self, system, body):
         """Show a body's waypoints only: its system and body picked, every
@@ -3453,6 +3459,9 @@ class SurveysTab:
             self.scl.flag_saved(self.state, "heightmap", bodies, flag, on)))
         flash_flagged(self.state, found, skipped, flag, on)
         self.refresh()
+        offer_unpost(self.nav, [("trace", n) for n in names]
+                     + [("heightmap", b) for b in bodies], flag, on,
+                     self.frame)
 
     def delete(self):
         """Delete the selected traces and height maps, once asked."""
@@ -4108,6 +4117,7 @@ class MapsTab:
         self.flag_vars["share"].set(bool(m.get("share")))
         self.share_box.state(["disabled" if m.get("private")
                               or m.get(discordshare.FROM) else "!disabled"])
+        offer_unpost(self.nav, [("map", self.mid)], flag, on, self.frame)
 
     def compass_set(self):
         v = self.compass_vars
@@ -4513,7 +4523,8 @@ class SettingsTab:
         # thread notes each post in it as it goes.
         self.discord_lock = threading.Lock()
         try:
-            self.discord = discordshare.load_settings(self.scl.DISCORD_FILE)
+            self.discord = discordshare.load_settings(
+                self.scl.DISCORD_FILE, self.scl.DISCORD_ID_FILE)
         except ValueError as exc:
             self.discord = None         # never saved over: it holds the key
             tk.Label(page, font=mono(), fg=UPDATE_NOTICE, bg=BG,
@@ -4668,6 +4679,96 @@ class SettingsTab:
                 note.config(fg=DIM, text=f"{count} user id"
                             + ("" if count == 1 else "s"))
 
+    def write_discord(self):
+        """discord.json and discord-id.json as they are in memory. The
+        caller holds discord_lock."""
+        discordshare.save_settings(self.scl.DISCORD_FILE, self.discord,
+                                   self.scl.DISCORD_ID_FILE)
+
+    def unpost(self, items, parent):
+        """Offer to take the posts of `items` [(kind, id)], which have just
+        stopped being shared, off Discord; if yes, on a thread of its own,
+        saying at the end what went and what did not."""
+        cfg = self.discord
+        if cfg is None:
+            return
+        with self.discord_lock:
+            items = [(k, i) for k, i in items
+                     if discordshare.posted_messages(cfg["posted"], k, i)]
+        if not items:
+            return
+        some = (f"{len(items)} of them were" if len(items) > 1
+                else "It was")
+        if ask_buttons(
+                "Remove from Discord",
+                f"{some} posted to Discord. Remove the posts too?\n\n"
+                "Members who already took them in keep their copies; "
+                "nobody else can take them in once they are removed.",
+                parent, ("Remove", "Leave them")) != "Remove":
+            return
+        scl, found, st = self.scl, {"step": (0, 0)}, self.state
+        with st.lock:               # waypoints and maps are kept by id
+            names = {("waypoint", w["id"]): w["name"] for w in st.waypoints}
+            names.update({("map", m["id"]): m["name"] for m in st.maps})
+        with self.discord_lock:
+            posts = {(k, i): len(discordshare.posted_messages(
+                cfg["posted"], k, i)) for k, i in items}
+
+        def label(k, i):
+            return f"{scl.SHARE_KIND_NAMES[k]} '{names.get((k, i), i)}'"
+
+        # While it runs: a small window by the pointer saying how far it
+        # has got; then the result in its place.
+        win = tk.Toplevel(parent, bg=BG)
+        win.withdraw()                  # placed before it is seen
+        win.title("Remove from Discord")
+        win.transient(parent.winfo_toplevel())
+        busy = tk.Label(win, font=mono(), fg=ACCENT, bg=BG, padx=20,
+                        pady=14, text="Removing from Discord...")
+        busy.pack()
+        place_near(win)
+        win.deiconify()
+
+        def run():
+            try:
+                found["result"] = discordapi.unpost(
+                    cfg, items, lock=self.discord_lock,
+                    save=self.write_discord,
+                    progress=lambda d, t: found.update(step=(d, t)))
+            except Exception as exc:        # shown, not lost on a thread
+                found["result"] = ([], [(k, i, f"stopped: {exc}")
+                                        for k, i in items])
+
+        def watch():
+            if "result" not in found:
+                done, total = found["step"]
+                if total and win.winfo_exists():
+                    busy.config(text="Removing from Discord: post "
+                                f"{min(done + 1, total)} of {total}...")
+                self.frame.after(200, watch)
+                return
+            if win.winfo_exists():
+                win.destroy()
+            removed, failed = found["result"]
+            with st.lock:
+                st.flash(f"removed {len(removed)} from Discord")
+            out = []
+            if removed:
+                out.append("Deleted from Discord:")
+                out += [f"  {label(k, i)}: {posts[(k, i)]} post"
+                        + ("s" if posts[(k, i)] != 1 else "")
+                        for k, i in removed]
+                out += ["", "Members who took it in before keep their "
+                        "copies."]
+            if failed:
+                out += ([""] if out else []) + ["Not removed:"]
+                out += [f"  {label(k, i)}: {why}"
+                        for k, i, why in failed[:30]]
+            show_message("Remove from Discord", "\n".join(out), parent)
+
+        threading.Thread(target=run, daemon=True).start()
+        self.frame.after(200, watch)
+
     def save_discord_soon(self):
         """Save a moment after the typing stops, not at every key."""
         if self.discord_job:
@@ -4690,7 +4791,7 @@ class SettingsTab:
                     cfg[key] = [ln.rstrip() for ln in
                                 box.get("1.0", "end-1c").splitlines()
                                 if ln.strip()]
-                discordshare.save_settings(self.scl.DISCORD_FILE, cfg)
+                self.write_discord()
         except OSError as exc:
             show_message("Not saved", "The Discord settings could not be "
                          f"saved:\n\n{exc}", self.frame.winfo_toplevel())
@@ -4808,7 +4909,7 @@ class SettingsTab:
         found = {"step": (0, len(todo))}
 
         def save():
-            discordshare.save_settings(scl.DISCORD_FILE, cfg)
+            self.write_discord()
 
         def run():
             try:
@@ -4834,7 +4935,14 @@ class SettingsTab:
             sent, failed = found["result"]
             updates = sum(1 for _k, _i, u in sent if u)
             text = f"Posted {len(sent)}" + (
-                f", {updates} of them as updates" if updates else "") + "."
+                f", {updates} of them as updates" if updates else "") + (
+                ":" if sent else ".")
+            shown = 40              # the message box is 30 lines high
+            text += "".join(f"\n  {labels.get((k, i), i)}"
+                            + (" (update)" if u else "")
+                            for k, i, u in sent[:shown])
+            if len(sent) > shown:
+                text += f"\n  ... and {len(sent) - shown} more"
             if failed:
                 text += f"\n\nNot posted: {len(failed)}"
                 text += "".join(f"\n  {labels.get((k, i), i)}: {why}"
@@ -5395,7 +5503,7 @@ class DiscordImport:
         with self.lock:
             record(self.cfg, *args)
             try:
-                discordshare.save_settings(self.scl.DISCORD_FILE, self.cfg)
+                self.tab.write_discord()
             except OSError as exc:
                 return str(exc)
         return None
@@ -5571,6 +5679,13 @@ def flag_menu(menu, recs, apply):
                                  apply(f, v))
             elif on and flag == "share" and not ways[1]:
                 menu.add_command(label=label, state="disabled")
+
+
+def offer_unpost(nav, kind_keys, flag, on, parent):
+    """After Stop sharing or Make private: offer to take what had been
+    posted of those items off Discord too (SettingsTab.unpost)."""
+    if (flag, on) in (("share", False), ("private", True)) and nav.settings:
+        nav.settings.unpost(list(kind_keys), parent)
 
 
 def flash_flagged(state, found, skipped, flag, on):
@@ -5829,10 +5944,13 @@ class ReportViewer:
 
     def set_flag(self, flag, on):
         """Private or Share to Discord on or off for the reports picked."""
+        picked = self.tree.selection()
         found, skipped = self.scl.flag_saved(
-            self.state, "report", self.tree.selection(), flag, on)
+            self.state, "report", picked, flag, on)
         flash_flagged(self.state, found, skipped, flag, on)
         self.refresh()
+        offer_unpost(self.nav, [("report", k) for k in picked], flag, on,
+                     self.frame)
 
     def to_share(self, title, verb):
         """([(key, report)], private ones left out) for Copy or Export, or

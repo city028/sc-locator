@@ -152,10 +152,12 @@ allow list lets every linked member in; the blacklist always wins.
 |---|---|
 | a webhook URL | delete that webhook, make a new one, send members the new URL |
 | the bot token | **Reset Token** on the Bot tab, send members the new token |
-| a member's key (their `discord.json`) | they delete their code message; a new key means installing afresh, or deleting `discord.json` and linking again |
+| a member's key (their `discord-id.json`, or a backup zip of theirs) | they delete their code message; for a new key they close SC Locator, delete `discord-id.json` and link again |
 
-`discord.json` (in `%LocalAppData%\SC Locator`) holds all of the above
-and is never put in a backup.
+In `%LocalAppData%\SC Locator`, `discord.json` holds the webhook URLs and
+the token and is never put in a backup; `discord-id.json` holds the
+member's key and share history and is, so that a new PC keeps the same
+key. A new key would make everything they shared count as new items.
 
 ## What Test connection tells you
 

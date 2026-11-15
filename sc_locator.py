@@ -80,9 +80,13 @@ SURVEY_FILE = HERE / "survey.json"       # the last survey square, to resume
 TRACES_FILE = HERE / "traces.json"       # railways traced, see traces.py
 SUBTYPES_FILE = HERE / "subtypes.json"   # the SUBs in use, see subtypes.py
 MAPS_FILE = HERE / "maps.json"           # maps kept to print, see maps.py
-# Webhooks, read token, link key: secrets, so left out of backups (not in
+# Webhooks and read token, the org's secrets: left out of backups (not in
 # data_files) and kept without copies in bak/. A wipe still deletes it.
 DISCORD_FILE = HERE / "discord.json"
+# Your link key, link channel, lists and share histories: backed up, so a
+# new PC keeps the key and does not post everything again as new. A
+# backup without it (older ones, the sample data) leaves it as it is.
+DISCORD_ID_FILE = HERE / "discord-id.json"
 BACKUP_DIR = HERE / "bak"
 BACKUP_KEEP = 30                         # versions of each file kept in bak/
 # How often a running survey is written out. Each write also keeps a backup,
@@ -6605,7 +6609,7 @@ def data_files():
     all go by this list."""
     return [CONFIG_FILE, WAYPOINT_FILE, BODIES_FILE, STATIONS_FILE,
             HEIGHTMAP_FILE, SURVEY_FILE, TRACES_FILE, SUBTYPES_FILE,
-            MAPS_FILE]
+            MAPS_FILE, DISCORD_ID_FILE]
 
 
 def data_names():
@@ -6647,7 +6651,8 @@ def apply_pending_data():
     try:
         outcome = databackup.apply_pending(data_files(), BACKUP_DIR,
                                            pending_dir(), extras,
-                                           updater.VERSION)
+                                           updater.VERSION,
+                                           keep=[DISCORD_ID_FILE])
     except (OSError, databackup.BackupError) as exc:
         again = (" It will be tried again the next time SC Locator starts: "
                  "close it now." if pending_dir().exists() else "")

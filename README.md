@@ -98,9 +98,13 @@ automatic backups, in one zip file in a folder you choose. **Restore
 everything** replaces all your data with such a zip and restarts SC Locator; the
 data you had is kept in `bak\before-restore-*.zip` first, and Restore can read
 that too. It is also the way to move to a new PC. The zip is not encrypted.
-Your Discord settings (`discord.json`) are never in it, as they hold
-secrets: a restore leaves them as they are, and on a new PC you set them
-again.
+Your Discord **link key** and share history (`discord-id.json`) are in it,
+so on a new PC you keep sharing as the same member instead of posting
+everything again; anyone holding the zip could sign posts as you, so keep
+it to yourself. The org's webhook URLs and read token (`discord.json`)
+are never in it: on a new PC you paste them again. Restoring a backup
+that has no `discord-id.json` (an older one, or the sample data) leaves
+yours as it is.
 
 **Sample data.** Each release also attaches `sc-locator-sample-data.zip`:
 waypoints, reports, height maps, surveys and maps to start from. Restore
@@ -595,8 +599,9 @@ then give you the webhook URLs and the read token.
 - **Publish new**: posts every item marked Share to Discord that has not
   gone yet, or has changed since (posted again as an update), one post
   each, in its kind's channel. **Share all...** posts every one of them
-  again. It runs in the background and says at the end what went and
-  what did not. Each post carries the item in a file, signed with your
+  again. It runs in the background and lists at the end each item that
+  went (an update marked so) and what did not. Each post carries the item
+  in a file, signed with your
   key, and a few lines for people to read.
 - **Import...**: reads the channels and lists what others shared, by
   group: **New**, **Updates** (of something you took in before), **Clash
@@ -619,8 +624,20 @@ then give you the webhook URLs and the read token.
   - What comes in says who shared it and cannot be shared on: Share to
     Discord is greyed out for it.
 
-Everything is saved as you type, in `discord.json`, which is never put in a
-backup.
+**Taking items off Discord.** When you **Stop sharing** something, or make
+it **Private** (in a right-click menu, **Edit...** or a map's ticks), and
+it was posted, you are asked whether to remove the posts too. **Remove**
+deletes every version you posted of it, a small window counting the
+posts as they go, and then says what was deleted; members who already
+took it in keep their copies. A post made through a webhook the admin has since
+replaced cannot be deleted by the new one: you are told, and can delete it
+by hand in Discord. Deleting an item does not remove its posts: stop
+sharing it first.
+
+Everything is saved as you type: the webhooks and token in
+`discord.json`, which is never put in a backup, and the rest (your key,
+the link channel, the lists, what you posted and took in) in
+`discord-id.json`, which is.
 
 **Import waypoints...** (in Settings > Waypoints) and **Import reports...**
 (in Settings > Reports) read a file someone sent you. Each record is checked first:
@@ -1035,7 +1052,8 @@ All in `%LocalAppData%\SC Locator`:
 | `traces.json` | railways you traced, water and buildings you surveyed |
 | `subtypes.json` | your SUB categories and the icon each uses |
 | `maps.json` | your maps to print: where each is and how it is drawn |
-| `discord.json` | Discord settings: webhooks, read token, your link key; not backed up |
+| `discord.json` | the org's Discord webhooks and read token; not backed up |
+| `discord-id.json` | your Discord link key, link channel, lists and share history; backed up |
 | `bak/` | automatic backups of the files above |
 
 To move to a new PC, use **Settings > Backup**. To share waypoints or reports with
@@ -1110,8 +1128,9 @@ command prompt, reproduce it, and attach `session.log`.
   spikes.
 - It depends on the debug HUD's layout. A game patch that changes it can break
   reading until the program is updated.
-- Discord sharing: deleting an item does nothing in Discord, and a shared
-  item is not posted on its own when it changes: press **Publish new**.
+- Discord sharing: deleting an item does nothing in Discord (stop sharing
+  it first to remove its posts), and a shared item is not posted on its
+  own when it changes: press **Publish new**.
   If someone copies your link code and you delete yours, their copy takes
   over your posts; keep your code message.
 

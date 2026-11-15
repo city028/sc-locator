@@ -33,3 +33,5 @@ sync.ffs_lock
 # Discord settings: webhooks, read token, link key -- secrets
 discord.json
 discord.json.saving
+discord-id.json
+discord-id.json.saving
