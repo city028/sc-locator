@@ -33,6 +33,7 @@ game.
   - [Main window: star map, waypoints, reports](#main-window-star-map-waypoints-reports)
   - [Sharing waypoints and reports](#sharing-waypoints-and-reports)
   - [Marking items private or to share](#marking-items-private-or-to-share)
+  - [Discord settings](#discord-settings)
   - [Survey mode: your own height map](#survey-mode-your-own-height-map)
   - [Maps to print](#maps-to-print)
   - [Automatic backups](#automatic-backups)
@@ -97,9 +98,13 @@ automatic backups, in one zip file in a folder you choose. **Restore
 everything** replaces all your data with such a zip and restarts SC Locator; the
 data you had is kept in `bak\before-restore-*.zip` first, and Restore can read
 that too. It is also the way to move to a new PC. The zip is not encrypted.
+Your Discord settings (`discord.json`) are never in it, as they hold
+secrets: a restore leaves them as they are, and on a new PC you set them
+again.
 
 **Wiping everything.** **Settings > Backup > Wipe all data** deletes all your
-data, including the automatic backups, after asking twice, and restarts SC
+data, including the automatic backups and the Discord settings, after
+asking twice, and restarts SC
 Locator as new. This cannot be undone. Backups you saved elsewhere are not
 touched.
 
@@ -540,9 +545,9 @@ waypoint (or report). Copy (or Export) it anyway?", and **OK** shares it;
 
 Waypoints, reports, surveys (traces and height maps) and maps can each be
 marked **Private** and **Share to Discord**, both off to start with. The
-sharing to Discord itself is still being built; these marks say what it
-will send. A private item is never shared: making one private takes its
-share mark off.
+share mark says what **Publish new** posts (see
+[Discord settings](#discord-settings)). A private item is never shared:
+making one private takes its share mark off.
 
 - **Waypoints**, **Reports** and **Surveys**: select one or more rows and
   right-click. The menu offers what would change something for the rows
@@ -555,6 +560,35 @@ share mark off.
 
 Merging traces with a private one among them makes the merged trace
 private. Reports imported from a file come in neither private nor shared.
+
+### Discord settings
+
+**Settings > Discord** is where sharing is set up, and where items are
+posted. Taking in what others shared is still being built.
+
+- **Channels**: a webhook URL for each of the org's four share channels
+  (Waypoints, Surveys, Reports, Maps), from the channel's settings >
+  Integrations > Webhooks > Copy Webhook URL.
+- **Read token**: the token of a bot that can only read the share channels
+  (View Channel, Read Message History, and Message Content intent on). It
+  does not need to be running.
+- **Link account**: makes your link code and copies it. Post it from your
+  own Discord account in one of the share channels and keep that message;
+  it is how others know what you share is yours.
+- **Allow list** and **Blacklist**: Discord user ids, one to a line, a name
+  after the id if you like. An empty allow list lets everyone linked in;
+  the blacklist wins.
+- **Test connection**: tries each webhook and the token, whether each
+  channel can be read, and whether your link code is there.
+- **Publish new**: posts every item marked Share to Discord that has not
+  gone yet, or has changed since (posted again as an update), one post
+  each, in its kind's channel. **Share all...** posts every one of them
+  again. It runs in the background and says at the end what went and
+  what did not. Each post carries the item in a file, signed with your
+  key, and a few lines for people to read.
+
+Everything is saved as you type, in `discord.json`, which is never put in a
+backup.
 
 **Import waypoints...** (in Settings > Waypoints) and **Import reports...**
 (in Settings > Reports) read a file someone sent you. Each record is checked first:
@@ -969,6 +1003,7 @@ All in `%LocalAppData%\SC Locator`:
 | `traces.json` | railways you traced, water and buildings you surveyed |
 | `subtypes.json` | your SUB categories and the icon each uses |
 | `maps.json` | your maps to print: where each is and how it is drawn |
+| `discord.json` | Discord settings: webhooks, read token, your link key; not backed up |
 | `bak/` | automatic backups of the files above |
 
 To move to a new PC, use **Settings > Backup**. To share waypoints or reports with

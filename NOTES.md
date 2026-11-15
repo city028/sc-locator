@@ -2349,6 +2349,103 @@ Phase 1 of the above: the marks only, nothing is sent yet.
   or after a space (railway-001 has no minus), thousands commas dropped but
   not the commas between the Reports coordinates (12850,0,0).
 
+## Discord sharing logic: discordshare.py (2026-11-15)
+
+Phase 2 of the design above: no network, no window, tested on made-up
+messages shaped like Discord's REST API (tests/test_discordshare.py).
+
+- **One item per post**: readable text for people (the caller's, cut to
+  2,000 characters) and an attachment `scl-item.json` for the program:
+  `{v, kind, id, item, at, key, sig}`. The text cannot hold it: traces run
+  to hundreds of kB. Our own Private and Share marks are taken off first.
+- **Signed with Ed25519** over the canonical JSON (sorted keys, no spaces),
+  which survives a JSON round trip, floats included. `cryptography` is
+  imported only inside the key functions, so the program starts without it.
+- **Link code** `SCL-LINK <public key>`, posted by the member. Codes from
+  webhooks do not count, and a key posted by two members is the first
+  one's, so copying someone's code does not make their posts yours. Gap
+  left: if the real owner deletes their code and a copy stays, the copier
+  gets the posts. Closing it would need the member's Discord id in the
+  signed data, which they would have to look up.
+- **An item's uid** is key/kind/id: a waypoint's or map's id, a report's
+  key, a trace's name (a rename makes a new item), a height map's body.
+- **Histories** (for discord.json, kept by the caller): `posted`
+  ("kind/id" -> hash, message, at) decides Publish new; `imported` (uid ->
+  hash, ours, at) tells an update from what we already have.
+- **sort_imports** order: unreadable, unlinked or forged posts are errors;
+  our own posts and chat are left out; of an item only the newest post that
+  verifies counts, so a forged newer one cannot hide it; then blacklist
+  (wins), allow list (empty lets everyone in), the record checks
+  sc_locator already has for shared files, history, clash. The checks and
+  the clash test are passed in, so this module does not load sc_locator.
+  Trace, height map and map have no checks yet: errors until phase 5.
+- **Imported items carry `from`** (user, name, uid; `mark_imported`), and
+  `set_share`, `shareable` and `flag_items` refuse to share them on.
+  Phase 5 must set it after `prepare_import`, which keeps only
+  `IMPORT_FIELDS`, and grey out Share to Discord for such rows.
+
+## Settings > Discord and Test connection (2026-11-15)
+
+Phase 3. `discord.json` holds the webhooks, the read token, the private
+key and both histories (`discordshare.load_settings` / `save_settings`).
+
+- **Secrets, so never copied**: not in `data_files()` (the backup test
+  excludes `DISCORD_FILE` by name), written in one step without a `bak/`
+  copy, git-ignored. A restore leaves it; a wipe deletes it (an extra of
+  `apply_pending`). A restore can leave the histories naming items that are
+  gone: phase 4 and 5 must take a missing item as never posted / new.
+- **A file that cannot be read is never saved over**: the page says so and
+  offers nothing, as the file may hold the only copy of the key.
+- **Saved 600 ms after typing stops**, as the other settings save at once;
+  a notebook tab click does not reliably take focus off an entry.
+- **Allow list and blacklist are kept as typed lines**, an id (17-20
+  digits) at the start of each and anything after it a note; `user_ids`
+  reads them. A line without one is pointed out under the box.
+- **The token is shown as dots**; the webhooks are not, so a pasted URL
+  can be checked by eye.
+- **discordapi.py** does the calls with urllib (GET only so far): a 429 is
+  waited out as Discord asks (`retry_after`, at most 30 s, 3 tries).
+  Webhooks are asked without the token. Test connection reads up to 500
+  messages a channel to find the link code, and checks the Message Content
+  intent by the application's flags (bits 18 and 19), as the REST API
+  cannot otherwise tell it is off: messages just come back empty.
+- Tried on a real test server (2026-11-15): four channels, a webhook in
+  each, a read-only bot invited with only View Channels and Read Message
+  History. Test connection passed every line, link code found. Setting it
+  up: the Developer Portal's Bot Permissions box grants nothing (the
+  invite URL's permissions make the bot's role), and a bot can be renamed
+  only about twice an hour; a refused name blocks the whole Save.
+
+## Publish new and Share all (2026-11-15)
+
+Phase 4: the two buttons in Settings > Discord > Share.
+
+- **The items are copied first** (`shareable_items`, under the state
+  lock, through JSON) and posted from the copies on a thread, so editing
+  while it runs cannot change what goes half way through a post.
+- **One post each**: `POST /webhooks/{id}/{token}?wait=true` as
+  multipart (payload_json + files[0]), so Discord answers with the
+  message and its id. `allowed_mentions: {"parse": []}`: a waypoint named
+  "@everyone" pings nobody.
+- **Noted as it goes**: each post goes into `posted` and discord.json is
+  saved at once, under the lock the settings page saves with (its own
+  saves rewrite the whole dict). A run cut short does not post again what
+  already went.
+- **Failures**: a channel with no webhook, or whose webhook is gone
+  (401/403/404), fails its items without trying again; no network stops
+  the run; a 429 is waited out (5 tries a post). A file over 10 MB is
+  refused (the limit without boosts); the largest height map is ~70 kB.
+- **The readable text** (`share_text`) is Copy's waypoint text; for the
+  others a line saying what it is. Reports do not use Copy's lines: those
+  are worked out from where you are now, which a post must not give away.
+  An update is prefixed "Update: ".
+- Tried on the test server (2026-11-15): Publish new posted 148 items
+  (95 waypoints, 29 reports, 16 traces, 3 height maps, 5 maps) with no
+  error in session.log; none of them private. Run again it posted
+  nothing; a map changed went alone, as an update.
+- Not yet: posting on a change without pressing anything, and a column
+  saying whether an item has gone.
+
 ## Still open
 
 - Two errors from the screen reader's side, each costing one frame:

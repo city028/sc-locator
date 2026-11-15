@@ -29,3 +29,7 @@ TODO-DONE.md
 examples/
 sync.ffs_db
 sync.ffs_lock
+
+# Discord settings: webhooks, read token, link key -- secrets
+discord.json
+discord.json.saving

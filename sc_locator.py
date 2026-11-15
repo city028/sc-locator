@@ -49,6 +49,7 @@ HERE = Path(__file__).resolve().parent
 if str(HERE) not in sys.path:            # the maths lives beside this file
     sys.path.insert(0, str(HERE))
 import databackup                        # noqa: E402
+import discordshare                      # noqa: E402
 import heightmap                         # noqa: E402
 import maps                              # noqa: E402
 import spin_analysis as spin             # noqa: E402
@@ -79,6 +80,9 @@ SURVEY_FILE = HERE / "survey.json"       # the last survey square, to resume
 TRACES_FILE = HERE / "traces.json"       # railways traced, see traces.py
 SUBTYPES_FILE = HERE / "subtypes.json"   # the SUBs in use, see subtypes.py
 MAPS_FILE = HERE / "maps.json"           # maps kept to print, see maps.py
+# Webhooks, read token, link key: secrets, so left out of backups (not in
+# data_files) and kept without copies in bak/. A wipe still deletes it.
+DISCORD_FILE = HERE / "discord.json"
 BACKUP_DIR = HERE / "bak"
 BACKUP_KEEP = 30                         # versions of each file kept in bak/
 # How often a running survey is written out. Each write also keeps a backup,
@@ -2829,6 +2833,7 @@ def set_waypoint_private(wps, wid, private):
 # to Discord, unless it is private. Both flags are kept only while set, as
 # "private" always was on waypoints.
 PRIVATE_NOT_SHARED = "a private item cannot be shared"
+IMPORTED_NOT_SHARED = "an item from someone else cannot be shared on"
 FLAGS = ("private", "share")
 
 
@@ -2843,9 +2848,11 @@ def set_private(rec, private):
 
 def set_share(rec, share):
     """Flag an item to share to Discord or not. ValueError for a private
-    one."""
+    one, or one imported from someone else on Discord."""
     if share and rec.get("private"):
         raise ValueError(PRIVATE_NOT_SHARED)
+    if share and rec.get(discordshare.FROM):
+        raise ValueError(IMPORTED_NOT_SHARED)
     if share:
         rec["share"] = True
     else:
@@ -2853,16 +2860,20 @@ def set_share(rec, share):
 
 
 def shareable(rec):
-    """Whether an item goes to Discord: flagged to share and not private."""
-    return bool(rec.get("share")) and not rec.get("private")
+    """Whether an item goes to Discord: flagged to share, not private and
+    not imported from someone else."""
+    return (bool(rec.get("share")) and not rec.get("private")
+            and not rec.get(discordshare.FROM))
 
 
 def flag_items(recs, flag, on):
     """Set `flag` ("private" or "share") on each item of `recs`. Returns how
-    many were left as they were: the private ones, when asked to share."""
+    many were left as they were: the private ones and those imported from
+    someone else, when asked to share."""
     skipped = 0
     for rec in recs:
-        if flag == "share" and on and rec.get("private"):
+        if flag == "share" and on and (rec.get("private")
+                                       or rec.get(discordshare.FROM)):
             skipped += 1
         elif flag == "share":
             set_share(rec, on)
@@ -2908,6 +2919,60 @@ def flag_saved(state, kind, keys, flag, on):
     elif recs and kind == "map":
         save_maps(state)
     return len(recs), skipped
+
+
+def shareable_items(state):
+    """(kind, id, record) of every item to share to Discord, as copies, so a
+    thread can post them while the originals change: each kind by the key
+    flag_saved finds it by."""
+    with state.lock:
+        found = ([("waypoint", w["id"], w) for w in state.waypoints]
+                 + [("report", k, r) for k, r in state.bodies.items()]
+                 + [("trace", t["name"], t) for t in state.traces]
+                 + [("heightmap", b, r) for b, r in state.heightmap.items()]
+                 + [("map", m["id"], m) for m in state.maps])
+        return [(kind, key, json.loads(json.dumps(rec)))
+                for kind, key, rec in found if shareable(rec)]
+
+
+def share_label(kind, key, item):
+    """What an item is called in a list of what was posted."""
+    name = item.get("name") or item.get("label") or key
+    return f"{SHARE_KIND_NAMES[kind]} '{name}'"
+
+
+SHARE_KIND_NAMES = {"waypoint": "waypoint", "report": "report",
+                    "trace": "survey", "heightmap": "height map",
+                    "map": "map"}
+
+
+def share_text(kind, key, item, update=False):
+    """The readable part of a Discord post: what people in the channel see.
+    The program reads the attached file, not this. Nothing here says where
+    the sharer is now."""
+    if kind == "waypoint":
+        text = waypoint_text(item)
+    elif kind == "report":
+        text = (f"**Report: {item.get('label') or key}** — "
+                f"{item.get('system', 'unknown').title()}")
+        notes = (item.get("notes") or "").strip()
+        if notes:
+            text += f"\nNotes: {notes}"
+    elif kind == "trace":
+        where = (item.get("planet") or "unknown").title()
+        text = (f"**{item['name']}** — {item.get('kind', 'trace')} on "
+                f"{where}, {fmt_dist(traces.length(item))} long")
+    elif kind == "heightmap":
+        text = (f"**Height map: {key.title()}** — "
+                f"{len(item.get('cells') or {}):,} cells")
+    else:
+        text = (f"**Map: {item['name']}** — "
+                f"{item.get('body', 'unknown').title()}, "
+                f"{fmt_dist(item.get('width_m', 0))} across")
+        notes = (item.get("notes") or "").strip()
+        if notes:
+            text += f"\nNotes: {notes}"
+    return ("Update: " if update else "") + text
 
 
 def exportable(wps):
@@ -6288,6 +6353,7 @@ def apply_pending_data():
     Returns ("restored" / "wiped" / None, what to tell the user or None)."""
     extras = [CONFIG_FILE.parent / n
               for n in ("calib_raw.png", "calib_processed.png")]
+    extras.append(DISCORD_FILE)
     try:
         outcome = databackup.apply_pending(data_files(), BACKUP_DIR,
                                            pending_dir(), extras,

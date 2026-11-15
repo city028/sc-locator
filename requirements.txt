@@ -1,4 +1,5 @@
 # Python packages:  pip install -r requirements.txt
+cryptography
 mss
 numpy
 pillow

@@ -9,6 +9,7 @@ The handlers here stay thin: the edits are sc_locator's helpers, the map
 geometry is starmap's.
 """
 import ctypes
+import json
 import math
 import os
 import shutil
@@ -24,6 +25,8 @@ import numpy as np
 from PIL import Image, ImageColor, ImageDraw, ImageTk
 
 import databackup
+import discordapi
+import discordshare
 import heightmap
 import mapprint
 import maps
@@ -4254,7 +4257,7 @@ class SettingsTab:
 
     NO_ICON = "(plain pin)"
     SECTIONS = ("Star map", "Height map", "Waypoints", "Reports", "Survey",
-                "Backup", "Other")
+                "Discord", "Backup", "Other")
 
     def __init__(self, parent, state, scl, nav, editor):
         self.state, self.scl, self.nav = state, scl, nav
@@ -4269,6 +4272,7 @@ class SettingsTab:
             self.sections.add(page[name], text=name)
         self.version_box(page["Other"])
         self.backup_page(page["Backup"])
+        self.discord_page(page["Discord"])
 
         survey_page = scrolled(page["Survey"])
         self.restore_box(survey_page, "surveys",
@@ -4498,6 +4502,312 @@ class SettingsTab:
             tk.Label(box, font=mono(9), fg=DIM, bg=BG, justify="left",
                      text=text, wraplength=px(860)).pack(side="left",
                                                          padx=(12, 0))
+
+    def discord_page(self, page):
+        """Where the org's share channels are, the token Import reads them
+        with, linking this account, and whose shares are let in. Saved to
+        discord.json a moment after each change."""
+        page = scrolled(page)
+        self.discord_job, self.publishing = None, False
+        # Held while discord.json's dict is changed or saved: a Publish
+        # thread notes each post in it as it goes.
+        self.discord_lock = threading.Lock()
+        try:
+            self.discord = discordshare.load_settings(self.scl.DISCORD_FILE)
+        except ValueError as exc:
+            self.discord = None         # never saved over: it holds the key
+            tk.Label(page, font=mono(), fg=UPDATE_NOTICE, bg=BG,
+                     justify="left", wraplength=px(860),
+                     text=f"{exc}\n\nNothing here can be changed until it "
+                          "is put right or deleted.").pack(anchor="w",
+                                                          padx=4, pady=8)
+            return
+        cfg = self.discord
+
+        def section(title, text):
+            box = tk.LabelFrame(page, text=f" {title} ", font=mono(),
+                                fg=ACCENT, bg=BG, bd=2, relief="groove",
+                                padx=10, pady=8)
+            box.pack(anchor="nw", fill="x", padx=4, pady=4)
+            tk.Label(box, font=mono(9), fg=DIM, bg=BG, justify="left",
+                     text=text, wraplength=px(860)).pack(anchor="w",
+                                                         pady=(0, 6))
+            return box
+
+        def entry(parent, var, **kw):
+            var.trace_add("write", lambda *_: self.save_discord_soon())
+            return tk.Entry(parent, textvariable=var, font=mono(), bg=PANEL,
+                            fg=FG, insertbackground=FG, relief="flat",
+                            width=90, **kw)
+
+        box = section("Channels", "A webhook for each share channel: in "
+                      "Discord, the channel's settings > Integrations > "
+                      "Webhooks > Copy Webhook URL. Traces and height maps "
+                      "go to Surveys. Anyone with a webhook URL can post "
+                      "with it, so keep them inside the org.")
+        self.webhook_vars = {}
+        for name in discordshare.CHANNELS:
+            row = tk.Frame(box, bg=BG)
+            row.pack(anchor="w", fill="x", pady=1)
+            tk.Label(row, text=f"{name.capitalize()}:", font=mono(), fg=FG,
+                     bg=BG, width=10, anchor="w").pack(side="left")
+            var = tk.StringVar(value=cfg["webhooks"][name])
+            self.webhook_vars[name] = var
+            entry(row, var).pack(side="left", fill="x", expand=True)
+
+        box = section("Read token", "The token of a bot that only reads, "
+                      "for Import: View Channel and Read Message History on "
+                      "the share channels, and Message Content intent on in "
+                      "the Developer Portal. It posts nothing and need not "
+                      "be running. Not a member's own token: that is "
+                      "against Discord's terms.")
+        self.token_var = tk.StringVar(value=cfg["token"])
+        entry(box, self.token_var, show="\u2022").pack(anchor="w", fill="x")
+
+        box = section("Your account", "Link account makes your link code "
+                      "and copies it. Post it as a message in one of the "
+                      "share channels, from your own Discord account, and "
+                      "keep that message: what you share is taken in as "
+                      "yours because it is signed with the key that code "
+                      "belongs to. Deleting it unlinks you.")
+        row = tk.Frame(box, bg=BG)
+        row.pack(anchor="w", fill="x")
+        ttk.Button(row, text="Link account", width=16,
+                   command=self.link_account).pack(side="left")
+        self.link_var = tk.StringVar()
+        tk.Entry(row, textvariable=self.link_var, font=mono(), bg=PANEL,
+                 fg=FG, readonlybackground=PANEL, relief="flat",
+                 state="readonly", width=60).pack(side="left", fill="x",
+                                                  expand=True, padx=(12, 0))
+        if cfg["key"]:
+            try:
+                self.link_var.set(discordshare.link_code(cfg["key"]))
+            except ImportError:
+                pass
+
+        lists = section("Who is let in", "Discord user ids, one to a line "
+                        "(Discord: Settings > Advanced > Developer Mode, "
+                        "then right-click a member > Copy User ID). "
+                        "Anything after the id, such as a name, is only a "
+                        "note. An empty allow list lets every linked member "
+                        "in; the blacklist wins over it.")
+        row = tk.Frame(lists, bg=BG)
+        row.pack(anchor="w", fill="x")
+        self.id_boxes = {}
+        for key, title in (("allow", "Allow list"), ("block", "Blacklist")):
+            col = tk.Frame(row, bg=BG)
+            col.pack(side="left", fill="both", expand=True, padx=(0, 8))
+            tk.Label(col, text=title, font=mono(), fg=FG, bg=BG).pack(
+                anchor="w")
+            box = text_box(col, 5)
+            box.config(width=40, wrap="none")
+            set_text(box, "\n".join(cfg[key]))
+            box.pack(anchor="w", fill="x")
+            box.bind("<KeyRelease>", lambda e: self.save_discord_soon())
+            box.bind("<<Paste>>", lambda e: self.save_discord_soon())
+            note = tk.Label(col, font=mono(9), fg=DIM, bg=BG, anchor="w")
+            note.pack(anchor="w")
+            self.id_boxes[key] = (box, note)
+        self.show_id_notes()
+
+        row = tk.Frame(page, bg=BG)
+        row.pack(anchor="nw", fill="x", padx=4, pady=8)
+        self.test_button = ttk.Button(row, text="Test connection", width=16,
+                                      command=self.test_discord)
+        self.test_button.pack(side="left")
+        self.test_status = tk.Label(row, font=mono(9), fg=DIM, bg=BG)
+        self.test_status.pack(side="left", padx=(12, 0))
+
+        box = section("Share", "Publish new posts every item marked Share "
+                      "to Discord that has not been posted yet, or has "
+                      "changed since: a changed one goes again as an "
+                      "update. Share all posts every one of them again. "
+                      "Private items are never posted.")
+        row = tk.Frame(box, bg=BG)
+        row.pack(anchor="w", fill="x")
+        self.publish_buttons = [
+            ttk.Button(row, text="Publish new", width=16,
+                       command=self.publish),
+            ttk.Button(row, text="Share all...", width=16,
+                       command=lambda: self.publish(everything=True))]
+        for button in self.publish_buttons:
+            button.pack(side="left", padx=(0, 8))
+        self.publish_status = tk.Label(row, font=mono(9), fg=DIM, bg=BG)
+        self.publish_status.pack(side="left", padx=(4, 0))
+
+    def show_id_notes(self):
+        """Under each list: how many ids it has, or which lines are not
+        ids."""
+        for box, note in self.id_boxes.values():
+            lines = box.get("1.0", "end-1c").splitlines()
+            bad = discordshare.id_problems(lines)
+            if bad:
+                note.config(fg=UPDATE_NOTICE, text="No user id at the start "
+                            "of line " + ", ".join(map(str, bad)))
+            else:
+                count = len(discordshare.user_ids(lines))
+                note.config(fg=DIM, text=f"{count} user id"
+                            + ("" if count == 1 else "s"))
+
+    def save_discord_soon(self):
+        """Save a moment after the typing stops, not at every key."""
+        if self.discord_job:
+            self.frame.after_cancel(self.discord_job)
+        self.discord_job = self.frame.after(600, self.save_discord)
+
+    def save_discord(self):
+        """What the page shows, into discord.json. False if it could not be
+        written."""
+        self.discord_job = None
+        cfg = self.discord
+        self.show_id_notes()
+        try:
+            with self.discord_lock:
+                cfg["webhooks"] = {n: v.get().strip()
+                                   for n, v in self.webhook_vars.items()}
+                cfg["token"] = self.token_var.get().strip()
+                for key, (box, _note) in self.id_boxes.items():
+                    cfg[key] = [ln.rstrip() for ln in
+                                box.get("1.0", "end-1c").splitlines()
+                                if ln.strip()]
+                discordshare.save_settings(self.scl.DISCORD_FILE, cfg)
+        except OSError as exc:
+            show_message("Not saved", "The Discord settings could not be "
+                         f"saved:\n\n{exc}", self.frame.winfo_toplevel())
+            return False
+        return True
+
+    def link_account(self):
+        """Make the key if there is none yet, and copy its link code."""
+        parent = self.frame.winfo_toplevel()
+        cfg = self.discord
+        try:
+            if not cfg["key"]:
+                cfg["key"] = discordshare.new_key()
+                if not self.save_discord():
+                    cfg["key"] = ""
+                    return
+            code = discordshare.link_code(cfg["key"])
+        except ImportError:
+            show_message("Link account", "Linking needs the cryptography "
+                         "package, which is not installed:\n\n"
+                         "    pip install cryptography", parent)
+            return
+        self.link_var.set(code)
+        self.frame.clipboard_clear()
+        self.frame.clipboard_append(code)
+        show_message("Link account", f"Your link code is copied:\n\n{code}"
+                     "\n\nPaste it as a message in one of the share "
+                     "channels, from your own Discord account, and keep "
+                     "that message. Test connection then shows whether it "
+                     "is found.", parent)
+
+    def test_discord(self):
+        """Save, then try each webhook, the token and the channels on a
+        thread of its own; what it finds is shown when it is done."""
+        if self.discord_job:
+            self.frame.after_cancel(self.discord_job)
+        if not self.save_discord():
+            return
+        cfg = json.loads(json.dumps(self.discord))
+        found = {}
+
+        def run():
+            try:
+                found["lines"] = discordapi.test_connection(cfg)
+            except ImportError:
+                found["lines"] = ["Checking the link code needs the "
+                                  "cryptography package: pip install "
+                                  "cryptography"]
+            except Exception as exc:        # shown, not lost on a thread
+                found["lines"] = [f"The test failed: {exc}"]
+
+        def done():
+            if "lines" not in found:
+                self.frame.after(200, done)
+                return
+            self.test_button.config(state="normal")
+            self.test_status.config(text="")
+            show_message("Test connection", "\n".join(found["lines"]),
+                         self.frame.winfo_toplevel())
+
+        self.test_button.config(state="disabled")
+        self.test_status.config(text="Testing...")
+        threading.Thread(target=run, daemon=True).start()
+        self.frame.after(200, done)
+
+    def publish(self, everything=False):
+        """Publish new, or Share all (`everything`): post on a thread of its
+        own, with how far it has got beside the buttons, and say at the end
+        what went and what did not."""
+        parent = self.frame.winfo_toplevel()
+        title = "Share all" if everything else "Publish new"
+        if self.publishing or not self.save_discord():
+            return
+        scl, cfg = self.scl, self.discord
+        if not cfg["key"]:
+            show_message(title, "Link your account first (Link account, "
+                         "above): every post is signed with its key.",
+                         parent)
+            return
+        items = scl.shareable_items(self.state)
+        with self.discord_lock:
+            todo = discordshare.to_publish(items, cfg["posted"], everything)
+        if not todo:
+            show_message(title, "Nothing to post: no item is marked Share "
+                         "to Discord." if not items else "Nothing to post: "
+                         f"all {len(items)} items marked Share to Discord "
+                         "went out as they are now.", parent)
+            return
+        if everything and ask_buttons(
+                title, f"Post all {len(todo)} items marked Share to Discord "
+                "again, unchanged ones too?", parent,
+                ("Cancel", "Share all")) != "Share all":
+            return
+        labels = {(k, i): scl.share_label(k, i, it) for k, i, it in items}
+        found = {"step": (0, len(todo))}
+
+        def save():
+            discordshare.save_settings(scl.DISCORD_FILE, cfg)
+
+        def run():
+            try:
+                found["result"] = discordapi.publish(
+                    cfg, items, scl.share_text, time.time(), everything,
+                    progress=lambda d, t: found.update(step=(d, t)),
+                    lock=self.discord_lock, save=save)
+            except Exception as exc:        # shown, not lost on a thread
+                found["result"] = ([], [(k, i, f"stopped: {exc}")
+                                        for k, i, _it, _u in todo])
+
+        def watch():
+            if "result" not in found:
+                done, total = found["step"]
+                self.publish_status.config(
+                    text=f"Posting {min(done + 1, total)} of {total}...")
+                self.frame.after(250, watch)
+                return
+            self.publishing = False
+            for button in self.publish_buttons:
+                button.config(state="normal")
+            self.publish_status.config(text="")
+            sent, failed = found["result"]
+            updates = sum(1 for _k, _i, u in sent if u)
+            text = f"Posted {len(sent)}" + (
+                f", {updates} of them as updates" if updates else "") + "."
+            if failed:
+                text += f"\n\nNot posted: {len(failed)}"
+                text += "".join(f"\n  {labels.get((k, i), i)}: {why}"
+                                for k, i, why in failed[:30])
+                if len(failed) > 30:
+                    text += f"\n  ... and {len(failed) - 30} more"
+            show_message(title, text, parent)
+
+        self.publishing = True
+        for button in self.publish_buttons:
+            button.config(state="disabled")
+        threading.Thread(target=run, daemon=True).start()
+        self.frame.after(250, watch)
 
     def close_for_restart(self):
         """Close by the normal way out; the restart follows from there."""
