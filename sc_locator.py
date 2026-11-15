@@ -4988,6 +4988,32 @@ def link_station(state, name):
         state.log(f"{key}: station {name or 'unlinked'}")
 
 
+def label_place(state, value):
+    """Write what this place is (PLACE_LABELS) into its report."""
+    with state.lock:
+        rec = current_place(state)[1]
+        if rec is None:
+            state.flash("analyse this place first")
+            return
+        rec["label"] = value
+        save_json(BODIES_FILE, state.bodies)
+        state.flash(f"labelled {value}")
+
+
+def discard_analysis(state):
+    """Drop the result just taken, putting back the record it replaced."""
+    with state.lock:
+        if state.replaced is not None:
+            planet, old = state.replaced
+            state.replaced = None
+            if old is None:
+                state.bodies.pop(planet, None)
+            else:
+                state.bodies[planet] = old
+            save_json(BODIES_FILE, state.bodies)
+            state.flash(f"{planet}: analysis discarded")
+
+
 def health(state):
     """"ok" | "stale" | "error" | "off" | "nohud" | "space" | "stuck".
 
@@ -5191,6 +5217,73 @@ def end_label(kind):
     if k["group"] == "line":
         return "END TRACE"
     return "END AREA" if "style" in k else f"END {kind.upper()}"
+
+
+def to_name(state, ended):
+    """Whether trace `ended`, just stopped, is to be asked its name: a kind
+    that is named, kept (not dropped as too short), and not named already
+    (a resumed one)."""
+    with state.lock:
+        kept = any(t is ended for t in state.traces)
+    return (traces.KINDS[ended["kind"]]["named"] and kept
+            and not ended.get("label"))
+
+
+def survey_menu_items(state):
+    """What SURVEY offers: the patterns, the traces by group, the last trace
+    to resume, then the last square to resume, if there is one. Entries are
+    ("command", label, key, fn), ("cascade", label, [entries]) or
+    ("separator",); key is what on_hotkey logs, fn takes the state."""
+    items = [("command", p, "survey", lambda st, p=p: start_survey(st, p))
+             for p in survey.PATTERNS]
+    items.append(("separator",))
+    for group, label in traces.GROUPS.items():
+        items.append(("cascade", label, [
+            ("command", k["menu"], "trace",
+             lambda st, kind=kind: start_trace(st, kind))
+            for kind, k in traces.KINDS.items() if k["group"] == group]))
+    with state.lock:
+        last = last_trace(state.traces)
+    if last is not None:
+        items.append((
+            "command", f"resume {last['name']}"
+            + (f" ({last['label']})" if last.get("label") else ""), "trace",
+            lambda st, n=last["name"]: resume_trace(st, n)))
+    with state.lock:
+        plan = state.survey_saved
+        if plan is None:
+            return items
+        ahead = resume_leg(state, plan)
+    size = f"{plan['spacing']:g} m square"
+    items += [("separator",),
+              ("command", f"resume {size} at LEG {plan['leg'] + 1}", "survey",
+               resume_survey)]
+    if ahead > plan["leg"]:
+        items.append(("command",
+                      f"resume {size}, skip ahead to LEG {ahead + 1}",
+                      "survey", lambda st: resume_survey(st, skip=True)))
+    return items
+
+
+def fill_menu(menu, items, run):
+    """Fill tk `menu` from survey_menu_items' entries; a pick calls
+    run(key, fn). Sub-menus take the menu's own look."""
+    import tkinter as tk
+    for child in menu.winfo_children():      # the last fill's sub-menus
+        child.destroy()
+    menu.delete(0, "end")
+    look = {k: menu.cget(k) for k in ("font", "bg", "fg", "activebackground")}
+    for item in items:
+        if item[0] == "separator":
+            menu.add_separator()
+        elif item[0] == "cascade":
+            sub = tk.Menu(menu, tearoff=False, **look)
+            fill_menu(sub, item[2], run)
+            menu.add_cascade(label=item[1], menu=sub)
+        else:
+            _, label, key, fn = item
+            menu.add_command(label=label,
+                             command=lambda k=key, f=fn: run(k, f))
 
 
 def course_lines(plan, g):
@@ -5415,6 +5508,36 @@ def arrow_polygon(rel, cx, cy, size):
     for x, y in ((0, -1), (0.55, 0.6), (0, 0.25), (-0.55, 0.6)):
         pts += [cx + size * (x * cos - y * sin), cy + size * (x * sin + y * cos)]
     return pts
+
+
+def compass_arrow(canvas, rel):
+    """The turn arrow on `canvas` (ARROW_PX square): `rel` degrees to turn,
+    from target_turn; a grey arrow straight up when None."""
+    canvas.delete("all")
+    c, r = ARROW_PX / 2, ARROW_PX / 2 - 4
+    canvas.create_oval(c - r, c - r, c + r, c + r, outline="#243040")
+    canvas.create_line(c, c - r - 2, c, c - r + 5, fill="#8FA0B4")
+    canvas.create_polygon(arrow_polygon(rel or 0.0, c, c, r - 4),
+                          fill=arrow_colour(rel), outline="")
+
+
+def toggle_target(st, wid):
+    """Set waypoint `wid` as the target, or clear it if it already is.
+
+    A toggle rather than a second button: untargeting is the same thought
+    as targeting, and the panel has enough controls. The label says which
+    it will do, so nothing is hidden behind the gesture.
+    """
+    with st.lock:
+        if wid is None:
+            st.flash("select a waypoint first")
+            return
+        if st.target == wid:
+            st.target = None
+            st.flash("target cleared")
+        else:
+            st.target = wid
+            st.flash(f"target: {find_waypoint(st.waypoints, wid)['name']}")
 
 
 def arrow_colour(rel):
@@ -5950,13 +6073,7 @@ def run_overlay(state, cfg):
     compass.pack(side="right", anchor="n")
 
     def draw_compass(rel):
-        compass.delete("all")
-        c, r = ARROW_PX / 2, ARROW_PX / 2 - 4
-        colour = arrow_colour(rel)
-        compass.create_oval(c - r, c - r, c + r, c + r, outline="#243040")
-        compass.create_line(c, c - r - 2, c, c - r + 5, fill=DIM)
-        compass.create_polygon(arrow_polygon(rel or 0.0, c, c, r - 4),
-                               fill=colour, outline="")
+        compass_arrow(compass, rel)
 
     rule()
 
@@ -6276,35 +6393,12 @@ def run_overlay(state, cfg):
         refresh_list()
 
     def do_target(st):
-        """Set the selected waypoint as the target, or clear it if it already is.
-
-        A toggle rather than a second button: untargeting is the same thought
-        as targeting, and the panel has enough controls. The label says which
-        it will do, so nothing is hidden behind the gesture.
-        """
-        chosen = selected_id()
-        with st.lock:
-            if chosen is None:
-                st.flash("select a waypoint first")
-                return
-            if st.target == chosen:
-                st.target = None
-                st.flash(f"target cleared")
-            else:
-                st.target = chosen
-                st.flash(f"target: {find_waypoint(st.waypoints, chosen)['name']}")
+        toggle_target(st, selected_id())
 
     view = {"report": False, "was_analysing": False}
 
     def do_label(st, value):
-        with st.lock:
-            rec = current_place(st)[1]
-            if rec is None:
-                st.flash("analyse this place first")
-                return
-            rec["label"] = value
-            save_json(BODIES_FILE, st.bodies)
-            st.flash(f"labelled {value}")
+        label_place(st, value)
         refresh_report()
 
     def refresh_report():
@@ -6356,16 +6450,7 @@ def run_overlay(state, cfg):
             review_row.pack(fill="x", padx=10, pady=(0, 6), before=block_rule)
 
     def do_discard(st):
-        """Drop the result just taken, putting back the record it replaced."""
-        with st.lock:
-            if st.replaced is not None:
-                planet, old = st.replaced
-                if old is None:
-                    st.bodies.pop(planet, None)
-                else:
-                    st.bodies[planet] = old
-                save_json(BODIES_FILE, st.bodies)
-                st.flash(f"{planet}: analysis discarded")
+        discard_analysis(st)
         hide_report()
 
     def do_analyse(st):
@@ -6396,61 +6481,14 @@ def run_overlay(state, cfg):
     # SURVEY asks which pattern to fly; END SURVEY just ends it.
     survey_menu = tk.Menu(root, tearoff=False, font=("Consolas", 10),
                           bg=FIELD, fg="#DCE6F0", activebackground="#1d4f3a")
-    # A menu per group of traces (traces.GROUPS), each kind in it.
-    trace_menus = {}
-    for group in traces.GROUPS:
-        trace_menus[group] = tk.Menu(survey_menu, tearoff=False,
-                                     font=("Consolas", 10), bg=FIELD,
-                                     fg="#DCE6F0", activebackground="#1d4f3a")
-    for kind, k in traces.KINDS.items():
-        trace_menus[k["group"]].add_command(
-            label=k["menu"], command=lambda kind=kind: picked(
-                "trace", lambda st: start_trace(st, kind)))
-
     def fill_survey_menu():
-        """The patterns, the traces by group, the last trace to resume,
-        then the last square to resume, if there is one."""
-        survey_menu.delete(0, "end")
-        for pattern in survey.PATTERNS:
-            survey_menu.add_command(
-                label=pattern, command=lambda p=pattern: picked(
-                    "survey", lambda st: start_survey(st, p)))
-        survey_menu.add_separator()
-        for group, label in traces.GROUPS.items():
-            survey_menu.add_cascade(label=label, menu=trace_menus[group])
-        with state.lock:
-            last = last_trace(state.traces)
-        if last is not None:
-            survey_menu.add_command(
-                label=f"resume {last['name']}"
-                      + (f" ({last['label']})" if last.get("label") else ""),
-                command=lambda n=last["name"]: picked(
-                    "trace", lambda st: resume_trace(st, n)))
-        with state.lock:
-            plan = state.survey_saved
-            if plan is None:
-                return
-            ahead = resume_leg(state, plan)
-        size = f"{plan['spacing']:g} m square"
-        survey_menu.add_separator()
-        survey_menu.add_command(
-            label=f"resume {size} at LEG {plan['leg'] + 1}",
-            command=lambda: picked("survey", resume_survey))
-        if ahead > plan["leg"]:
-            survey_menu.add_command(
-                label=f"resume {size}, skip ahead to LEG {ahead + 1}",
-                command=lambda: picked(
-                    "survey", lambda st: resume_survey(st, skip=True)))
+        fill_menu(survey_menu, survey_menu_items(state), picked)
 
     def on_survey():
         if state.trace is not None:
             ended = state.trace
             fire("trace", stop_trace)()
-            # Kept (not dropped as too short): ask what it is.
-            # Not again for a resumed one that has a name already.
-            if traces.KINDS[ended["kind"]]["named"] and any(
-                    t is ended for t in state.traces) \
-                    and not ended.get("label"):
+            if to_name(state, ended):
                 start_bname(ended["name"], ended["kind"])
             return
         if state.survey:

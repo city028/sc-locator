@@ -199,6 +199,65 @@ def of_types(wps, switches):
             if switches.get(w.get("type", "poi"), switches["poi"]).get()]
 
 
+def waypoint_tree(groups, system, ids, fmt):
+    """The star map's Waypoints list from waypoint_groups: [(heading,
+    [(id, name, distance text)])]. Only `system`'s groups when it is known,
+    headed by the body; every group when it is None, headed system / body.
+    Only the waypoints in `ids` (the search); no empty groups."""
+    out = []
+    for sys_name, body, rows in groups:
+        if system is not None and sys_name != system:
+            continue
+        kept = [(wid, name, "-" if dist is None else fmt(dist))
+                for wid, name, dist, *_ in rows if wid in ids]
+        if kept:
+            out.append((body if system is not None
+                        else f"{sys_name} / {body}", kept))
+    return out
+
+
+class Section:
+    """A framed block of the star map's left menu that folds to its title:
+    click the title to hide what is in it, again to bring it back. Its
+    contents go in .body; `opened` False starts it folded."""
+
+    def __init__(self, parent, title, expand=False, opened=True):
+        self.expand, self.open = expand, True
+        self.head = tk.Label(parent, font=mono(), fg=ACCENT, bg=BG,
+                             cursor="hand2")
+        self.frame = tk.LabelFrame(parent, labelwidget=self.head, bg=BG, bd=2,
+                                   relief="groove", padx=6, pady=6)
+        # Always packed: a frame whose last packed child goes keeps its size.
+        tk.Frame(self.frame, height=0, bg=BG).pack()
+        self.body = tk.Frame(self.frame, bg=BG)
+        self.body.pack(fill="both", expand=True)
+        self.head.bind("<Button-1>", lambda e: self.fold(not self.open))
+        self.title = title
+        self.fold(opened)
+
+    def pack(self, **kw):
+        grow = self.open and self.expand
+        self.frame.pack(anchor="w", fill="both" if grow else "x", expand=grow,
+                        **kw)
+
+    def set_title(self, title):
+        self.title = title.strip()
+        self.head.config(text=f" {'▼' if self.open else '▶'} {self.title} ")
+
+    def fold(self, open_):
+        """Open the section (True) or fold it to its title (False)."""
+        self.open = open_
+        if open_:
+            self.body.pack(fill="both", expand=True)
+        else:
+            self.body.pack_forget()
+        if self.frame.winfo_manager():
+            grow = open_ and self.expand
+            self.frame.pack_configure(fill="both" if grow else "x",
+                                      expand=grow)
+        self.set_title(self.title)
+
+
 def draw_icon(c, sub, x, y, size, tags=(), icon=None):
     """A waypoint's SUB icon on canvas `c`: a dark badge `size` px in radius
     centred on (x, y), the glyph in the pin's colour inside; `icon` draws
@@ -917,28 +976,34 @@ class StarMap:
 
         side = tk.Frame(self.frame, bg=BG)
         side.pack(side="left", fill="y", padx=(0, 8))
-        tk.Label(side, text="System", font=mono(), fg=DIM, bg=BG).pack(anchor="w")
+        # Each block of the menu folds to its title (Section). The HUD's
+        # functions are here too, for a second screen without the HUD.
+        sec = Section(side, "Location")
+        sec.pack()
+        self.location = tk.Label(sec.body, font=mono(9), fg=FG, bg=BG,
+                                 justify="left", anchor="w")
+        self.location.pack(anchor="w", fill="x")
+        sec = Section(side, "System")
+        sec.pack(pady=(8, 0))
         self.system_var = tk.StringVar(value=self.system)
-        pick = ttk.Combobox(side, textvariable=self.system_var, state="readonly",
-                            values=starmap.SYSTEMS, width=14)
+        pick = ttk.Combobox(sec.body, textvariable=self.system_var,
+                            state="readonly", values=starmap.SYSTEMS, width=14)
         pick.pack(anchor="w", pady=(0, 8))
         pick.bind("<<ComboboxSelected>>",
                   lambda e: self.show(self.system_var.get(), None))
         # Survey markers would crowd the map: shown only when asked for, and
         # their switch only in a body's view, the system view has none.
         self.type_boxes = {}
-        self.types = type_switches(side, ("poi",), self.draw, self.type_boxes)
+        self.types = type_switches(sec.body, ("poi",), self.draw,
+                                   self.type_boxes)
         self.type_boxes["survey"].pack_forget()
-        self.back = ttk.Button(side, text="< back to system",
+        self.back = ttk.Button(sec.body, text="< back to system",
                                command=lambda: self.show(self.system, self.up))
         # Packed by show, in a body's view: the system view has no way back.
         # One framed box, title, hint and list together, so it is plain which
-        # list the words are about. Packed first, at the bottom, so a short
-        # window takes its room from the POI list above.
-        self.box = box = tk.LabelFrame(side, font=mono(),
-                            fg=ACCENT, bg=BG, bd=2, relief="groove",
-                            padx=6, pady=6)
-        box.pack(side="bottom", anchor="w", fill="x", pady=(8, 0))
+        # list the words are about. Packed under the waypoints, below.
+        self.box = Section(side, "")
+        box = self.box.body
         self.unplaced_hint = tk.Label(box, font=mono(9), fg=DIM, bg=BG,
                                       justify="left", anchor="w")
         self.unplaced_hint.pack(anchor="w", fill="x", pady=(0, 6))
@@ -949,24 +1014,125 @@ class StarMap:
         self.unplaced.bind("<<ListboxSelect>>", self.open_unplaced)
         self.unplaced.bind("<Button-3>", self.unplaced_menu)
 
-        # Every POI of the system, whichever view is open.
+        # The way to the target, the HUD's: only while there is one.
+        self.target_sec = Section(side, "Target")
+        self.target_text = tk.Label(self.target_sec.body, font=mono(9), fg=FG,
+                                    bg=BG, justify="left", anchor="w")
+        self.target_text.pack(anchor="w", fill="x")
+        self.compass = tk.Canvas(self.target_sec.body, width=self.scl.ARROW_PX,
+                                 height=self.scl.ARROW_PX, bg=BG,
+                                 highlightthickness=0)
+        self.compass.pack(pady=(4, 0))
+
+        # SURVEY as on the HUD: its menu, then END and the directions while
+        # one runs. Folded until one starts.
+        self.survey_sec = Section(side, "Survey", opened=False)
+        self.survey_sec.pack(pady=(8, 0))
+        row = tk.Frame(self.survey_sec.body, bg=BG)
+        row.pack(fill="x")
+        # Wide enough for END BUILDING, so the label can swap.
+        self.survey_btn = ttk.Button(row, text="SURVEY", width=14,
+                                     command=self.on_survey)
+        self.survey_btn.pack(side="left")
+        self.cancel_btn = ttk.Button(          # packed while tracing
+            row, text="CANCEL",
+            command=lambda: self.run("cancel", self.scl.cancel_trace))
+        self.survey_menu = tk.Menu(self.frame, tearoff=False, font=mono(),
+                                   bg=PANEL, fg=FG,
+                                   activebackground="#1d4f3a")
+        self.survey_rows = tk.Frame(self.survey_sec.body, bg=BG)
+        self.survey_lbls = [tk.Label(self.survey_rows, font=mono(9), fg=FG,
+                                     bg=BG, justify="left", anchor="w")
+                            for _ in range(3)]
+        for lbl in self.survey_lbls:
+            lbl.pack(anchor="w", fill="x")
+        self.surveying = False
+
+        # ANALYSE as on the HUD; the full report is in the Reports tab.
+        # Folded until one starts.
+        self.analysis_sec = Section(side, "Analysis", opened=False)
+        self.analysis_sec.pack(pady=(8, 0))
+        body = self.analysis_sec.body
+        self.analysis_text = tk.Label(body, font=mono(9), fg=FG, bg=BG,
+                                      justify="left", anchor="w")
+        self.analysis_text.pack(anchor="w", fill="x")
+        row = tk.Frame(body, bg=BG)
+        row.pack(fill="x", pady=(6, 0))
+        self.analyse_btn = ttk.Button(row, text="ANALYSE", width=9,
+                                      command=self.on_analyse)
+        self.analyse_btn.pack(side="left")
+        ttk.Button(row, text="Show report", command=self.show_report).pack(
+            side="left", padx=(6, 0))
+        self.label_row = row = tk.Frame(body, bg=BG)
+        row.pack(fill="x", pady=(6, 0))
+        tk.Label(row, text="label  ", font=mono(9), fg=DIM, bg=BG).pack(
+            side="left")
+        self.label_var = tk.StringVar(value=self.scl.NO_LABEL)
+        pick = ttk.Combobox(row, textvariable=self.label_var, width=18,
+                            state="readonly", values=self.scl.PLACE_LABELS)
+        pick.pack(side="left")
+        pick.bind("<<ComboboxSelected>>", lambda e: self.run(
+            "label", lambda st: self.scl.label_place(st, self.label_var.get())))
+        # Only for a place in space: a station is where the ship is parked.
+        self.station_row = tk.Frame(body, bg=BG)
+        tk.Label(self.station_row, text="station", font=mono(9), fg=DIM,
+                 bg=BG).pack(side="left")
+        self.station_btn = ttk.Menubutton(self.station_row, width=18)
+        self.station_btn.pack(side="left")
+        self.station_menu = tk.Menu(self.station_btn, tearoff=False,
+                                    font=mono(), bg=PANEL, fg=FG,
+                                    activebackground="#1d4f3a",
+                                    postcommand=self.fill_station_menu)
+        self.station_btn["menu"] = self.station_menu
+        # After a run that wrote a result: keep it or put the old one back.
+        self.review_row = tk.Frame(body, bg=BG)
+        ttk.Button(self.review_row, text="KEEP",
+                   command=self.keep_analysis).pack(side="left")
+        ttk.Button(self.review_row, text="DISCARD",
+                   command=lambda: self.run("discard",
+                                            self.scl.discard_analysis)).pack(
+            side="left", padx=(6, 0))
+        self.analysing = False
+
+        # The waypoints of the system you are in (all when none is known),
+        # whichever view is open; SAVE and TARGET as on the HUD.
         self.poi_seen, self.poi_closed = None, set()
-        box = tk.LabelFrame(side, text=" POIs ", font=mono(), fg=ACCENT, bg=BG,
-                            bd=2, relief="groove", padx=6, pady=6)
-        box.pack(anchor="w", fill="both", expand=True, pady=(8, 0))
+        self.targeted = None    # the target the Target section was shown for
+        self.wp_sec = Section(side, "Waypoints", expand=True)
+        self.wp_sec.pack(pady=(8, 0))
+        # Every section stacks from the top, each under the one before.
+        self.box.pack(pady=(8, 0))
+        box = self.wp_sec.body
         tk.Label(box, text="Search", font=mono(), fg=DIM, bg=BG).pack(anchor="w")
         self.poi_search = tk.StringVar()
         tk.Entry(box, textvariable=self.poi_search, font=mono(), bg=PANEL,
                  fg=FG, insertbackground=FG, relief="flat", width=10).pack(
             anchor="w", fill="x", pady=(0, 6))
-        self.poi_search.trace_add("write", lambda *_: self.fill_pois())
-        self.pois = ttk.Treeview(box, show="tree", selectmode="browse")
-        set_column(self.pois, "#0", 330)
+        self.poi_search.trace_add("write", lambda *_: self.fill_waypoints())
+        buttons = tk.Frame(box, bg=BG)
+        buttons.pack(side="bottom", fill="x", pady=(6, 0))
+        ttk.Button(buttons, text="SAVE", width=6, command=self.save_here).pack(
+            side="left")
+        # Wide enough for UNTARGET too, so the label can swap.
+        self.target_btn = ttk.Button(buttons, text="TARGET", width=9,
+                                     command=self.target_picked)
+        self.target_btn.pack(side="left", padx=(4, 0))
+        ttk.Button(buttons, text="EDIT", width=6,
+                   command=lambda: self.on_picked(self.nav.edit_waypoint)).pack(
+            side="left", padx=(4, 0))
+        ttk.Button(buttons, text="DELETE", width=7,
+                   command=lambda: self.on_picked(self.nav.delete_waypoint)).pack(
+            side="left", padx=(4, 0))
+        self.pois = ttk.Treeview(box, show="tree", columns=("dist",),
+                                 selectmode="browse")
+        set_column(self.pois, "#0", 250)
+        set_column(self.pois, "dist", 80, anchor="e")
         scroll = ttk.Scrollbar(box, orient="vertical", command=self.pois.yview)
         self.pois.configure(yscrollcommand=scroll.set)
         scroll.pack(side="right", fill="y")
         self.pois.pack(side="left", fill="both", expand=True)
         self.pois.bind("<Button-3>", self.poi_menu)
+        self.pois.bind("<<TreeviewSelect>>", lambda e: self.label_target_btn())
 
         # Hides the left menu, to give the map the room on a small screen.
         self.side = side
@@ -1042,9 +1208,8 @@ class StarMap:
             self.reset_btn.place_forget()
             self.om_bar.place(relx=1.0, x=-10, y=10, anchor="ne")
             survey.pack(anchor="w", after=self.type_boxes["poi"])
-            self.back.pack(anchor="w", fill="x", pady=(8, 4), before=self.box)
+            self.back.pack(anchor="w", fill="x", pady=(8, 0))
         self.pitch = SYSTEM_PITCH if body is None else math.radians(20)
-        self.fill_pois()
         self.draw()
 
     def view_om(self, lat, lon):
@@ -1146,40 +1311,260 @@ class StarMap:
         if w is not None:
             self.view_om(*starmap.facing((w["x"], w["y"], w["z"])))
 
-    def fill_pois(self):
-        """The list of POIs, for the system and search. Rebuilt only when what
-        it lists changes, so a redraw keeps its selection and scroll. Every
-        group is open during a search; after it, as they were left."""
-        wps, bodies = snapshot(self.state)
+    def fill_waypoints(self):
+        """The Waypoints list, for the system you are in and the search.
+        Rebuilt only when what it lists changes, so a refresh keeps its
+        selection and scroll; otherwise only the distances are rewritten.
+        Every group is open during a search; after it, as they were left."""
+        wps, _ = snapshot(self.state)
         text = self.poi_search.get()
-        rows = starmap.poi_groups(
-            bodies, self.scl.search_waypoints(wps, text), self.system)
-        seen = (bool(text.strip()), rows)
-        if seen == self.poi_seen:
-            return
+        ids = {w["id"] for w in self.scl.search_waypoints(wps, text)}
+        with self.state.lock:
+            system = self.state.system
+        rows = waypoint_tree(self.scl.waypoint_groups(self.state), system,
+                             ids, self.scl.fmt_dist)
+        seen = (bool(text.strip()), system,
+                [(g, [r[:2] for r in members]) for g, members in rows])
         tree = self.pois
+        if seen == self.poi_seen:
+            for _, members in rows:
+                for wid, _, dist in members:
+                    tree.set(f"wp:{wid}", "dist", dist)
+            self.label_target_btn()
+            return
         if self.poi_seen and not self.poi_seen[0]:
             shown = set(tree.get_children())
             self.poi_closed = (self.poi_closed - shown) | {
                 g for g in shown if not tree.item(g, "open")}
         picked = tree.selection()
         tree.delete(*tree.get_children())
-        for group, pois in rows:
+        if not rows:
+            tree.insert("", "end", iid="none", text=(
+                "none found" if seen[0] else f"none in {system} yet"
+                if system else "no waypoints saved yet"))
+        for group, members in rows:
             iid = f"group:{group}"
-            tree.insert("", "end", iid=iid, text=f"{group} ({len(pois)})",
+            tree.insert("", "end", iid=iid, text=f"{group} ({len(members)})",
                         open=seen[0] or iid not in self.poi_closed)
-            for wid, name in pois:
-                tree.insert(iid, "end", iid=f"poi:{wid}", text=name)
+            for wid, name, dist in members:
+                tree.insert(iid, "end", iid=f"wp:{wid}", text=name,
+                            values=(dist,))
         if picked and tree.exists(picked[0]):
             tree.selection_set(picked[0])
             tree.see(picked[0])
         self.poi_seen = seen
+        self.label_target_btn()
+
+    def picked_waypoint(self):
+        """The id of the waypoint selected in the list, or None."""
+        sel = self.pois.selection()
+        return sel[0][3:] if sel and sel[0].startswith("wp:") else None
+
+    def label_target_btn(self):
+        """TARGET, or UNTARGET when the selected waypoint is the target."""
+        with self.state.lock:
+            target = self.state.target
+        on = target is not None and self.picked_waypoint() == target
+        self.target_btn.config(text="UNTARGET" if on else "TARGET")
+
+    def save_here(self):
+        """SAVE: a waypoint where you are, as the HUD's SAVE."""
+        self.scl.on_hotkey(self.state, "save", self.scl.save_waypoint)()
+        self.fill_waypoints()
+
+    def target_picked(self):
+        """TARGET: the selected waypoint becomes the target, or stops being
+        it, as the HUD's TARGET."""
+        wid = self.picked_waypoint()
+        self.scl.on_hotkey(self.state, "target",
+                           lambda st: self.scl.toggle_target(st, wid))()
+        self.fill_target()
+        self.label_target_btn()
+
+    def fill_target(self):
+        """The Target section: shown while there is a target, opened each
+        time a new one is set, with the HUD's directions and turn arrow."""
+        with self.state.lock:
+            target = self.state.target
+        sec = self.target_sec
+        if target is None:
+            sec.frame.pack_forget()
+        else:
+            if not sec.frame.winfo_manager():
+                sec.pack(pady=(8, 0), before=self.survey_sec.frame)
+            if target != self.targeted:
+                sec.fold(True)
+            self.target_text.config(text=self.scl.render_target(self.state))
+            self.scl.compass_arrow(self.compass,
+                                   self.scl.target_turn(self.state))
+        self.targeted = target
+
+    # --- the HUD's functions ----------------------------------------------
+
+    def run(self, key, fn):
+        """A button's action, logged as the HUD logs its own (on_hotkey),
+        then the menu brought up to date."""
+        self.scl.on_hotkey(self.state, key, fn)()
+        self.fill_sections()
+
+    def fill_sections(self):
+        """The sections that follow the game: once a second, and after a
+        button."""
+        self.fill_location()
+        self.fill_target()
+        self.fill_survey()
+        self.fill_analysis()
+
+    def fill_location(self):
+        """The HUD's location readout, in its colour for the fix's health."""
+        scl = self.scl
+        self.location.config(text=scl.render_location(self.state),
+                             fg=scl.STATUS_COLOURS[scl.health(self.state)])
+
+    def on_picked(self, fn):
+        """EDIT or DELETE: fn(id) on the selected waypoint (the Navigator's
+        Edit... and Delete, as everywhere else in the window)."""
+        wid = self.picked_waypoint()
+        if wid is None:
+            with self.state.lock:
+                self.state.flash("select a waypoint first")
+            return
+        fn(wid)
+        self.fill_waypoints()
+
+    def on_survey(self):
+        """SURVEY: its menu; END while one runs, then the name of a
+        building or line just traced."""
+        st, scl = self.state, self.scl
+        if st.trace is not None:
+            ended = st.trace
+            self.run("trace", scl.stop_trace)
+            if scl.to_name(st, ended):
+                self.nav.rename_trace(ended["name"], ended["kind"], None)
+        elif st.survey:
+            self.run("survey", scl.stop_survey)
+        else:
+            scl.fill_menu(self.survey_menu, scl.survey_menu_items(st),
+                          self.run)
+            b = self.survey_btn
+            self.survey_menu.tk_popup(b.winfo_rootx(),
+                                      b.winfo_rooty() + b.winfo_height())
+
+    def fill_survey(self):
+        """The Survey section: END and CANCEL while one runs, the HUD's
+        survey block under them; opened when one starts."""
+        st, scl = self.state, self.scl
+        with st.lock:
+            tracing, surveying = st.trace, st.survey
+        busy = tracing is not None or bool(surveying)
+        self.survey_btn.config(
+            text=scl.end_label(tracing["kind"]) if tracing is not None
+            else "END SURVEY" if surveying else "SURVEY")
+        if (tracing is not None) != bool(self.cancel_btn.winfo_manager()):
+            if tracing is not None:
+                self.cancel_btn.pack(side="left", padx=(6, 0))
+            else:
+                self.cancel_btn.pack_forget()
+        if busy != bool(self.survey_rows.winfo_manager()):
+            if busy:
+                self.survey_rows.pack(fill="x", pady=(6, 0))
+            else:
+                self.survey_rows.pack_forget()
+        if busy and not self.surveying:
+            self.survey_sec.fold(True)
+        self.surveying = busy
+        if busy:
+            *texts, colour = scl.survey_parts(st)
+            for i, (lbl, text) in enumerate(zip(self.survey_lbls, texts)):
+                bold = i == 1 and colour is not None
+                lbl.config(text=text, fg=colour if bold else FG,
+                           font=mono(9, bold))
+
+    def on_analyse(self):
+        """ANALYSE starts a run; STOP ends it and keeps what it has."""
+        scl = self.scl
+
+        def go(st):
+            if st.analysis is None:
+                scl.start_analysis(st)
+            else:
+                scl.finish_analysis(st, "stopped")
+        self.run("analyse", go)
+
+    def keep_analysis(self):
+        """KEEP: the result stays, as it is already written."""
+        with self.state.lock:
+            self.state.replaced = None
+        self.fill_sections()
+
+    def show_report(self):
+        """This place's full report, in the Reports tab."""
+        with self.state.lock:
+            key, rec = self.scl.current_place(self.state)
+            if rec is None:
+                self.state.flash("analyse this place first")
+                return
+        self.nav.body_to_report(key)
+
+    def fill_station_menu(self):
+        """The station picker's choices, rebuilt each time it opens: the
+        list arrives on another thread and depends on where you are."""
+        st, scl, menu = self.state, self.scl, self.station_menu
+        menu.delete(0, "end")
+        with st.lock:
+            names = scl.station_choices(st)
+        if not names:
+            menu.add_command(label="(no station list yet)", state="disabled")
+            return
+        menu.add_command(label=scl.NO_STATION, command=lambda: self.run(
+            "station", lambda s: scl.link_station(s, None)))
+        for name in names:
+            menu.add_command(label=name, command=lambda n=name: self.run(
+                "station", lambda s: scl.link_station(s, n)))
+
+    def fill_analysis(self):
+        """The Analysis section: how a run is going or what this place has,
+        its label and station, KEEP / DISCARD after a run; opened when a
+        run starts or a result waits."""
+        st, scl = self.state, self.scl
+        running = scl.analysis_progress(st)
+        with st.lock:
+            key, rec = scl.current_place(st)
+            review = st.replaced is not None
+            had, rec = rec is not None, dict(rec or {})
+        if running:
+            text = f"{running}\n{scl.ANALYSIS_ADVICE}"
+        elif key is None:
+            text = "no fix - nothing to analyse"
+        else:
+            text = f"{key}: {'analysed' if had else 'not analysed yet'}"
+        self.analysis_text.config(text=text)
+        self.analyse_btn.config(text="STOP" if running else "ANALYSE")
+        self.label_var.set(rec.get("label") or scl.NO_LABEL)
+        space = rec.get("scope") == "space"
+        if space != bool(self.station_row.winfo_manager()):
+            if space:
+                self.station_row.pack(fill="x", pady=(6, 0),
+                                      after=self.label_row)
+            else:
+                self.station_row.pack_forget()
+        self.station_btn.config(
+            text=(rec.get("station") or {}).get("name") or scl.NO_STATION)
+        if review != bool(self.review_row.winfo_manager()):
+            if review:
+                self.review_row.pack(fill="x", pady=(6, 0))
+            else:
+                self.review_row.pack_forget()
+        busy = bool(running) or review
+        if busy and not self.analysing:
+            self.analysis_sec.fold(True)
+        self.analysing = busy
 
     def poi_menu(self, e):
-        """Right-click a POI in the list: select it and give its menu. A
-        group's line has none."""
+        """Right-click a waypoint in the list: select it and give its menu.
+        A group's line has none."""
         row = self.pois.identify_row(e.y)
-        if not row.startswith("poi:"):
+        if not row.startswith("wp:"):
             return
         self.pois.selection_set(row)
         self.menu.delete(0, "end")
@@ -1272,7 +1657,8 @@ class StarMap:
         me = self.where_am_i()
         if self.follow.get():
             self.follow_me(me)
-        self.fill_pois()
+        self.fill_waypoints()
+        self.fill_sections()
         with self.state.lock:
             cells = heightmap.cell_count(self.state.heightmap, self.body)
         # The SUB too: its icon is the pin (2026-11-08, a new SUB showed
@@ -1323,7 +1709,7 @@ class StarMap:
 
     def fill_box(self, title, keys, hint, empty):
         """The side box: what is not on the view, and why."""
-        self.box.config(text=title)
+        self.box.set_title(title)
         self.unplaced.delete(0, "end")
         for key in keys:
             self.unplaced.insert("end", key)
