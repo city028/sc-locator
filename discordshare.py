@@ -226,6 +226,21 @@ def post_file(msg):
     return None
 
 
+def _when(at):
+    """A post's signed time as a number to compare; none sorts first."""
+    if isinstance(at, (int, float)) and not isinstance(at, bool):
+        return float(at)
+    return float("-inf")
+
+
+def _version(entry):
+    """Which of two posts of an item is newer: by the time signed inside
+    it, which only its sharer can set, then by the message. Not by the
+    message alone: anyone can put an old post file up again, and it would
+    be the newest message."""
+    return _when(entry["at"]), _snowflake({"id": entry["message"]})
+
+
 def uid(key, kind, item_id):
     """An item's name across the org."""
     return f"{key}/{kind}/{item_id}"
@@ -252,8 +267,9 @@ def sort_imports(messages, files, *, mine=None, allow=(), block=(),
     Each entry is a dict: message, kind, id, item, at, uid, hash, user,
     name; "problems" on an error, "clashes" on a clash, "ours" (what it
     was imported as) on an update or what we already have. Only the
-    newest post of an item counts; a post that fails its signature cannot
-    hide an older one that does not.
+    newest post of an item counts, by the time signed inside it; a post
+    that fails its signature cannot hide an older one that does not, and
+    one older than what we took in is what we already have.
     """
     imported, skipped = imported or {}, skipped or {}
     checks = checks or {}
@@ -292,7 +308,7 @@ def sort_imports(messages, files, *, mine=None, allow=(), block=(),
             out["error"].append(entry)
             continue
         old = newest.get(entry["uid"])
-        if old is None or _snowflake(msg) > _snowflake({"id": old["message"]}):
+        if old is None or _version(entry) > _version(old):
             newest[entry["uid"]] = entry
 
     for entry in sorted(newest.values(),
@@ -311,7 +327,10 @@ def sort_imports(messages, files, *, mine=None, allow=(), block=(),
             out["error"].append(entry)
             continue
         before = imported.get(entry["uid"])
-        if before and before["hash"] == entry["hash"]:
+        if before and (before["hash"] == entry["hash"]
+                       or _when(entry["at"]) < _when(before.get("posted"))):
+            # The same, or older than the version we took in: an old post
+            # file put up again cannot take us back.
             entry["ours"] = before["ours"]
             out["already"].append(entry)
             continue
@@ -348,7 +367,8 @@ def record_imported(cfg, entry, ours, now):
     """Note in cfg["imported"] that `entry` was taken in as our item
     `ours`; it is no longer skipped."""
     cfg["imported"][entry["uid"]] = {"hash": entry["hash"],
-                                     "ours": str(ours), "at": now}
+                                     "ours": str(ours), "at": now,
+                                     "posted": entry["at"]}
     cfg["skipped"].pop(entry["uid"], None)
 
 
@@ -372,9 +392,27 @@ _ID_RE = re.compile(r"\s*(\d{17,20})(?!\d)")
 
 
 def blank_settings():
-    return {"webhooks": {c: "" for c in CHANNELS}, "token": "", "key": "",
-            "allow": [], "block": [], "posted": {}, "imported": {},
-            "skipped": {}}
+    return {"webhooks": {c: "" for c in CHANNELS}, "link_channel": "",
+            "token": "", "key": "", "allow": [], "block": [], "posted": {},
+            "imported": {}, "skipped": {}}
+
+
+_CHANNEL_LINK_RE = re.compile(
+    r"https://(?:(?:canary|ptb)\.)?discord(?:app)?\.com/channels/"
+    r"\d+/(\d{17,20})/?")
+
+
+def link_channel_id(text):
+    """The channel id in the link channel's box: Discord's channel link
+    (right-click the channel > Copy Link) or the id itself. None if it is
+    neither; "" if the box is empty."""
+    text = text.strip()
+    if not text:
+        return ""
+    if re.fullmatch(r"\d{17,20}", text):
+        return text
+    m = _CHANNEL_LINK_RE.fullmatch(text)
+    return m.group(1) if m else None
 
 
 def load_settings(path):

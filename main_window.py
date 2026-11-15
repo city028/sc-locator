@@ -4554,6 +4554,21 @@ class SettingsTab:
             var = tk.StringVar(value=cfg["webhooks"][name])
             self.webhook_vars[name] = var
             entry(row, var).pack(side="left", fill="x", expand=True)
+        row = tk.Frame(box, bg=BG)
+        row.pack(anchor="w", fill="x", pady=(6, 1))
+        tk.Label(row, text="Links:", font=mono(), fg=FG, bg=BG, width=10,
+                 anchor="w").pack(side="left")
+        self.link_channel_var = tk.StringVar(value=cfg["link_channel"])
+        entry(row, self.link_channel_var).pack(side="left", fill="x",
+                                               expand=True)
+        tk.Label(box, font=mono(9), fg=DIM, bg=BG, justify="left",
+                 wraplength=px(860),
+                 text="Links: the channel where members post their link "
+                      "codes. In Discord, right-click the channel > Copy "
+                      "Link (a webhook URL of that channel works too, but "
+                      "it needs none). With it, the four share channels "
+                      "can be closed to members' own messages."
+                 ).pack(anchor="w", pady=(4, 0))
 
         box = section("Read token", "The token of a bot that only reads, "
                       "for Import: View Channel and Read Message History on "
@@ -4565,9 +4580,9 @@ class SettingsTab:
         entry(box, self.token_var, show="\u2022").pack(anchor="w", fill="x")
 
         box = section("Your account", "Link account makes your link code "
-                      "and copies it. Post it as a message in one of the "
-                      "share channels, from your own Discord account, and "
-                      "keep that message: what you share is taken in as "
+                      "and copies it. Post it as a message in the link "
+                      "channel (Links, above), from your own Discord "
+                      "account, and keep that message: what you share is taken in as "
                       "yours because it is signed with the key that code "
                       "belongs to. Deleting it unlinks you.")
         row = tk.Frame(box, bg=BG)
@@ -4670,6 +4685,7 @@ class SettingsTab:
                 cfg["webhooks"] = {n: v.get().strip()
                                    for n, v in self.webhook_vars.items()}
                 cfg["token"] = self.token_var.get().strip()
+                cfg["link_channel"] = self.link_channel_var.get().strip()
                 for key, (box, _note) in self.id_boxes.items():
                     cfg[key] = [ln.rstrip() for ln in
                                 box.get("1.0", "end-1c").splitlines()
@@ -4701,10 +4717,10 @@ class SettingsTab:
         self.frame.clipboard_clear()
         self.frame.clipboard_append(code)
         show_message("Link account", f"Your link code is copied:\n\n{code}"
-                     "\n\nPaste it as a message in one of the share "
-                     "channels, from your own Discord account, and keep "
-                     "that message. Test connection then shows whether it "
-                     "is found.", parent)
+                     "\n\nPaste it as a message in the link channel, from "
+                     "your own Discord account, and keep that message. "
+                     "Test connection then shows whether it is found.",
+                     parent)
 
     def test_discord(self):
         """Save, then try each webhook, the token and the channels on a

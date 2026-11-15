@@ -105,6 +105,27 @@ def messages(channel_id, token, most=None, opener=urllib.request.urlopen):
     return out
 
 
+NOT_A_CHANNEL = ("Link channel: not a channel link (right-click the channel "
+                 "> Copy Link)")
+
+
+def link_channel(cfg, opener=urllib.request.urlopen):
+    """(channel id, problem) for the Links box: "" for an empty box, None
+    with a problem when it cannot be used. Besides the channel's link or
+    id it takes a webhook URL, as the boxes above it do: the webhook says
+    which channel it is in."""
+    text = cfg.get("link_channel", "").strip()
+    found = discordshare.link_channel_id(text)
+    if found is not None:
+        return found, None
+    if webhook_parts(text):
+        try:
+            return get_webhook(text, opener)["channel_id"], None
+        except DiscordError as exc:
+            return None, f"Link channel: the webhook there is {_problem(exc)}"
+    return None, NOT_A_CHANNEL
+
+
 def _problem(exc):
     """What a failed call means, in words."""
     if exc.status == 401:
@@ -153,20 +174,30 @@ def test_connection(cfg, opener=urllib.request.urlopen):
                      "Developer Portal (Bot > Privileged Gateway Intents), "
                      "or every post comes back empty.")
 
-    read = []
-    for name in discordshare.CHANNELS:
-        if name not in hooks:
-            continue
-        channel = hooks[name].get("channel_id")
-        label = f"  {name.capitalize()} channel:"
+    to_read = [(f"{name.capitalize()} channel", hooks[name].get("channel_id"))
+               for name in discordshare.CHANNELS if name in hooks]
+    link, link_problem = link_channel(cfg, opener)
+    if link:
+        to_read.append(("Link channel", link))
+    read, guilds = [], {h.get("guild_id") for h in hooks.values()}
+    for label, channel in to_read:
         try:
             info = request(f"/channels/{channel}", token, opener)
             got = messages(channel, token, TEST_READ, opener)
         except DiscordError as exc:
-            lines.append(f"{label} {_problem(exc)}")
+            lines.append(f"  {label}: {_problem(exc)}")
             continue
-        lines.append(f"{label} #{info.get('name')} can be read")
+        lines.append(f"  {label}: #{info.get('name')} can be read")
+        if label == "Link channel" and guilds and \
+                info.get("guild_id") not in guilds:
+            lines.append("  The link channel is not in the webhooks' "
+                         "server.")
         read += [(info.get("name"), m) for m in got]
+    if link is None:
+        lines.append(f"  {link_problem}.")
+    elif not link:
+        lines.append("  Link channel: none, so link codes are looked for "
+                     "in the four share channels.")
 
     lines.append("")
     if not cfg.get("key"):
@@ -183,7 +214,7 @@ def test_connection(cfg, opener=urllib.request.urlopen):
     else:
         lines.append(f"Your account: your link code is not in the last "
                      f"{TEST_READ} messages of the channels read. Post it "
-                     "in one of them from your own Discord account.")
+                     "in the link channel from your own Discord account.")
     return lines
 
 
@@ -319,7 +350,9 @@ def read_channels(cfg, progress=None, opener=urllib.request.urlopen):
     discordshare.sort_imports.
 
     Each webhook says which channel it posts in; all of each channel is
-    read with the token. The post files are downloaded a few at a time,
+    read with the token, and the link channel too, where members post
+    their link codes (codes in the share channels count as well). The
+    post files are downloaded a few at a time,
     except our own latest posts, which Import leaves out anyway. A file
     that cannot be downloaded is left out of `files`, so its post shows as
     an error. `problems` are lines saying what could not be read; with no
@@ -340,6 +373,11 @@ def read_channels(cfg, progress=None, opener=urllib.request.urlopen):
             if exc.status is None:
                 return [], {}, [str(exc)]
             problems.append(f"{name.capitalize()}: {_problem(exc)}")
+    link, link_problem = link_channel(cfg, opener)
+    if link:
+        channels.setdefault(link, "links")
+    elif link is None:
+        problems.append(link_problem)
     msgs = []
     for channel, name in channels.items():
         if progress:

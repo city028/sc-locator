@@ -2492,6 +2492,34 @@ channels' posts by group (sort_imports), to take in or skip.
   webhooks, the read-only bot, keeping its role to the four channels,
   what to hand out, what to do when something leaks, and what each Test
   connection line means.
+- **Newest by the signed time, not the message** (2026-11-15): anyone
+  can upload an old post file again, and as the newest message it would
+  have rolled items back. `sort_imports` now orders an item's posts by
+  the `at` inside the signed payload, then the message id; and a post
+  older than the version we took in (`posted`, kept in the imported
+  history from now on) counts as already had, so deleting the newer post
+  does not bring the old one back either. Imports noted before this have
+  no `posted`, so for them only the first rule holds.
+- **A fifth, link channel** (2026-11-15): members post their codes in
+  it, so the four share channels can be closed to members' messages
+  (webhooks ignore channel permissions). It has no webhook: Settings >
+  Discord > Links takes its channel link (or id). Read on Import and by
+  Test connection with the others; codes in the share channels still
+  count. Pasted text and other files in the channels were always passed
+  over; they only cost Import time, as every message is read.
+  First try: a webhook URL went into Links, like the four boxes above it,
+  and the channel was skipped as "not a channel link". Links now takes a
+  webhook URL too (`discordapi.link_channel` asks which channel it is in).
+  Then tried on the test server with the channel's link: Test connection
+  passed, code found in #scl-links.
+- **The sample data is marked** (2026-11-15). Everyone who restored the
+  release's sample zip had the same items as their own, and Share all
+  would have filled an org's channels with copies under each name.
+  `make_sample_data.py` now builds it: every item but a height map gets
+  `from: {"name": "SC Locator sample data"}`, so it cannot be shared on;
+  private items and items from someone else stay out; no settings, no
+  survey being resumed, no bak/. Height maps unmarked, as on import.
+  Checked by restoring a built zip in the tests' sandbox.
 - **Replace hands the item over**: a survey of ours replaced by a shared
   one is then theirs (`from`), so no longer ours to share, even when the
   two were the same (railway-001 in the test).

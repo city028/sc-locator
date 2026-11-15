@@ -102,6 +102,12 @@ Your Discord settings (`discord.json`) are never in it, as they hold
 secrets: a restore leaves them as they are, and on a new PC you set them
 again.
 
+**Sample data.** Each release also attaches `sc-locator-sample-data.zip`:
+waypoints, reports, height maps, surveys and maps to start from. Restore
+it with **Restore everything** on a new install (it replaces all your
+data). Its items are marked as sample data, so they cannot be shared to
+Discord; your own surveying added to its height maps can be.
+
 **Wiping everything.** **Settings > Backup > Wipe all data** deletes all your
 data, including the automatic backups and the Discord settings, after
 asking twice, and restarts SC
@@ -570,13 +576,15 @@ then give you the webhook URLs and the read token.
 
 - **Channels**: a webhook URL for each of the org's four share channels
   (Waypoints, Surveys, Reports, Maps), from the channel's settings >
-  Integrations > Webhooks > Copy Webhook URL.
+  Integrations > Webhooks > Copy Webhook URL; and in **Links**, the link
+  to the channel where members post their link codes (right-click it >
+  Copy Link).
 - **Read token**: the token of a bot that can only read the share channels
   (View Channel, Read Message History, and Message Content intent on). It
   does not need to be running.
 - **Link account**: makes your link code and copies it. Post it from your
-  own Discord account in one of the share channels and keep that message;
-  it is how others know what you share is yours.
+  own Discord account in the link channel and keep that message; it is
+  how others know what you share is yours.
 - **Allow list** and **Blacklist**: Discord user ids, one to a line, a name
   after the id if you like. An empty allow list lets everyone linked in;
   the blacklist wins.
@@ -600,7 +608,10 @@ then give you the webhook URLs and the read token.
     place you have a report for can only be replaced.
   - An update goes in place of the one it came in as, keeping your
     Private mark. Something skipped is not offered again until its sharer
-    changes it.
+    changes it. Which version is newest goes by the time its sharer
+    posted it, so an old post put up again cannot take you back.
+  - Only posts made by **Publish new** come in. Text or files pasted into
+    the channels by hand are passed over.
   - A shared height map is merged into yours: the cells you have not
     measured are added, and yours are kept where both have one.
   - What comes in says who shared it and cannot be shared on: Share to
