@@ -84,6 +84,12 @@ DISCORD_FILE = HERE / "discord.json"
 DISCORD_ID_FILE = HERE / "discord-id.json"
 BACKUP_DIR = HERE / "bak"
 LOG_FILE = HERE / "session.log"          # Settings > Other > Diagnostic log
+# The main window's background pictures: your own in BACKGROUND_DIR, the
+# packed default in the bundle's (the same folder when run from source).
+BACKGROUND_DIR = HERE / "backgrounds"
+BACKGROUND_DIRS = tuple(dict.fromkeys((BACKGROUND_DIR,
+                                       BUNDLE / "backgrounds")))
+DEFAULT_BACKGROUND = "starfield-3840x2160.png"
 BACKUP_KEEP = 30                         # versions of each file kept in bak/
 # How often a running survey is written out. Each write also keeps a backup,
 # so thirty of them cover the last hour.
@@ -127,6 +133,9 @@ DEFAULT_CONFIG = {
     # The main window's menu / collapse button: collapsed shows only the
     # open tab's map or list, without the tabs and side panels.
     "menu_collapsed": False,
+    # Settings > Other > Background: a picture's file name in
+    # BACKGROUND_DIRS, or "(none)" for the plain colour.
+    "background": "starfield-3840x2160.png",
     # The first-start screen that finds the HUD text (first_setup) has been
     # done or skipped. A new config file starts at False; one from before
     # that screen existed has no key and counts as done.

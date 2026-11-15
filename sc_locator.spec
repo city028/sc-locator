@@ -15,6 +15,8 @@ datas = [
     (os.path.join(TESS, "tessdata", "eng.traineddata"), "tesseract/tessdata"),
     (os.path.join(TESS, "doc", "LICENSE"), "tesseract"),
     ("icon.ico", "."),          # the windows' icon (make_icon.py draws it)
+    # The main window's default background picture.
+    ("backgrounds/starfield-3840x2160.png", "backgrounds"),
 ]
 
 a = Analysis(["sc_locator.py"], datas=datas)

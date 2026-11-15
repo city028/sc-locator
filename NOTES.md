@@ -2670,15 +2670,66 @@ main window has every HUD function, for a second screen without the HUD.
 
 ## Starfield background image (2026-11-15)
 
-- `assets/starfield-3840x2160.png` is a 4K (16:9) deep-space background for
-  the app; `assets/starfield-grok-2816x1584.png` is the original it was made
-  from. Neither is used by the code yet.
+- `backgrounds/starfield-3840x2160.png` is the main window's default
+  background (see the next section); `assets/starfield-grok-2816x1584.png`
+  is the original it was made from.
 - The original came from Higgsfield's Grok Imagine 2.0 (request
   `01a1dee0-e73d-7813-b5e8-5af80da3ce03`, about $0.08), generated through a
   separate Higgsfield Studio app in `D:\projects\higgsfield-studio`.
   Higgsfield's image models stop at 2K, so the 4K file is the original
   enlarged with Lanczos, plus 3,000 sharp coloured stars added by a script
   (fixed seed 7, screen blend).
+
+## One picture behind the main window (2026-11-15)
+
+Tk widgets cannot be see-through, so the picture is not drawn in the window
+at all:
+
+- The main window's background colour (`BG`, `#05080c`) is made
+  see-through (`-transparentcolor`, a Windows colour key), and a borderless
+  window holding the picture sits straight behind it (`Wallpaper`). Tables,
+  input boxes and buttons stay solid; anything in `BG` shows the picture.
+  There is no half see-through: a widget is solid or clear. Only canvases
+  can lay a half see-through box over the picture (the star map's text
+  boxes, the pills' insides). Real see-through menus everywhere would mean
+  another toolkit (Qt), not considered for now.
+- Windows lets clicks through the see-through pixels, to the picture window
+  behind. So a canvas dragged on its empty space (the star map) draws its
+  own crop of the same picture first (`Wallpaper.under`), and the pills do
+  too. Nothing may be drawn in exactly `BG` where clicks matter: toned
+  pictures have their `BG` pixels nudged by one step (`tone_down`), and the
+  dark text and slash edge on pills use `PILL_DARK`.
+- The picture window is placed behind with `SetWindowPos(pic, win)`, never
+  with a Tk `lift`: lifting fires `<Configure>` again and looped (the first
+  try hung white). Its geometry must be applied (`update_idletasks`) before
+  that stacking call, or it stays at the screen's top left.
+- `win.bind("<Configure>", ...)` replaces earlier bindings: the font refit
+  one, bound later, silently dropped the picture's, so the picture stayed
+  put when the window moved. Bind with `add="+"`.
+- Every picture is toned to 40 % brightness and half its colour when
+  loaded (picked from four options shown in the app); it competed with the
+  map at full strength.
+
+Two Windows faults found on the way, both handled in `main_window.py`:
+
+- **A colour-keyed window's title bar stops taking clicks** after it has
+  been maximised or snapped (Win+arrow, or dragged against an edge) and
+  back: clicks fall through to the desktop, so the window can neither be
+  dragged nor brought forward. Styles, rectangles and regions are
+  unchanged; redrawing the frame, `FRAMECHANGED`, a resize, or switching
+  the colour key off and on do not help. Taking the frame off for an
+  instant (`WS_POPUP`) and putting it back does: `Wallpaper.refit_frame`,
+  300 ms after a resize settles, once the mouse button is up.
+- **Tk's `-fullscreen` always fills the main monitor** (Tk 8.6.15), even
+  from a window on the second one, and leaves the window topmost (above
+  every program, covering the typing box of whatever was in front). Full
+  screen is done with Win32 instead (`FullScreen`): frame off, sized to the
+  window's own monitor, put back as it was. `Wallpaper.stack` also clears
+  topmost from both windows, whatever set it.
+
+The program is DPI aware at run time (the main window is laid out in real
+pixels), so tests of these windows have to be too
+(`SetProcessDpiAwareness(2)`), or they see Windows' scaled coordinates.
 
 ## Still open
 

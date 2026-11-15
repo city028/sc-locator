@@ -9,6 +9,7 @@ The handlers here stay thin: the edits are sc_locator's helpers, the map
 geometry is starmap's.
 """
 import ctypes
+import ctypes.wintypes
 import json
 import math
 import os
@@ -22,7 +23,7 @@ import webbrowser
 from tkinter import filedialog, ttk
 
 import numpy as np
-from PIL import Image, ImageColor, ImageDraw, ImageTk
+from PIL import Image, ImageColor, ImageDraw, ImageEnhance, ImageTk
 
 import databackup
 import discordapi
@@ -319,6 +320,406 @@ def moved_on(held, here):
                                   and here[1] != held[1])
 
 
+PICTURE_TYPES = (".png", ".jpg", ".jpeg", ".bmp", ".webp")
+NO_PICTURE = "(none)"
+
+
+def background_names(dirs):
+    """The pictures in `dirs` (missing ones skipped), each name once, sorted."""
+    names = {p.name for d in dirs if d.is_dir() for p in d.iterdir()
+             if p.suffix.lower() in PICTURE_TYPES and p.is_file()}
+    return sorted(names, key=str.lower)
+
+
+def background_file(name, dirs, default):
+    """The picture `name` from the first of `dirs` that has it, else the
+    default; None for NO_PICTURE or when neither is found (plain colour)."""
+    if name == NO_PICTURE:
+        return None
+    for n in (name, default):
+        for d in dirs:
+            if n and (d / n).is_file():
+                return d / n
+    return None
+
+
+def cover_box(size, w, h):
+    """A picture of `size` scaled to fill w x h without stretching: the
+    scaled size, and the centred w x h box to crop from it."""
+    s = max(w / size[0], h / size[1])
+    sw, sh = max(w, round(size[0] * s)), max(h, round(size[1] * s))
+    x, y = (sw - w) // 2, (sh - h) // 2
+    return (sw, sh), (x, y, x + w, y + h)
+
+
+# Every background picture is toned down, so it does not compete with the
+# maps: this much of its brightness and of its colour is kept.
+BACKGROUND_BRIGHTNESS, BACKGROUND_COLOUR = 0.40, 0.5
+
+
+def tone_down(img):
+    """`img` (RGB) dimmed and greyed by the amounts above. A pixel landing on
+    BG exactly is nudged off it: BG is the see-through colour, and on the
+    star map a drag starting there would fall through the window."""
+    img = ImageEnhance.Color(img).enhance(BACKGROUND_COLOUR)
+    a = np.array(ImageEnhance.Brightness(img).enhance(BACKGROUND_BRIGHTNESS))
+    a[(a == ImageColor.getrgb(BG)).all(axis=2), 2] += 1
+    return Image.fromarray(a)
+
+
+class Wallpaper:
+    """The picture behind the whole main window.
+
+    Tk widgets cannot be see-through, so the window's BG colour is made
+    see-through (Windows colour key) and a borderless window holding the
+    picture sits straight behind it. Windows also lets clicks through those
+    pixels, so a canvas that is dragged on its empty space (the star map)
+    draws its own crop of the same picture first: under()."""
+
+    def __init__(self, win):
+        self.win = win
+        self.src = self.scaled = self.photo = None
+        self.geo = self.pending = None
+        self.framed = self.refit = None     # see refit_frame
+        self.crops = {}             # canvas -> (crop key, its PhotoImage)
+        self.redraw = []            # called when the picture changes
+        self.pic = tk.Toplevel(win)
+        self.pic.withdraw()
+        self.pic.overrideredirect(True)
+        self.label = tk.Label(self.pic, bd=0, bg=BG)
+        self.label.pack(fill="both", expand=True)
+        # A click on a see-through spot lands here: the window comes back.
+        self.label.bind("<Button-1>", lambda e: (
+            win.lift(), win.focus_force(), self.stack()))
+        win.bind("<Configure>", lambda e: e.widget is win and self.place(),
+                 add="+")
+        win.bind("<FocusIn>", lambda e: self.stack(), add="+")
+        win.bind("<Unmap>", lambda e: e.widget is win and self.pic.withdraw(),
+                 add="+")
+        win.bind("<Map>", lambda e: e.widget is win and self.shown(), add="+")
+
+    def show(self, path):
+        """Use the picture at `path`; None (or one that will not open): the
+        plain colour."""
+        try:
+            self.src = (tone_down(Image.open(path).convert("RGB")) if path
+                        else None)
+        except OSError:
+            self.src = None
+        self.scaled = self.photo = self.geo = None
+        self.crops.clear()
+        self.win.attributes("-transparentcolor", BG if self.src else "")
+        if self.src is None:
+            self.pic.withdraw()
+            self.label.config(image="")
+            self.changed()
+        else:
+            self.shown()
+
+    def shown(self):
+        if self.src is not None:
+            self.pic.deiconify()
+            self.geo = None
+            self.win.after(30, self.place)
+
+    def place(self):
+        """The picture window exactly over the main window's inside."""
+        win = self.win
+        if self.src is None or not win.winfo_ismapped():
+            return
+        w, h = win.winfo_width(), win.winfo_height()
+        geo = f"{w}x{h}+{win.winfo_rootx()}+{win.winfo_rooty()}"
+        if geo != self.geo:
+            self.geo = geo
+            self.pic.geometry(geo)
+            # Moved now: a stacking call first would leave it where it was.
+            self.pic.update_idletasks()
+            self.stack()
+        if self.scaled is None or self.scaled.size != (w, h):
+            if self.pending:            # rescaled once a resize settles
+                win.after_cancel(self.pending)
+            self.pending = win.after(150, self.rescale)
+        if self.framed is None:
+            self.framed = (w, h)
+        elif (w, h) != self.framed:
+            if self.refit:
+                win.after_cancel(self.refit)
+            self.refit = win.after(300, self.refit_frame)
+
+    def refit_frame(self):
+        """Windows stops a see-through (layered) window's title bar taking
+        clicks once it has been maximised or snapped and back: they fall
+        through to what is behind, so it can neither be dragged nor brought
+        forward (2026-11-15). Taking the frame off for an instant and putting
+        it back repairs that; done once a resize has settled."""
+        self.refit = None
+        win = self.win
+        if self.src is None or os.name != "nt":
+            return
+        u = ctypes.windll.user32
+        if u.GetAsyncKeyState(0x01) & 0x8000:      # an edge still held
+            self.refit = win.after(300, self.refit_frame)
+            return
+        size = (win.winfo_width(), win.winfo_height())
+        if size == self.framed:     # back to where it was repaired
+            return
+        self.framed = size
+        u.GetWindowLongW.argtypes = [ctypes.c_void_p, ctypes.c_int]
+        u.SetWindowLongW.argtypes = [ctypes.c_void_p, ctypes.c_int,
+                                     ctypes.c_long]
+        u.SetWindowPos.argtypes = [ctypes.c_void_p, ctypes.c_void_p] + [
+            ctypes.c_int] * 4 + [ctypes.c_uint]
+        hwnd = int(win.wm_frame(), 16)
+        style = u.GetWindowLongW(hwnd, -16)        # GWL_STYLE
+        # WS_POPUP without caption, borders or buttons; then as it was.
+        for s in ((style & ~0x00CF0000) | 0x80000000, style):
+            u.SetWindowLongW(hwnd, -16, s)
+            # NOSIZE NOMOVE NOZORDER NOACTIVATE FRAMECHANGED
+            u.SetWindowPos(hwnd, None, 0, 0, 0, 0, 0x0037)
+
+    def stack(self):
+        """The picture straight behind the window, neither moved nor
+        activated (a lift would fire <Configure> again, and again)."""
+        if self.src is None or os.name != "nt":
+            return
+        u = ctypes.windll.user32
+        u.SetWindowPos.argtypes = [ctypes.c_void_p, ctypes.c_void_p] + [
+            ctypes.c_int] * 4 + [ctypes.c_uint]
+        u.GetWindowLongW.argtypes = [ctypes.c_void_p, ctypes.c_int]
+        win, pic = (int(t.wm_frame(), 16) for t in (self.win, self.pic))
+        # Neither stays on top of other programs. Placed behind an on-top
+        # window, the picture turns on-top too, and the pair then covered
+        # everything (2026-11-15, set by something outside the program).
+        for hwnd in (win, pic):
+            if u.GetWindowLongW(hwnd, -20) & 0x8:       # WS_EX_TOPMOST
+                u.SetWindowPos(hwnd, -2, 0, 0, 0, 0,    # HWND_NOTOPMOST
+                               0x0001 | 0x0002 | 0x0010)
+        u.SetWindowPos(pic, win, 0, 0, 0, 0,
+                       0x0001 | 0x0002 | 0x0010)  # NOSIZE NOMOVE NOACTIVATE
+
+    def rescale(self):
+        self.pending = None
+        w, h = self.win.winfo_width(), self.win.winfo_height()
+        if self.src is None or w < 2 or h < 2:
+            return
+        size, box = cover_box(self.src.size, w, h)
+        self.scaled = self.src.resize(size, Image.LANCZOS,
+                                      reducing_gap=3.0).crop(box)
+        self.photo = ImageTk.PhotoImage(self.scaled)
+        self.label.config(image=self.photo)
+        self.changed()
+
+    def changed(self):
+        self.crops.clear()
+        for redraw in self.redraw:
+            redraw()
+
+    def under(self, canvas):
+        """Draw the piece of the picture behind `canvas` as its lowest item;
+        nothing while there is no picture."""
+        if self.scaled is None:
+            return
+        x = canvas.winfo_rootx() - self.win.winfo_rootx()
+        y = canvas.winfo_rooty() - self.win.winfo_rooty()
+        key = (x, y, canvas.winfo_width(), canvas.winfo_height())
+        if self.crops.get(canvas, (None,))[0] != key:
+            self.crops[canvas] = (key, ImageTk.PhotoImage(self.scaled.crop(
+                (x, y, x + key[2], y + key[3]))))
+        canvas.tag_lower(canvas.create_image(
+            0, 0, image=self.crops[canvas][1], anchor="nw"))
+
+
+class FullScreen:
+    """Full screen on the monitor the window is on: its frame taken off and
+    the window sized to that monitor; put back as it was on leaving. Not
+    Tk's -fullscreen, which always fills the main monitor (Tk 8.6.15) and
+    leaves the window on top of every other program."""
+
+    def __init__(self, win):
+        self.win, self.on, self.saved = win, False, None
+
+    def set(self, on):
+        if on == self.on:
+            return
+        self.on = on
+        if os.name != "nt":
+            self.win.attributes("-fullscreen", on)
+            return
+        u = ctypes.windll.user32
+        u.GetWindowLongW.argtypes = [ctypes.c_void_p, ctypes.c_int]
+        u.SetWindowLongW.argtypes = [ctypes.c_void_p, ctypes.c_int,
+                                     ctypes.c_long]
+        u.SetWindowPos.argtypes = [ctypes.c_void_p, ctypes.c_void_p] + [
+            ctypes.c_int] * 4 + [ctypes.c_uint]
+        u.MonitorFromWindow.restype = ctypes.c_void_p
+        u.MonitorFromWindow.argtypes = [ctypes.c_void_p, ctypes.c_uint]
+        hwnd = int(self.win.wm_frame(), 16)
+        if on:
+            r = ctypes.wintypes.RECT()
+            u.GetWindowRect(hwnd, ctypes.byref(r))
+            style = u.GetWindowLongW(hwnd, -16)        # GWL_STYLE
+            self.saved = style, (r.left, r.top, r.right - r.left,
+                                 r.bottom - r.top)
+            info = MonitorInfo()
+            info.cbSize = ctypes.sizeof(MonitorInfo)
+            u.GetMonitorInfoW(ctypes.c_void_p(u.MonitorFromWindow(hwnd, 2)),
+                              ctypes.byref(info))      # MONITOR_DEFAULTTONEAREST
+            m = info.rcMonitor
+            # WS_POPUP: no caption, borders or buttons.
+            style = (style & ~0x00CF0000) | 0x80000000
+            box = (m.left, m.top, m.right - m.left, m.bottom - m.top)
+        else:
+            style, box = self.saved
+        u.SetWindowLongW(hwnd, -16, style)
+        u.SetWindowPos(hwnd, None, *box, 0x0024)      # NOZORDER FRAMECHANGED
+
+
+class MonitorInfo(ctypes.Structure):
+    """Win32 MONITORINFO: a monitor's whole area and its work area."""
+    _fields_ = [("cbSize", ctypes.c_ulong), ("rcMonitor", ctypes.wintypes.RECT),
+                ("rcWork", ctypes.wintypes.RECT), ("dwFlags", ctypes.c_ulong)]
+
+
+# The top bar's pills: light-blue outline and text, filled while on.
+PILL_LINE, PILL_TEXT, PILL_HOVER = "#7CC8FF", "#A0DAFF", "#C8EBFF"
+PILL_DARK = "#0A1420"   # text on a filled pill: not BG, which is see-through
+
+
+def pill_image(w, h, on, hover, scale=3):
+    """A w x h RGBA pill (round ends): outlined, filled while `on`, a dark
+    see-through inside otherwise. Drawn `scale` times as big and shrunk, so
+    its edges are smooth."""
+    line = ImageColor.getrgb(PILL_HOVER if hover else PILL_LINE) + (255,)
+    big = Image.new("RGBA", (w * scale, h * scale), (0, 0, 0, 0))
+    box = (scale, scale, (w - 1) * scale - 1, (h - 1) * scale - 1)
+    ImageDraw.Draw(big).rounded_rectangle(
+        box, (box[3] - box[1]) // 2, fill=line if on else (5, 8, 12, 110),
+        outline=line, width=2 * scale)
+    return big.resize((w, h), Image.LANCZOS)
+
+
+def slash_image(w, h, colour, scale=3):
+    """A w x h RGBA slash from bottom left to top right, in `colour` with a
+    dark edge either side, to lay over an icon: "this, closed". Drawn
+    `scale` times as big and shrunk, so it is smooth."""
+    big = Image.new("RGBA", (w * scale, h * scale), (0, 0, 0, 0))
+    d = ImageDraw.Draw(big)
+    k = round(h * 0.27) * scale            # half its length along each axis
+    cx, cy = w * scale // 2, h * scale // 2
+    ends = (cx - k, cy + k, cx + k, cy - k)
+    # The edge in PILL_DARK, not BG: BG pixels are see-through.
+    d.line(ends, fill=ImageColor.getrgb(PILL_DARK) + (255,), width=5 * scale)
+    d.line(ends, fill=ImageColor.getrgb(colour) + (255,), width=2 * scale)
+    return big.resize((w, h), Image.LANCZOS)
+
+
+def icon(code, fallback):
+    """A glyph of Windows' icon font (Segoe Fluent Icons on Windows 11,
+    Segoe MDL2 Assets on 10: the same codes) and that font; `fallback` in
+    the window's own font where neither is installed."""
+    families = set(tkfont.families())
+    for family in ("Segoe Fluent Icons", "Segoe MDL2 Assets"):
+        if family in families:
+            return code, _font(family, 10)
+    return fallback, ui_font()
+
+
+class Pill:
+    """A pill-shaped button. A canvas, as Tk's buttons are rectangles: its
+    piece of the window's picture first (Wallpaper.under), then the pill.
+    Pills given the same `fits` are all as wide as the widest of those
+    labels; a `circle` one is a circle as high as they are, for an icon
+    (`font`). A `hint` shows by the pointer while it is over the pill;
+    `on_hover(True / False)` is called as the pointer comes and goes.
+    With `slash` set, a slash is drawn over its text or icon. Hidden, it
+    keeps its place, so the pills after it do not move."""
+
+    def __init__(self, parent, text, command, wallpaper, fits=(), font=None,
+                 circle=False, hint=None, on_hover=None):
+        self.text, self.fits, self.wallpaper = text, fits, wallpaper
+        self.font, self.circle, self.hint = font, circle, hint
+        self.on_hover = on_hover
+        self.on = self.hover = self.hidden = self.slash = False
+        self.image = self.slash_photo = None    # Tk drops what nothing holds
+        self.tip = self.tip_after = None
+        self.canvas = c = tk.Canvas(parent, bg=BG, highlightthickness=0,
+                                    width=1, height=1, cursor="hand2")
+        c.bind("<Button-1>", lambda e: self.hidden or (self.unhint(),
+                                                       command()))
+        c.bind("<Enter>", lambda e: self.set(hover=True))
+        c.bind("<Leave>", lambda e: self.set(hover=False))
+        c.bind("<Configure>", lambda e: self.draw())
+        # Shown again (menu after collapse): its place may have moved.
+        c.bind("<Map>", lambda e: self.draw())
+        wallpaper.redraw.append(self.draw)
+        self.fit()
+
+    def set(self, text=None, on=None, hover=None, hidden=None, slash=None):
+        if text is not None:
+            self.text = text
+        if slash is not None:
+            self.slash = slash
+        if on is not None:
+            self.on = on
+        if hidden is not None:
+            self.hidden = hidden
+            self.canvas.config(cursor="" if hidden else "hand2")
+        if hover is not None:
+            self.hover = hover
+            if hover and self.hint and not self.hidden:
+                self.tip_after = self.canvas.after(500, self.show_hint)
+            else:
+                self.unhint()
+            if self.on_hover:
+                self.on_hover(hover and not self.hidden)
+        self.draw()
+
+    def show_hint(self):
+        self.tip_after = None
+        self.tip = tk.Toplevel(self.canvas)
+        self.tip.overrideredirect(True)
+        tk.Label(self.tip, text=self.hint, font=ui_font(), bg=PANEL,
+                 fg=PILL_TEXT, padx=6, pady=2, highlightthickness=1,
+                 highlightbackground=PILL_LINE).pack()
+        place_near(self.tip)
+
+    def unhint(self):
+        if self.tip_after:
+            self.canvas.after_cancel(self.tip_after)
+            self.tip_after = None
+        if self.tip:
+            self.tip.destroy()
+            self.tip = None
+
+    def fit(self):
+        """Sized for the font in use: it follows the Windows scale."""
+        f = ui_font()
+        h = f.metrics("linespace") + px(12)
+        size = ((h if self.circle else
+                 max(f.measure(t) for t in self.fits) + px(36)), h)
+        if size != (int(self.canvas["width"]), int(self.canvas["height"])):
+            self.canvas.config(width=size[0], height=size[1])
+
+    def draw(self):
+        c = self.canvas
+        w, h = c.winfo_width(), c.winfo_height()
+        if w < 8 or h < 8:
+            return
+        c.delete("all")
+        self.wallpaper.under(c)
+        if self.hidden:
+            return
+        self.image = ImageTk.PhotoImage(pill_image(w, h, self.on, self.hover))
+        c.create_image(0, 0, image=self.image, anchor="nw")
+        colour = (PILL_DARK if self.on
+                  else PILL_HOVER if self.hover else PILL_TEXT)
+        c.create_text(w / 2, h / 2, text=self.text,
+                      font=self.font or ui_font(), fill=colour)
+        if self.slash:
+            self.slash_photo = ImageTk.PhotoImage(slash_image(w, h, colour))
+            c.create_image(0, 0, image=self.slash_photo, anchor="nw")
+
+
 def open_main(root, state, scl, set_hud):
     win = tk.Toplevel(root)
     win.title("SC Locator")
@@ -335,7 +736,10 @@ def open_main(root, state, scl, set_hud):
     # Drop-down text and its list are widget options, not style ones.
     win.option_add("*TCombobox.font", ui_font())
     win.option_add("*TCombobox*Listbox.font", ui_font())
-    style.configure("TNotebook", background=BG)
+    # No box round any tab's page: it sits straight on the picture. clam
+    # draws the box whatever its width, so it is drawn in BG, see-through.
+    style.configure("TNotebook", background=BG, bordercolor=BG,
+                    lightcolor=BG, darkcolor=BG)
     style.configure("TNotebook.Tab", background=PANEL, foreground=DIM,
                     padding=(14, 4))
     style.map("TNotebook.Tab", background=[("selected", BG)],
@@ -349,14 +753,45 @@ def open_main(root, state, scl, set_hud):
     style.configure("TCombobox", foreground=BG)
     fit_to_screen(win, style)
 
+    wallpaper = Wallpaper(win)
     bar = tk.Frame(win, bg=BG)
     bar.pack(fill="x", padx=8, pady=(6, 0))
-    # The one button at the top left: collapse leaves only the open tab's
-    # map or list; menu brings the tabs and side panels back (show_menus).
-    menu_btn = ttk.Button(bar, text="collapse", width=9,
-                          command=lambda: show_menus(
-                              state.cfg["menu_collapsed"]))
-    menu_btn.pack(side="left")
+    titles = ("Star map", "Height map", "Maps", "Waypoints", "Reports",
+              "Surveys", "Settings")
+    # Every tab pill as wide as the widest of their labels.
+    fits = titles
+    # The one button at the top left, three lines: collapse leaves only the
+    # open tab's map or list; menu brings the tabs and side panels back
+    # (show_menus). Slashed while the menu is open; its hint says which a
+    # click does.
+    lines = icon("\ue700", "\u2630")
+    menu_btn = Pill(bar, lines[0], lambda: show_menus(
+        state.cfg["menu_collapsed"]), wallpaper, font=lines[1], circle=True,
+        hint="collapse")
+    menu_btn.set(slash=True)        # open: slashed lines close it
+    menu_btn.canvas.pack(side="left")
+    # The star map back to its system's default view, at the bar's right
+    # end: shown on the star map only (tab_changed).
+    glyph, glyph_font = icon("\ue72c", "\u21bb")         # refresh
+    home = Pill(bar, glyph, lambda: star.show(star.system, None), wallpaper,
+                font=glyph_font, circle=True, hint="default view")
+    home.canvas.pack(side="right", padx=(6, 0))
+    # Full screen, left of it: no title bar or borders. Left again by this
+    # pill (its icon then says back to a window), Esc or F11.
+    full = FullScreen(win)
+    to_full, to_window = icon("\ue740", "\u26f6"), icon("\ue73f", "\u2750")
+    full_btn = Pill(bar, to_full[0], lambda: set_full(not full.on),
+                    wallpaper, font=to_full[1], circle=True,
+                    hint="full screen")
+    full_btn.canvas.pack(side="right")
+
+    def set_full(on):
+        full.set(on)
+        full_btn.hint = "window" if on else "full screen"
+        full_btn.set(text=(to_window if on else to_full)[0])
+
+    win.bind("<F11>", lambda e: set_full(not full.on))
+    win.bind("<Escape>", lambda e: full.on and set_full(False))
     # The tabs, to the right of it: the notebook's own are never shown.
     tab_row = tk.Frame(bar, bg=BG)
     tab_row.pack(side="left", padx=(12, 0))
@@ -373,11 +808,25 @@ def open_main(root, state, scl, set_hud):
     status = tk.Label(bar, text="", font=mono(), fg=DIM, bg=BG, anchor="e")
     status.pack(side="right", fill="x", expand=True)
 
+    # The bottom strip, star map only (tab_changed): a ? pill at its right
+    # end, and the star map's how-to line beside it while the pointer is on
+    # the pill.
+    foot = tk.Frame(win, bg=BG)
+    foot_pack = dict(side="bottom", fill="x", padx=8, pady=(0, 6))
+    foot.pack(**foot_pack)
+    help_line = tk.Label(foot, text="", font=ui_font(), fg=PILL_TEXT, bg=BG)
+    help_pill = Pill(foot, "?", lambda: None, wallpaper, circle=True,
+                     on_hover=lambda on: help_line.config(
+                         text=star.help if on else ""))
+    help_pill.canvas.pack(side="right")
+    help_line.pack(side="right", padx=(0, 10))
+
     # Its own style, so hiding its tabs leaves Settings' sections alone.
     style.layout("Main.TNotebook.Tab", [])
     nb = ttk.Notebook(win, style="Main.TNotebook")
     nb.pack(fill="both", expand=True, padx=8, pady=8)
     nav = Navigator(nb, state, scl)
+    nav.wallpaper = wallpaper
     editor = WaypointEditor(nb, state, scl, nav)
     star = StarMap(nb, state, scl, nav, follow)
     height = HeightMapTab(nb, state, scl, follow, nav)
@@ -390,25 +839,31 @@ def open_main(root, state, scl, set_hud):
     if not state.cfg["hud_on"]:
         set_hud(False)
     nav.settings = settings         # Remove from Discord goes through it
-    # The graphics first, then the lists and text. A button each in the
-    # top row, looking like a tab; one picked elsewhere (Show on star map)
-    # lights its button too.
+    # The graphics first, then the lists and text. A pill each in the top
+    # row, filled for the open tab; one picked elsewhere (Show on star map)
+    # fills its pill too.
     tabs = [star, height, maps_tab, editor, reports, surveys, settings]
-    style.configure("Tab.Toolbutton", background=PANEL, foreground=DIM,
-                    padding=(14, 4))
-    style.map("Tab.Toolbutton", background=[("selected", BG),
-                                             ("active", "#1d2a38")],
-              foreground=[("selected", ACCENT)])
-    tab_var = tk.IntVar(value=0)
-    for i, (tab, title) in enumerate(zip(tabs, (
-            "Star map", "Height map", "Maps", "Waypoints", "Reports",
-            "Surveys", "Settings"))):
+    tab_pills = []
+    for i, (tab, title) in enumerate(zip(tabs, titles)):
         nb.add(tab.frame, text=title)
-        ttk.Radiobutton(tab_row, text=title, value=i, variable=tab_var,
-                        style="Tab.Toolbutton",
-                        command=lambda i=i: nb.select(i)).pack(side="left")
-    nb.bind("<<NotebookTabChanged>>",
-            lambda e: tab_var.set(nb.index("current")))
+        pill = Pill(tab_row, title, lambda i=i: nb.select(i), wallpaper, fits)
+        pill.canvas.pack(side="left", padx=(0, 6))
+        tab_pills.append(pill)
+    tab_pills[0].set(on=True)
+
+    def tab_changed(e):
+        for i, pill in enumerate(tab_pills):
+            if pill.on != (i == nb.index("current")):
+                pill.set(on=not pill.on)
+        on_star = nb.index("current") == tabs.index(star)
+        home.set(hidden=not on_star)
+        if on_star and not foot.winfo_manager():
+            foot.pack(**foot_pack, before=nb)
+        elif not on_star:
+            foot.pack_forget()
+
+    nb.bind("<<NotebookTabChanged>>", tab_changed)
+    pills = [menu_btn, full_btn, home, help_pill] + tab_pills
 
     hidden = []         # (panel, its pack info, the sibling it was before)
 
@@ -417,7 +872,7 @@ def open_main(root, state, scl, set_hud):
         panels (its .panels), or only the open tab's map or list. Kept for
         the next start."""
         if on and not tab_row.winfo_manager():
-            tab_row.pack(side="left", padx=(12, 0), after=menu_btn)
+            tab_row.pack(side="left", padx=(12, 0), after=menu_btn.canvas)
         elif not on:
             tab_row.pack_forget()
         if on:
@@ -434,7 +889,8 @@ def open_main(root, state, scl, set_hud):
                                        if i + 1 < len(sibs) else None))
             for w, _, _ in hidden:
                 w.pack_forget()
-        menu_btn.config(text="collapse" if on else "menu")
+        menu_btn.hint = "collapse" if on else "menu"
+        menu_btn.set(slash=on)
         if state.cfg["menu_collapsed"] != (not on):
             scl.save_setting(state, "menu_collapsed", not on)
 
@@ -443,10 +899,12 @@ def open_main(root, state, scl, set_hud):
 
     # Dragged to another screen: refit when it lands, not a second later.
     win.bind("<Configure>", lambda e: e.widget is win
-             and fit_to_screen(win, style))
+             and fit_to_screen(win, style), add="+")  # Wallpaper's stays
 
     def tick():
         fit_to_screen(win, style)   # the Windows scale changed under it
+        for pill in pills:
+            pill.fit()
         for tab in tabs:
             tab.refresh()
         updates.refresh()
@@ -456,6 +914,9 @@ def open_main(root, state, scl, set_hud):
             status.config(text=state.note if fresh else "")
         win.after(1000, tick)
 
+    wallpaper.redraw.append(star.draw)
+    wallpaper.show(background_file(state.cfg["background"],
+                                   scl.BACKGROUND_DIRS, scl.DEFAULT_BACKGROUND))
     tick()
     updates.start()
     if state.startup_notice:
@@ -1033,6 +1494,7 @@ class StarMap:
         self.names = {}         # waypoint id -> its name, for its label
         self.marked = None      # id of the waypoint ringed by SHOW ON MAP
         self.backdrops, self.ramp = {}, None
+        self.help = ""          # the how-to line the ? pill shows
         self.frame = tk.Frame(parent, bg=BG)
         self.system, self.body = starmap.SYSTEMS[0], None
         self.up = None          # the body "back" opens; None: the system view
@@ -1249,11 +1711,6 @@ class StarMap:
                               values=("1", "5", "10", "20", "50", "100"))
         relief.pack(side="left")
         relief.bind("<<ComboboxSelected>>", lambda e: self.draw())
-        # The system view's counterpart, in the same place.
-        self.reset_btn = ttk.Button(self.canvas, text="default view",
-                                    command=lambda: self.show(self.system,
-                                                              None))
-        self.reset_btn.place(relx=1.0, x=-10, y=10, anchor="ne")
         self.canvas.tag_bind("pin", "<Enter>",
                              lambda e: self.canvas.config(cursor="hand2"))
         self.canvas.tag_bind("pin", "<Leave>",
@@ -1273,11 +1730,9 @@ class StarMap:
         survey = self.type_boxes["survey"]
         if body is None:
             self.om_bar.place_forget()
-            self.reset_btn.place(relx=1.0, x=-10, y=10, anchor="ne")
             survey.pack_forget()
             self.back.pack_forget()
         else:
-            self.reset_btn.place_forget()
             self.om_bar.place(relx=1.0, x=-10, y=10, anchor="ne")
             survey.pack(anchor="w", after=self.type_boxes["poi"])
             self.back.pack(anchor="w", fill="x", pady=(8, 0))
@@ -1774,6 +2229,9 @@ class StarMap:
         w, h = c.winfo_width(), c.winfo_height()
         if w < 50 or h < 50:
             return
+        # The window's picture, drawn here too: the empty canvas would
+        # otherwise let clicks and drags through (Wallpaper).
+        self.nav.wallpaper.under(c)
         wps, bodies = snapshot(self.state)
         wps = of_types(wps, self.types)
         self.subs = {wp["id"]: wp.get("sub", "") for wp in wps}
@@ -1902,14 +2360,22 @@ class StarMap:
             c.create_text(x + 11, y, text="YOU", anchor="w", fill=ACCENT,
                           font=mono(9, True), tags="you")
 
-    def header(self, title, hint):
+    def header(self, title, hint="", centre=False):
+        """The title at the top left, its hint lines below it; `centre`
+        puts the title in the middle of the window's width instead (not of
+        the map, which the side panels push right)."""
         c = self.canvas
-        ids = (c.create_text(12, 10, text=title, anchor="nw", fill=ACCENT,
-                             font=mono(16, True)),
-               c.create_text(12, 10 + px(26), text=hint, anchor="nw",
-                             fill=DIM, font=mono(9)))
-        _, _, x1, y1 = c.bbox(*ids)
-        self.backdrop("header", (0, 0, x1 + 8, y1 + 6), ids[0])
+        top = c.winfo_toplevel()
+        x, anchor = (((top.winfo_rootx() + top.winfo_width() / 2
+                       - c.winfo_rootx()), "n") if centre else (12, "nw"))
+        ids = [c.create_text(x, 10, text=title, anchor=anchor, fill=ACCENT,
+                             font=mono(16, True))]
+        if hint:
+            ids.append(c.create_text(12, 10 + px(26), text=hint, anchor="nw",
+                                     fill=DIM, font=mono(9)))
+        x0, _, x1, y1 = c.bbox(*ids)
+        self.backdrop("header", (0 if x0 < 12 else x0 - 8, 0, x1 + 8, y1 + 6),
+                      ids[0])
 
     def backdrop(self, key, box, below):
         """A see-through box (x0, y0, x1, y1) under canvas item `below` and
@@ -2023,12 +2489,12 @@ class StarMap:
         # At this scale you sit on the pixels of the body you are near, so
         # the cross goes on top of everything or that body's dot hides it.
         c.tag_raise("you")
-        self.header(self.system.upper(),
-                    "drag to rotate  -  wheel to zoom  -  click a planet or "
-                    "moon to open it, a pin to edit it")
-        # Bodies are drawn at fixed sizes (SUN_PX, PLANET_PX, MOON_PX).
-        c.create_text(w - 10, h - 8, text="bodies not to scale", anchor="se",
-                      fill=DIM, font=mono(8))
+        self.header(self.system.upper(), centre=True)
+        # Shown by the ? pill at the bottom right. Bodies are drawn at fixed
+        # sizes (SUN_PX, PLANET_PX, MOON_PX).
+        self.help = ("drag to rotate  -  wheel to zoom  -  click a planet or "
+                     "moon to open it, a pin to edit it  -  bodies not to "
+                     "scale")
 
     def draw_body(self, wps, bodies, around, w, h):
         # The body's own frame turns with it; its moons and stations do not.
@@ -2143,10 +2609,10 @@ class StarMap:
         lines = ["  -  ".join(facts)]
         if outer:
             lines.append("beyond the globe: distances not to scale")
-        lines.append("drag to rotate  -  wheel to zoom")
-        lines.append("click a pin on the ground for the height map, "
-                     "another to edit it, a moon to open it")
         self.header(f"{self.body.upper()}  ({where})", "\n".join(lines))
+        self.help = ("drag to rotate  -  wheel to zoom  -  click a pin on "
+                     "the ground for the height map, another to edit it, a "
+                     "moon to open it")
         if surveyed:
             self.legend(*self.mesh_tiles[1:], w, h)
 
@@ -4804,6 +5270,7 @@ class SettingsTab:
             self.sections.add(page[name], text=name)
         self.switch_box(page["Other"], set_hud, follow)
         self.reader_boxes(page["Other"])
+        self.background_box(page["Other"])
         self.version_box(page["Other"])
         self.backup_page(page["Backup"])
         self.discord_page(page["Discord"])
@@ -5699,6 +6166,40 @@ class SettingsTab:
         on = self.log_var.get()
         self.scl.save_setting(self.state, "log", on)
         self.scl.set_log(self.state, on)
+
+    def background_box(self, page):
+        """The picture behind the main window: kept, in use at once."""
+        scl, state = self.scl, self.state
+        box = tk.LabelFrame(page, text=" Background ", font=mono(), fg=ACCENT,
+                            bg=BG, bd=2, relief="groove", padx=10, pady=8)
+        box.pack(anchor="nw", fill="x", padx=4, pady=4)
+        row = tk.Frame(box, bg=BG)
+        row.pack(anchor="w", fill="x")
+        choice = tk.StringVar(value=state.cfg["background"])
+        names = ttk.Combobox(row, textvariable=choice, width=32,
+                             state="readonly")
+        # Listed again each time it opens: pictures added to the folder
+        # since show up.
+        names.config(postcommand=lambda: names.config(values=[NO_PICTURE] + (
+            background_names(scl.BACKGROUND_DIRS))))
+        names.pack(side="left")
+
+        def picked(e):
+            scl.save_setting(state, "background", choice.get())
+            self.nav.wallpaper.show(background_file(
+                choice.get(), scl.BACKGROUND_DIRS, scl.DEFAULT_BACKGROUND))
+
+        def open_folder():
+            scl.BACKGROUND_DIR.mkdir(parents=True, exist_ok=True)
+            os.startfile(scl.BACKGROUND_DIR)
+
+        names.bind("<<ComboboxSelected>>", picked)
+        ttk.Button(row, text="Open folder", command=open_folder).pack(
+            side="left", padx=(6, 0))
+        tk.Label(box, font=mono(9), fg=DIM, bg=BG, justify="left",
+                 text=f"Put your own pictures ({', '.join(PICTURE_TYPES)}) "
+                      f"in\n{scl.BACKGROUND_DIR}").pack(anchor="w",
+                                                        pady=(4, 0))
 
     def version_box(self, page):
         """Which version this is, any newer one, and the way to it."""

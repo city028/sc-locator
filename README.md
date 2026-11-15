@@ -367,12 +367,21 @@ habs, cargo). The station list is downloaded once a week and cached in
 Next to the overlay a normal window opens, with a taskbar entry. Closing it
 quits the program.
 
-- **collapse** / **menu**, the one button at the top left: **collapse**
-  hides the tabs and the side panels (Star map and Height map menus, the
-  Maps tab's list and options) and leaves only the open tab's map or list;
-  **menu** brings them back. Kept for the next start. The tabs are on the
+- **Background**: one picture behind the whole window (a toned-down
+  starfield unless you pick another in Settings > Other); the tabs, maps and
+  buttons sit on top of it.
+- The **menu** button, round with three lines at the top left: while the
+  menu is open its lines are struck through, and a click hides the tabs and
+  the side panels (Star map and Height map menus, the Maps tab's list and
+  options), leaving only the open tab's map or list; a click on the plain
+  lines brings them back. Kept for the next start. The tabs are on the
   same row, to its right: Star map, Height map, Maps, Waypoints, Reports,
-  Surveys, Settings; status messages are at the far right of that row.
+  Surveys, Settings.
+- **Full screen**, the round button with the outward arrows at the top
+  right: no title bar or borders, on the screen the window is on. Leave it
+  with the same button (its arrows then point inward), **Esc** or **F11**.
+  Status messages show just left of it.
+- Hover over any round button for what it does.
 - **HUD overlay** and **follow me** switches, in Settings > Other: hide or
   show the in-game pin and panel, and keep the maps on you. Both are kept
   for the next start.
@@ -389,7 +398,9 @@ quits the program.
   view (see **Around a planet**), unless the body has no place on the map yet.
   It opens zoomed in as far as it can with every waypoint
   shown, and every body that has one, in view. Drag to rotate, mouse wheel to
-  zoom; **default view** (top right) puts the view back as it started. The
+  zoom; the round **default view** button (circular arrow, at the far top
+  right, shown only on the star map) puts the view back as it started.
+  Point at the **?** at the bottom right for how to work the map. The
   **POI waypoints** and **Survey waypoints** switches pick which types are
   shown; only POI at first, and Survey only in a planet's or moon's view.
   Click a planet or moon
@@ -526,6 +537,11 @@ quits the program.
       (`r_DisplaySessionInfo`, mostly on PTU) is switched on or off later.
     - **Write a diagnostic log** switches `session.log` on and off at once;
       **Open log folder** shows where it is.
+    - **Background** picks the picture behind the main window, or
+      **(none)** for the plain dark colour; in use at once. **Open folder**
+      opens `backgrounds` in `%LocalAppData%\SC Locator`: put your own
+      pictures there (`.png`, `.jpg`, `.jpeg`, `.bmp`, `.webp`). Every
+      picture is dimmed and greyed so it does not compete with the maps.
     - The version you have, and updates (see Updates above).
 
 Sizes on the system map are not to scale (a planet would be smaller than a
@@ -1022,6 +1038,7 @@ program is closed. The ones you are most likely to change:
 |---|---|---|
 | `monitor` | `1` | which monitor the game is on (1 = primary); Find HUD text sets it |
 | `log` | `false` | the diagnostic log; Settings > Other switches it |
+| `background` | `"starfield-3840x2160.png"` | the main window's picture, a file name in `backgrounds`, or `"(none)"`; Settings > Other picks it |
 | `region` | `[0.60, 0.00, 1.00, 0.28]` | screen area read for the HUD text: left, top, right, bottom as fractions of the screen |
 | `overlay_anchor` | `"br"` | corner the pin sits in: `br`, `bl`, `tr`, `tl` |
 | `overlay_margin` | `[20, 20]` | distance in pixels from that corner |
