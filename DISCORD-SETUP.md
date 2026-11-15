@@ -43,6 +43,34 @@ Chat or pasted text in the share channels would not break anything:
 SC Locator only takes posts carrying its own file. But every message is
 read on each Import, so a busy channel makes Import slower.
 
+### Optional: hide the four share channels
+
+Members never need to open the share channels: SC Locator posts through
+the webhooks and reads with the bot's token, not with their own
+accounts. Only `#scl-links` has to be visible to them. To keep the
+sidebar down to that one channel:
+
+1. In each of the four share channels' **Permissions**, set **View
+   Channel** to deny for `@everyone`, and for any member role that
+   would allow it.
+2. In the same four, allow **View Channel** and **Read Message History**
+   for the bot's role (see 4).
+3. Leave `#scl-links` visible, with **Send Messages** on, for members.
+4. Have someone run **Test connection**: all five "can be read" lines
+   and "linked as ..." should still pass.
+
+What it does and does not do:
+
+- **It hides; it does not keep secret.** Every member holds the bot's
+  token, and anyone calling Discord's API with it can read the hidden
+  channels. It keeps the sidebar tidy and the raw posts out of the way;
+  it is not access control.
+- **Members lose the readable view.** A post's few lines (name, place,
+  notes) are then seen only through **Import...**, not by scrolling the
+  channel.
+- **Roles with Administrator still see them**, whatever the channel
+  says.
+
 ## 2. A webhook in each share channel
 
 For each of the four share channels (not `#scl-links`): hover it > gear (Edit Channel) > **Integrations** >
