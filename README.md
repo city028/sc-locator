@@ -589,7 +589,9 @@ then give you the webhook URLs and the read token.
   after the id if you like. An empty allow list lets everyone linked in;
   the blacklist wins.
 - **Test connection**: tries each webhook and the token, whether each
-  channel can be read, and whether your link code is there.
+  channel can be read, and whether your link code is there. While it
+  runs, how much is done (0 to 100%) and the step it is on show beside
+  the button.
 - **Publish new**: posts every item marked Share to Discord that has not
   gone yet, or has changed since (posted again as an update), one post
   each, in its kind's channel. **Share all...** posts every one of them

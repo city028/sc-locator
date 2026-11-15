@@ -138,9 +138,38 @@ def _problem(exc):
     return str(exc)
 
 
-def test_connection(cfg, opener=urllib.request.urlopen):
+# Test connection's steps, weighed by about how many calls each makes: a
+# channel is read up to TEST_READ messages, a page of PAGE at a time.
+W_HOOK, W_TOKEN, W_READ, W_CODE = 1, 2, 1 + TEST_READ // PAGE, 1
+
+
+def test_connection(cfg, opener=urllib.request.urlopen, progress=None):
     """What Test connection finds, as lines to show: each webhook, the read
-    token, whether it can read each channel, and our link code."""
+    token, whether it can read each channel, and our link code.
+    progress: f(text, fraction), told before each step what it is doing
+    and how much of the whole is done, 0 to 1. The whole is planned from
+    the settings, each step weighed by about how many calls it makes; a
+    step that will not happen (a channel behind a broken webhook) is
+    taken out of it, so the fraction only grows."""
+    token = cfg.get("token", "").strip()
+    named = [n for n in discordshare.CHANNELS
+             if cfg["webhooks"].get(n, "").strip()]
+    has_link = bool(cfg.get("link_channel", "").strip())
+    plan = {"done": 0, "total": len(named) * W_HOOK}
+    if token:
+        plan["total"] += (W_TOKEN + (len(named) + has_link) * W_READ
+                          + (W_CODE if cfg.get("key") else 0))
+
+    def say(text):
+        if progress:
+            progress(text, min(1.0, plan["done"] / max(1, plan["total"])))
+
+    def did(weight):
+        plan["done"] += weight
+
+    def dropped(weight):
+        plan["total"] -= weight
+
     lines, hooks = [], {}
     for name in discordshare.CHANNELS:
         url = cfg["webhooks"].get(name, "").strip()
@@ -148,26 +177,32 @@ def test_connection(cfg, opener=urllib.request.urlopen):
         if not url:
             lines.append(f"{label} no webhook URL, so nothing can go there")
             continue
+        say(f"Checking the {name.capitalize()} webhook")
         try:
             hooks[name] = get_webhook(url, opener)
         except DiscordError as exc:
             lines.append(f"{label} {_problem(exc)}")
+            did(W_HOOK)
+            if token:
+                dropped(W_READ)         # its channel cannot be found
             continue
+        did(W_HOOK)
         lines.append(f"{label} webhook '{hooks[name].get('name')}' works")
     if len({h.get("guild_id") for h in hooks.values()}) > 1:
         lines.append("The webhooks are not all in the same server.")
 
     lines.append("")
-    token = cfg.get("token", "").strip()
     if not token:
         lines.append("Read token: none, so Import cannot read the channels.")
         return lines
+    say("Checking the read token")
     try:
         bot = request("/users/@me", token, opener)
         app = request("/applications/@me", token, opener)
     except DiscordError as exc:
         lines.append(f"Read token: {_problem(exc)}")
         return lines
+    did(W_TOKEN)
     lines.append(f"Read token: bot '{bot.get('username')}'")
     if not (app.get("flags", 0) & MESSAGE_CONTENT):
         lines.append("  Message Content intent is OFF: turn it on in the "
@@ -179,14 +214,19 @@ def test_connection(cfg, opener=urllib.request.urlopen):
     link, link_problem = link_channel(cfg, opener)
     if link:
         to_read.append(("Link channel", link))
+    elif has_link:
+        dropped(W_READ)
     read, guilds = [], {h.get("guild_id") for h in hooks.values()}
     for label, channel in to_read:
+        say(f"Reading the {label.lower()}")
         try:
             info = request(f"/channels/{channel}", token, opener)
             got = messages(channel, token, TEST_READ, opener)
         except DiscordError as exc:
             lines.append(f"  {label}: {_problem(exc)}")
+            did(W_READ)
             continue
+        did(W_READ)
         lines.append(f"  {label}: #{info.get('name')} can be read")
         if label == "Link channel" and guilds and \
                 info.get("guild_id") not in guilds:
@@ -203,6 +243,7 @@ def test_connection(cfg, opener=urllib.request.urlopen):
     if not cfg.get("key"):
         lines.append("Your account: not linked yet (Link account).")
         return lines
+    say("Looking for your link code")
     mine = discordshare.public_of(cfg["key"])
     who = discordshare.linked_keys([m for _c, m in read]).get(mine)
     if who:

@@ -4724,17 +4724,22 @@ class SettingsTab:
 
     def test_discord(self):
         """Save, then try each webhook, the token and the channels on a
-        thread of its own; what it finds is shown when it is done."""
+        thread of its own; what it finds is shown when it is done. Until
+        then, beside the button: a turning mark, how much of it is done
+        and the step it is on, so it is plain that something is happening
+        and how far it has to go."""
         if self.discord_job:
             self.frame.after_cancel(self.discord_job)
         if not self.save_discord():
             return
         cfg = json.loads(json.dumps(self.discord))
-        found = {}
+        found = {"step": "Starting", "done": 0.0, "tick": 0}
 
         def run():
             try:
-                found["lines"] = discordapi.test_connection(cfg)
+                found["lines"] = discordapi.test_connection(
+                    cfg, progress=lambda text, done: found.update(
+                        step=text, done=done))
             except ImportError:
                 found["lines"] = ["Checking the link code needs the "
                                   "cryptography package: pip install "
@@ -4744,15 +4749,20 @@ class SettingsTab:
 
         def done():
             if "lines" not in found:
+                found["tick"] += 1
+                mark = "|/-\\"[found["tick"] % 4]
+                self.test_status.config(
+                    fg=ACCENT, text=f"{mark}  {found['done']:4.0%}  "
+                    f"{found['step']}...")
                 self.frame.after(200, done)
                 return
             self.test_button.config(state="normal")
-            self.test_status.config(text="")
+            self.test_status.config(text="", fg=DIM)
             show_message("Test connection", "\n".join(found["lines"]),
                          self.frame.winfo_toplevel())
 
         self.test_button.config(state="disabled")
-        self.test_status.config(text="Testing...")
+        self.test_status.config(fg=ACCENT, text="|    0%  Starting...")
         threading.Thread(target=run, daemon=True).start()
         self.frame.after(200, done)
 
