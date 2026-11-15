@@ -16,18 +16,13 @@ by the planet's orbit and rotation. The HUD does not print a radius, so it is
 looked up from BODY_RADII using the zone name.
 
 Usage:
-  python sc_locator.py calibrate [--find] [--delay N] [--region L T R B]
-                                [--cut N] [--save]
-  python sc_locator.py run [--console]
-  python sc_locator.py list
-  python sc_locator.py rename OLD NEW
-  python sc_locator.py delete NAME
-  python sc_locator.py convert X Y Z [--radius 1000000]
+  python sc_locator.py
+No arguments: the installed .exe has no console, so there is no command line.
+Finding the HUD text on screen and the diagnostic log are in Settings > Other.
 
 Left-click the pin to save, right-click it to open the panel; drag the readout
 with the left mouse button to move it.
 """
-import argparse
 import ctypes
 import functools
 import hashlib
@@ -88,6 +83,7 @@ DISCORD_FILE = HERE / "discord.json"
 # backup without it (older ones, the sample data) leaves it as it is.
 DISCORD_ID_FILE = HERE / "discord-id.json"
 BACKUP_DIR = HERE / "bak"
+LOG_FILE = HERE / "session.log"          # Settings > Other > Diagnostic log
 BACKUP_KEEP = 30                         # versions of each file kept in bak/
 # How often a running survey is written out. Each write also keeps a backup,
 # so thirty of them cover the last hour.
@@ -115,9 +111,10 @@ DEFAULT_CONFIG = {
     # left, top, right, bottom as screen fractions. The HUD block is pinned to
     # the top-right corner, but how far down the CamPos row sits depends on how
     # many rows precede it, which varies by location and graphics settings. So
-    # this starts at the very top rather than guessing an offset. Run
-    # `calibrate --find` to narrow the sides to your own screen.
+    # this starts at the very top rather than guessing an offset. Settings >
+    # Other > Find HUD text narrows the sides to your own screen.
     "region": [0.60, 0.00, 1.00, 0.28],
+    "log": False,                        # the diagnostic log, session.log
     "scale": 2.0,                        # upscale factor before OCR
     # Text is found by local contrast, not by one brightness cut-off: see
     # preprocess. The radius is the neighbourhood each pixel is compared with,
@@ -1503,6 +1500,69 @@ def find_region(sct, cfg):
     ]
 
 
+FIND_SECONDS = 30       # how long Find HUD text keeps looking
+
+
+def find_hud(sct, cfg, seconds=FIND_SECONDS, progress=lambda text: None):
+    """Settings > Other > Find HUD text: look on every screen for the HUD
+    rows, again and again for up to `seconds`, so there is time to switch
+    to the game after pressing the button. Each screen is read whole, 1-2 s
+    a screen from 1440p to 4K.
+
+    Returns {"monitor", "region", "read"} once found, "read" saying what a
+    read of that area gives; else {"why"}, what most likely stopped it.
+    Text under about 10 px high (seen on synthetic screens) is not found.
+    """
+    end = time.time() + seconds
+    while True:
+        count = len(sct.monitors) - 1
+        black = []
+        for m in range(1, count + 1):
+            progress(f"screen {m} of {count}, "
+                     f"{max(0.0, end - time.time()):.0f} s left")
+            on = dict(cfg, monitor=m)
+            found = find_region(sct, on)
+            if found:
+                region = [round(v, 4) for v in found]
+                return {"monitor": m, "region": region,
+                        "read": read_once(sct, dict(on, region=region))}
+            whole = grab_region(sct, dict(on, region=[0.0, 0.0, 1.0, 1.0]))
+            if whole.convert("L").getextrema()[1] < 16:
+                black.append(m)
+        if time.time() >= end:
+            return {"why": find_failed(cfg, black, count)}
+
+
+def find_failed(cfg, black, count):
+    """Why Find HUD text found nothing, most likely cause first. `black`:
+    the screens that came back black, as one the game has in fullscreen."""
+    if game_running(cfg["game_process"]) is False:
+        return "Star Citizen is not running."
+    if black:
+        return (f"Screen {', '.join(map(str, black))} came back black. Set "
+                "the game to Borderless Window in its graphics settings.")
+    where = "the screen" if count == 1 else f"any of the {count} screens"
+    return (f"No HUD text found on {where}. In the game, press ~ and type "
+            "r_DisplayInfo 2: the text must show at the top right. On a "
+            "small screen the text may be too small to read.")
+
+
+def read_once(sct, cfg):
+    """One read of `cfg`'s area, as the screen reader does it: a line saying
+    what it gave."""
+    raw = grab_region(sct, cfg)
+    with open_ocr(cfg) as api:
+        for cut in [cfg["contrast_cut"]] + cfg["contrast_cuts"]:
+            res = parse_readout(ocr_text(api, preprocess(raw, cfg, cut)),
+                                cfg["default_radius"])
+            if res is not None:
+                planet, radius, pos, _ = res
+                lat, lon, r = to_latlon(*pos)
+                return (f"{planet}: lat {lat:+.4f}, lon {lon:+.4f}, "
+                        f"height {r - radius:,.0f} m")
+    return "the rows are there, but no position was read from them yet"
+
+
 def trailing_zeros(v):
     digits = f"{int(round(v))}"
     return len(digits) - len(digits.rstrip("0"))
@@ -2289,7 +2349,8 @@ class State:
                     and sys_pos is not None and self.sys_pos == sys_pos):
                 self.analysis.add(now, sys_pos)
             if res is None:
-                missing = "readout not found - run calibrate"
+                missing = ("readout not found - try Find HUD text in "
+                           "Settings > Other")
                 if self.status != missing:
                     self.log("fix lost: no CamPos row in the capture"
                              if self.status == "ok" else
@@ -2632,7 +2693,8 @@ LOG_HOLD_LINES = 10_000     # lines held at most while the log is locked
 
 
 def make_logger(path):
-    """Append-only diagnostic log, or a no-op when --log was not given.
+    """Append-only diagnostic log, or a no-op when `path` is None (the log
+    switched off in Settings).
 
     A line that cannot be written, as while another program has the file
     open (a sync tool copying it, a virus scan), is held and written with the
@@ -5753,15 +5815,18 @@ def run_overlay(state, cfg):
         except tk.TclError:
             pass
 
-    box = monitor_box(cfg) or (0, 0, root.winfo_screenwidth(),
-                               root.winfo_screenheight())
+    # The screen the HUD is read from, which Find HUD text can change.
+    screen = {"monitor": cfg["monitor"],
+              "box": monitor_box(cfg) or (0, 0, root.winfo_screenwidth(),
+                                          root.winfo_screenheight())}
     anchor, margin = cfg["overlay_anchor"], cfg["overlay_margin"]
     dragged = {"corner": None}
 
     def reposition():
         root.update_idletasks()
         size = (root.winfo_reqwidth(), root.winfo_reqheight())
-        x, y = anchor_position(box, size, anchor, margin, dragged["corner"])
+        x, y = anchor_position(screen["box"], size, anchor, margin,
+                               dragged["corner"])
         root.geometry(f"+{x}+{y}")
         # Moved now, not when Tk next idles. keep_on_top runs before that, and
         # its SetWindowPos reports the old position back to Tk, which then
@@ -6501,6 +6566,11 @@ def run_overlay(state, cfg):
     def refresh():
         if poll_analysis(state) and showing["panel"]:
             show_review()           # it finished by itself: show what it found
+        if cfg["monitor"] != screen["monitor"]:     # the HUD found elsewhere
+            screen.update(monitor=cfg["monitor"],
+                          box=monitor_box(cfg) or screen["box"])
+            dragged["corner"] = None
+            reposition()
         state_health = health(state)
         colour = STATUS_COLOURS[state_health]
         draw_pin(colour)
@@ -6587,16 +6657,6 @@ def run_overlay(state, cfg):
     # this file would carry its own file paths and its own copy of the data.
     main_window.open_main(root, state, sys.modules[__name__], set_hud)
     root.mainloop()
-
-
-def run_console(state):
-    try:
-        while True:
-            os.system("cls" if os.name == "nt" else "clear")
-            print(render(state))
-            time.sleep(1.0)
-    except KeyboardInterrupt:
-        pass
 
 
 # ----------------------------------------------------------------------------
@@ -6747,15 +6807,73 @@ def offer_old_data():
     root.mainloop()
 
 
-def cmd_run(args):
-    if not args.allow_multiple and not claim_single_instance():
-        sys.exit(
-            "sc_locator is already running.\n"
-            "Both overlays draw in the same corner, so the readout ghosts.\n"
-            "Close the other one first, or pass --allow-multiple."
-        )
+def tell_already_running():
+    """A second start: say so in a small window by the pointer, as there is
+    no console to say it in. Two overlays draw in the same corner, so the
+    readout ghosts."""
+    import tkinter as tk
+
+    root = tk.Tk()
+    root.withdraw()                     # placed before it is seen
+    root.title("SC Locator")
+    try:
+        root.iconbitmap(str(ICON_FILE))
+    except tk.TclError:
+        pass
+    tk.Label(root, justify="left", wraplength=380, padx=14, pady=12,
+             text="SC Locator is already running. Look for it in the "
+                  "taskbar, or end sc-locator.exe in Task Manager if it "
+                  "cannot be found.").pack()
+    tk.Button(root, text="OK", width=8, command=root.destroy).pack(
+        anchor="e", padx=14, pady=(0, 12))
+    root.bind("<Return>", lambda e: root.destroy())
+    root.bind("<Escape>", lambda e: root.destroy())
+    root.update_idletasks()
+    x, y = root.winfo_pointerxy()
+    x = min(x + 12, root.winfo_screenwidth() - root.winfo_reqwidth() - 20)
+    y = min(y + 12, root.winfo_screenheight() - root.winfo_reqheight() - 80)
+    root.geometry(f"+{max(0, x)}+{max(0, y)}")
+    root.deiconify()
+    root.focus_force()
+    root.mainloop()
+
+
+def log_errors(state):
+    """Errors, into the log as well: the installed program has no console,
+    so they would otherwise be lost. Nothing is logged while the log is
+    off. Run from Python, they still show in its console too."""
+    import tkinter
+
+    def write(kind, exc_type, exc, tb):
+        text = "".join(traceback.format_exception(exc_type, exc, tb)).rstrip()
+        state.log(f"{kind}: {text}")
+        print(text, file=sys.stderr)
+
+    sys.excepthook = lambda t, e, tb: write("error", t, e, tb)
+    threading.excepthook = lambda a: write(
+        f"error in thread {a.thread.name if a.thread else '?'}",
+        a.exc_type, a.exc_value, a.exc_traceback)
+    tkinter.Tk.report_callback_exception = (
+        lambda self, t, e, tb: write("error in a window", t, e, tb))
+
+
+def set_log(state, on):
+    """Switch the diagnostic log on or off, at once."""
+    state.log = make_logger(LOG_FILE if on else None)
+
+
+def run_program():
+    # The .exe is built without a console: Python leaves these as None, and
+    # anything writing to them would fail.
+    if sys.stdout is None:
+        sys.stdout = open(os.devnull, "w", encoding="utf-8")
+    if sys.stderr is None:
+        sys.stderr = open(os.devnull, "w", encoding="utf-8")
+    if not claim_single_instance():
+        tell_already_running()
+        return
     outcome, notice = apply_pending_data()
-    if (FROZEN and not args.console and outcome != "wiped"
+    if (FROZEN and outcome != "wiped"
             and not CONFIG_FILE.exists() and not WAYPOINT_FILE.exists()):
         offer_old_data()
     cfg = load_config()
@@ -6767,79 +6885,21 @@ def cmd_run(args):
     state.traces = load_traces()
     state.maps = load_maps()
     state.survey_saved = load_json(SURVEY_FILE, None)
-    state.log = make_logger(args.log)
+    set_log(state, cfg["log"])
+    log_errors(state)
     stop = threading.Event()
     threading.Thread(target=ocr_worker, args=(state, cfg, stop), daemon=True).start()
     threading.Thread(target=watch_reader, args=(state, stop), daemon=True).start()
     threading.Thread(target=load_stations, args=(state,), daemon=True).start()
 
-    if args.log:
-        print(f"logging to {args.log}")
     try:
-        if args.console:
-            run_console(state)
-        else:
-            run_overlay(state, cfg)
+        run_overlay(state, cfg)
     finally:
         stop.set()
         save_heightmap(state, force=True)
         save_traces(state, force=True)
     if state.restart:
         restart_program()
-
-
-def cmd_calibrate(args):
-    cfg = load_config()
-    if args.region:
-        cfg["region"] = args.region
-    if args.cut is not None:
-        cfg["contrast_cut"] = args.cut
-    try:
-        api = open_ocr(cfg)
-    except RuntimeError as exc:
-        sys.exit(str(exc))
-    print(f"tesseract data: {api.GetDatapath()}")
-    if args.delay:
-        print("switch to the game - capturing in %ds" % args.delay, flush=True)
-        time.sleep(args.delay)
-    if args.find:
-        with open_capture() as sct:
-            found = find_region(sct, cfg)
-        if found is None:
-            sys.exit("could not find the HUD rows on screen - is 'r_DisplayInfo 2' on?")
-        cfg["region"] = [round(v, 4) for v in found]
-        area = (found[2] - found[0]) * (found[3] - found[1])
-        print(f"found region: {cfg['region']}  ({area * 100:.1f}% of the screen)")
-    with open_capture() as sct:
-        raw = grab_region(sct, cfg)
-    processed = preprocess(raw, cfg)
-    raw.save(HERE / "calib_raw.png")
-    processed.save(HERE / "calib_processed.png")
-    text = ocr_text(api, processed)
-    print("---- OCR text ----")
-    print(text)
-    print("---- parsed ----")
-    res = parse_readout(text, cfg["default_radius"])
-    if res is None:
-        print("No 'CamPos Planet Zone' row found. Check calib_raw.png /")
-        print("calib_processed.png, then adjust --region and --cut.")
-        print("The debug HUD needs 'r_DisplayInfo 2' in the console (~).")
-    else:
-        planet, radius, pos, radius_known = res
-        lat, lon, r = to_latlon(*pos)
-        src = "HUD" if radius_known else "fallback"
-        print(f"planet={planet} radius={radius:,.0f} ({src}) pos={pos}")
-        print(f"lat={lat:+.4f} lon={lon:+.4f} height={r - radius:,.1f} m")
-        if not plausible(r, radius, radius_known):
-            print()
-            print(f"WARNING: {r:,.0f} m from the centre is {r / radius:.2f}x the")
-            print("radius, so 'run' would discard this reading. Either a")
-            print("coordinate was misread - check the CamPos row above for")
-            print("garbled digits or a clipped right-hand edge - or you are not")
-            print("near a planet surface.")
-    if args.save:
-        save_json(CONFIG_FILE, cfg)
-        print("saved region/cut to locator_config.json")
 
 
 def describe_height(w):
@@ -6875,126 +6935,5 @@ def describe_height(w):
     return f"ground {w['elev']:>9,.0f} m  {fmt_dist(agl):>10} up"
 
 
-def cmd_list(_args):
-    wps = load_waypoints()
-    if not wps:
-        print("no waypoints yet")
-    for w in sorted(wps, key=lambda q: (q.get("system", "unknown"),
-                                        q.get("planet", ""), q["name"])):
-        if w.get("frame") == "system":
-            # No latitude, longitude or orbital marker out there to print.
-            where = "  ".join(f"{v / 1000:,.1f} km" for v in
-                              (w["x"], w["y"], w["z"]))
-            print(f"{w['name']:<16} {w.get('system', 'unknown'):<9} "
-                  f"{w['planet']:<10} {where:<42} "
-                  f"{describe_height(w):<14} {w.get('saved', '')}")
-            continue
-        lat, lon, _ = to_latlon(w["x"], w["y"], w["z"])
-        om, _, _ = nearest_om(lat, lon)
-        print(f"{w['name']:<16} {w.get('system', 'unknown'):<9} {w['planet']:<10} "
-              f"{om:<6} lat {lat:+8.3f} lon {lon:+8.3f} "
-              f"{describe_height(w):<32} {w.get('saved', '')}")
-
-
-def one_named(wps, name):
-    """The id of the one waypoint called `name`, for the command line, which
-    has only names to go by. ValueError if there is none, or if several share
-    it (saying where each is), so nothing is changed by guesswork."""
-    found = [w for w in wps if w["name"] == name]
-    if not found:
-        raise ValueError(f"no waypoint named '{name}'")
-    if len(found) > 1:
-        where = "; ".join(f"{w['planet']} {w.get('saved', '')}".strip()
-                          for w in found)
-        raise ValueError(f"{len(found)} waypoints are named '{name}' ({where})"
-                         " - rename or delete one in the app")
-    return found[0]["id"]
-
-
-def cmd_rename(args):
-    wps = load_waypoints()
-    try:
-        rename_waypoint(wps, one_named(wps, args.old), args.new)
-    except ValueError as exc:
-        sys.exit(str(exc))
-    save_json(WAYPOINT_FILE, wps)
-    print(f"renamed {args.old} -> {args.new}")
-
-
-def cmd_delete(args):
-    wps = load_waypoints()
-    try:
-        delete_waypoint(wps, one_named(wps, args.name))
-    except ValueError as exc:
-        sys.exit(str(exc))
-    save_json(WAYPOINT_FILE, wps)
-    print(f"deleted {args.name}")
-
-
-def cmd_convert(args):
-    lat, lon, r = to_latlon(args.x, args.y, args.z)
-    print(f"lat {lat:+.4f}  lon {lon:+.4f}  distance from centre {r:,.1f} m  "
-          f"height over {args.radius:,.0f} m sphere {r - args.radius:,.1f} m")
-
-
-def hide_own_console():
-    """Started by a double-click or shortcut, the .exe gets a console no one
-    else uses, an empty black window: close it. Started from a prompt the
-    console is shared, and stays for what is printed there."""
-    if not FROZEN or sys.platform != "win32":
-        return
-    k = ctypes.windll.kernel32
-    if k.GetConsoleProcessList((ctypes.c_ulong * 2)(), 2) == 1:
-        k.FreeConsole()
-        sys.stdout = sys.stderr = open(os.devnull, "w", encoding="utf-8")
-
-
-def main():
-    if not sys.argv[1:]:
-        hide_own_console()
-    ap = argparse.ArgumentParser(description="Star Citizen coordinate locator")
-    sub = ap.add_subparsers(dest="cmd", required=True)
-
-    p = sub.add_parser("run")
-    p.add_argument("--console", action="store_true", help="text output instead of overlay")
-    p.add_argument("--log", metavar="FILE", help="write a diagnostic log")
-    p.add_argument("--allow-multiple", action="store_true",
-                   help="start even if another overlay is already running")
-    p.set_defaults(fn=cmd_run)
-
-    p = sub.add_parser("calibrate")
-    p.add_argument("--region", nargs=4, type=float, metavar=("L", "T", "R", "B"))
-    p.add_argument("--cut", type=int,
-                   help="local-contrast cut-off; see preprocess")
-    p.add_argument("--find", action="store_true",
-                   help="OCR the whole screen to locate the HUD rows")
-    p.add_argument("--delay", type=int, default=0, metavar="SECONDS",
-                   help="wait before capturing, to switch to the game first")
-    p.add_argument("--save", action="store_true")
-    p.set_defaults(fn=cmd_calibrate)
-
-    sub.add_parser("list").set_defaults(fn=cmd_list)
-
-    p = sub.add_parser("rename")
-    p.add_argument("old")
-    p.add_argument("new")
-    p.set_defaults(fn=cmd_rename)
-
-    p = sub.add_parser("delete")
-    p.add_argument("name")
-    p.set_defaults(fn=cmd_delete)
-
-    p = sub.add_parser("convert")
-    p.add_argument("x", type=float)
-    p.add_argument("y", type=float)
-    p.add_argument("z", type=float)
-    p.add_argument("--radius", type=float, default=1000000.0)
-    p.set_defaults(fn=cmd_convert)
-
-    # No arguments, as from a double-click, means run the overlay.
-    args = ap.parse_args(sys.argv[1:] or ["run"])
-    args.fn(args)
-
-
 if __name__ == "__main__":
-    main()
+    run_program()

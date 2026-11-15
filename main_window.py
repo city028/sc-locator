@@ -4280,6 +4280,7 @@ class SettingsTab:
         for name in self.SECTIONS:
             page[name] = tk.Frame(self.sections, bg=BG)
             self.sections.add(page[name], text=name)
+        self.reader_boxes(page["Other"])
         self.version_box(page["Other"])
         self.backup_page(page["Backup"])
         self.discord_page(page["Discord"])
@@ -5044,6 +5045,106 @@ class SettingsTab:
             show_message("Not wiped", f"Nothing was changed.\n\n{exc}", parent)
             return
         self.close_for_restart()
+
+    def reader_boxes(self, page):
+        """Finding the HUD text on screen, and the diagnostic log."""
+        scl = self.scl
+        box = tk.LabelFrame(page, text=" Find HUD text ", font=mono(),
+                            fg=ACCENT, bg=BG, bd=2, relief="groove", padx=10,
+                            pady=8)
+        box.pack(anchor="nw", fill="x", padx=4, pady=4)
+        self.find_button = ttk.Button(box, text="Find HUD text", width=24,
+                                      command=self.find_hud)
+        self.find_button.pack(side="left", anchor="n")
+        col = tk.Frame(box, bg=BG)
+        col.pack(side="left", fill="x", padx=(12, 0))
+        tk.Label(col, font=mono(9), fg=DIM, bg=BG, justify="left",
+                 wraplength=px(860),
+                 text="Looks on every screen for the game's HUD text "
+                      "(r_DisplayInfo 2) and reads it from there from then "
+                      "on. Use it when the overlay never gets a fix, or after "
+                      "changing screens or resolution. Press it, then switch "
+                      f"to the game: it keeps looking for "
+                      f"{scl.FIND_SECONDS} s.").pack(anchor="w")
+        self.find_status = tk.Label(col, font=mono(9), fg=FG, bg=BG,
+                                    justify="left", wraplength=px(860))
+        self.find_status.pack(anchor="w", pady=(4, 0))
+        self.show_reading_area()
+
+        box = tk.LabelFrame(page, text=" Diagnostic log ", font=mono(),
+                            fg=ACCENT, bg=BG, bd=2, relief="groove", padx=10,
+                            pady=8)
+        box.pack(anchor="nw", fill="x", padx=4, pady=4)
+        self.log_var = tk.BooleanVar(value=self.state.cfg["log"])
+        ttk.Checkbutton(box, text="Write a diagnostic log",
+                        variable=self.log_var, command=self.switch_log).pack(
+            side="left", anchor="n")
+        col = tk.Frame(box, bg=BG)
+        col.pack(side="left", fill="x", padx=(12, 0))
+        tk.Label(col, font=mono(9), fg=DIM, bg=BG, justify="left",
+                 wraplength=px(860),
+                 text="For a bug report: switch it on, make the problem "
+                      "happen, and send session.log. It records what the "
+                      f"screen reader sees and every error, in "
+                      f"{scl.LOG_FILE}.").pack(anchor="w")
+        ttk.Button(col, text="Open log folder", command=lambda: os.startfile(
+            scl.LOG_FILE.parent)).pack(anchor="w", pady=(4, 0))
+
+    def show_reading_area(self, found=None, colour=FG):
+        """Under the button: where the HUD is read from now, and what the
+        last Find saw, if anything."""
+        cfg = self.state.cfg
+        l, t, r, b = cfg["region"]
+        text = (f"Reading from screen {cfg['monitor']}, "
+                f"{l:.0%}-{r:.0%} across, {t:.0%}-{b:.0%} down.")
+        self.find_status.config(text=(found + "\n" + text) if found else text,
+                                fg=colour)
+
+    def find_hud(self):
+        """Look for the HUD text on a thread of its own, saying beside the
+        button how far it has got; when found, read from there at once."""
+        scl, st = self.scl, self.state
+        cfg = dict(st.cfg)
+        found = {"step": "starting"}
+
+        def run():
+            try:
+                with scl.open_capture() as sct:
+                    found["result"] = scl.find_hud(
+                        sct, cfg, progress=lambda t: found.update(step=t))
+            except Exception as exc:        # shown, not lost on a thread
+                found["result"] = {"why": f"The search failed: {exc}"}
+
+        def watch():
+            if "result" not in found:
+                self.find_status.config(
+                    fg=ACCENT, text="Switch to the game now. Looking: "
+                    f"{found['step']}...")
+                self.frame.after(250, watch)
+                return
+            self.find_button.config(state="normal")
+            res = found["result"]
+            if "why" in res:
+                self.show_reading_area(f"Not found. {res['why']}",
+                                       UPDATE_NOTICE)
+                st.log(f"find HUD text: not found: {res['why']}")
+                return
+            scl.save_setting(st, "monitor", res["monitor"])
+            scl.save_setting(st, "region", res["region"])
+            st.log(f"find HUD text: screen {res['monitor']}, region "
+                   f"{res['region']}, read {res['read']}")
+            with st.lock:
+                st.flash(f"HUD text found on screen {res['monitor']}")
+            self.show_reading_area(f"Found. A read there gave: {res['read']}")
+
+        self.find_button.config(state="disabled")
+        threading.Thread(target=run, daemon=True).start()
+        self.frame.after(250, watch)
+
+    def switch_log(self):
+        on = self.log_var.get()
+        self.scl.save_setting(self.state, "log", on)
+        self.scl.set_log(self.state, on)
 
     def version_box(self, page):
         """Which version this is, any newer one, and the way to it."""

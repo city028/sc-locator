@@ -19,6 +19,8 @@ datas = [
 
 a = Analysis(["sc_locator.py"], datas=datas)
 pyz = PYZ(a.pure)
+# No console: a console program opens an empty black window at every start.
+# Errors go to the diagnostic log (Settings > Other) instead.
 exe = EXE(pyz, a.scripts, [], exclude_binaries=True, name="sc-locator",
-          console=True, upx=False, icon="icon.ico")
+          console=False, upx=False, icon="icon.ico")
 coll = COLLECT(exe, a.binaries, a.datas, name="sc-locator", upx=False)

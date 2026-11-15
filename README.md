@@ -38,7 +38,6 @@ game.
   - [Maps to print](#maps-to-print)
   - [Automatic backups](#automatic-backups)
 - [The panel, button by button](#the-panel-button-by-button)
-- [Command line](#command-line)
 - [Settings](#settings-locator_configjson)
 - [Files it creates](#files-it-creates)
 - [Troubleshooting](#troubleshooting)
@@ -187,8 +186,8 @@ When the panel is closed, only the pin is shown. Its colour tells you the state:
 | green | position fix is live | — |
 | amber | fix going stale (no good reading for a few seconds) | look away from bright light behind the HUD text |
 | blue | HUD is up but no body in range (between planets) | normal in deep space |
-| red | capture error | run with `--log` and check the log |
-| red | screen reader stuck (one step of reading a frame took 15 s or more) | check the log and the console it was started from |
+| red | capture error | switch on the diagnostic log (Settings > Other) and check it |
+| red | screen reader stuck (one step of reading a frame took 15 s or more) | check the diagnostic log |
 
 - **Left-click the pin** to save a waypoint where you are. It works in flight.
   The result ("saved hurston-004" or the reason it refused) shows beside the
@@ -500,7 +499,14 @@ quits the program.
     and sea's **Water below camera** (`water_below_cam_m`), a new
     waterway's **Width** (`waterway_width_m`) and a new building's **Wall
     offset** (`building_wall_offset_m`).
-  - **Other**: nothing to set yet.
+  - **Other**:
+    - **Find HUD text** looks on every screen for the game's HUD text and
+      reads it from there from then on; the overlay moves to that screen
+      too. Press it, then switch to the game: it keeps looking for 30
+      seconds, and says what most likely stopped it if it finds nothing.
+    - **Write a diagnostic log** switches `session.log` on and off at once;
+      **Open log folder** shows where it is.
+    - The version you have, and updates (see Updates above).
 
 Sizes on the system map are not to scale (a planet would be smaller than a
 pixel); positions are.
@@ -973,32 +979,6 @@ versions of each file are kept. If something goes wrong, copy one back.
 
 ---
 
-## Command line
-
-Starting it from the Start menu is the same as `sc-locator.exe run`. From a
-command prompt in `%LocalAppData%\Programs\SC Locator` you can also use:
-
-| command | what it does |
-|---|---|
-| `sc-locator.exe run` | start the overlay |
-| `sc-locator.exe run --console` | text readout in the console instead of the overlay |
-| `sc-locator.exe run --log session.log` | write a diagnostic log (useful for bug reports) |
-| `sc-locator.exe run --allow-multiple` | start even if another copy is running (normally refused, as two overlays draw on top of each other) |
-| `sc-locator.exe list` | print every waypoint: system, body, nearest OM, lat/lon, height, time saved |
-| `sc-locator.exe rename OLD NEW` | rename a waypoint (refused, listing where each is, when several share the name) |
-| `sc-locator.exe delete NAME` | delete a waypoint (refused the same way when several share the name) |
-| `sc-locator.exe convert X Y Z [--radius R]` | turn planet coordinates (metres) into lat/lon and height |
-| `sc-locator.exe calibrate --find --delay 5 --save` | find the HUD text on your screen and save the capture area (see Troubleshooting) |
-
-`calibrate` options: `--find` searches the whole screen for the HUD text,
-`--delay N` waits N seconds so you can switch to the game, `--region L T R B`
-sets the area by hand (fractions of the screen, 0 to 1), `--cut N` sets the
-text contrast, `--save` writes the result to the settings. It also saves
-`calib_raw.png` and `calib_processed.png` in `%LocalAppData%\SC Locator` so you
-can see what the OCR sees.
-
----
-
 ## Settings (`locator_config.json`)
 
 Created in `%LocalAppData%\SC Locator` on first run. Edit it with any text editor while the
@@ -1006,7 +986,8 @@ program is closed. The ones you are most likely to change:
 
 | setting | default | meaning |
 |---|---|---|
-| `monitor` | `1` | which monitor the game is on (1 = primary) |
+| `monitor` | `1` | which monitor the game is on (1 = primary); Find HUD text sets it |
+| `log` | `false` | the diagnostic log; Settings > Other switches it |
 | `region` | `[0.60, 0.00, 1.00, 0.28]` | screen area read for the HUD text: left, top, right, bottom as fractions of the screen |
 | `overlay_anchor` | `"br"` | corner the pin sits in: `br`, `bl`, `tr`, `tl` |
 | `overlay_margin` | `[20, 20]` | distance in pixels from that corner |
@@ -1054,6 +1035,7 @@ All in `%LocalAppData%\SC Locator`:
 | `maps.json` | your maps to print: where each is and how it is drawn |
 | `discord.json` | the org's Discord webhooks and read token; not backed up |
 | `discord-id.json` | your Discord link key, link channel, lists and share history; backed up |
+| `session.log` | the diagnostic log, while it is switched on; not backed up |
 | `bak/` | automatic backups of the files above |
 
 To move to a new PC, use **Settings > Backup**. To share waypoints or reports with
@@ -1077,16 +1059,13 @@ behind the HUD text (sunlit ground, a cockpit lamp) makes it hard to read.
 Turn your view toward something darker. This matters most during ANALYSE.
 
 **Never gets a fix at all.** The HUD text may be outside the capture area
-(different resolution, ultrawide, HUD on another monitor). Run this, then
-switch to the game within 5 seconds:
-
-```
-sc-locator.exe calibrate --find --delay 5 --save
-```
-
-Then look at `calib_processed.png`: the `CamPos` line should be crisp, with
-the right-hand digits not cut off. If the game is not on your primary monitor,
-set `monitor` first.
+(different resolution, ultrawide, game on another monitor). In **Settings >
+Other**, press **Find HUD text**, then switch to the game within 30 seconds.
+It looks on every screen and reads from where it finds the text. If it finds
+nothing it says why: the game is not running, a screen came back black (set
+Borderless Window), or no HUD text was seen (`r_DisplayInfo 2`). On a small
+screen the HUD text may be too small to read: in tests, text under about
+10 pixels high was not found.
 
 **"HUD heights disagree with the position - not saved".** One of the numbers
 was misread for that frame; press save again a second later. If it happens on
@@ -1095,21 +1074,24 @@ v1.0.1 or later.
 
 **The pin turns red: "screen reader stuck".** One step of reading the HUD
 (the game check, the screen grab, the OCR read or the update) has taken 15 s
-or more. With `--log`, the log says which step and where in the code it
-was; if it says the reader's thread has ended, the error that ended it is
-in the console the program was started from. Restart the program.
+or more. With the diagnostic log on, the log says which step and where in
+the code it was; if it says the reader's thread has ended, the error that
+ended it is in the log too. Restart the program.
 
 **Nothing appears over the game.** The game must be in Borderless Window.
 
-**"sc_locator is already running".** Another copy is open, possibly hidden.
-Close it (or end `sc-locator.exe` in Task Manager).
+**"SC Locator is already running".** Another copy is open, possibly hidden.
+Close it (or end `sc-locator.exe` in Task Manager). Only one runs at a time,
+as two overlays would draw over each other.
 
 **Keyboard shortcuts.** There are none that work in game: Star Citizen's
 anti-cheat stops other programs from seeing key presses while the game has
 focus. Use the pin with `F` held.
 
-**Reporting a problem.** Run `sc-locator.exe run --log session.log` from a
-command prompt, reproduce it, and attach `session.log`.
+**Reporting a problem.** In **Settings > Other**, switch on **Write a
+diagnostic log**, make the problem happen, and attach `session.log` (**Open
+log folder** shows it). Switch the log off again afterwards: it keeps
+growing while it is on.
 
 ---
 
@@ -1145,7 +1127,7 @@ install supplies only its English language data.
 ```
 winget install UB-Mannheim.TesseractOCR
 pip install -r requirements.txt
-python sc_locator.py run
+python sc_locator.py
 ```
 
 To build the installer (the language data is copied in from the Tesseract

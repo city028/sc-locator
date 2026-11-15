@@ -2556,6 +2556,44 @@ channels' posts by group (sort_imports), to take in or skip.
   one is then theirs (`from`), so no longer ours to share, even when the
   two were the same (railway-001 in the test).
 
+## No console, no commands (2026-11-15)
+
+The empty box at every start was the console window. The .exe was built
+as a console program (`console=True`), so Windows opened a console before
+any of it ran; `hide_own_console` closed it only once Python and every
+module had loaded, a second or two later. Now:
+
+- **Windowed build** (`console=False` in the spec). The .exe takes no
+  arguments: `run_program` replaces argparse. `sys.stdout` and `sys.stderr`
+  are None in a windowed build, so they are pointed at devnull first.
+- **Gone**: `run --console` (text readout), `list`, `rename`, `delete`
+  (the Waypoints tab does these), `convert`, `calibrate` and
+  `--allow-multiple`. A test copy beside the real one (as for the Discord
+  test with a second member) can no longer start; if a later test needs
+  it, let the single-instance lock cover one data folder.
+- **Errors go to the log**: `log_errors` hooks `sys.excepthook`,
+  `threading.excepthook` and `Tk.report_callback_exception`. Run from
+  Python they still print too. Nothing is kept while the log is off.
+- **Settings > Other > Diagnostic log**: `log` in the config, `set_log`
+  swaps `state.log` at once. `LOG_FILE` is `session.log` in the data
+  folder, not in `data_files` (not backed up).
+- **A second start** shows "SC Locator is already running" by the pointer.
+  Before, its message went to a console that had already been closed.
+- **Settings > Other > Find HUD text** (`find_hud`): every screen, again
+  and again for 30 s, so there is time to switch to the game. Found: saves
+  `monitor` and `region` at once; the reader uses them from its next frame
+  and the overlay moves to that screen (its `refresh` watches
+  `cfg["monitor"]`). Not found: says why, in this order: the game is not
+  running, a screen came back black (exclusive fullscreen), no HUD text.
+  The calib PNGs are no longer written.
+- **Screen sizes**, on synthetic screens (tests/test_ocr.py): found and read
+  at 1920x1080 (11 and 15 px text), 3440x1440 (15 px) and 3840x2160
+  (22 px); 1-2 s a screen. Text of 8-9 px (1366x768 if the HUD shrinks
+  with the screen) was not found at any `scale` (2-4) or `contrast_radius`
+  (3-9) tried; at `scale` 3, 11 px failed too. Whether the game's HUD
+  text grows with the resolution is not known; no real capture other than
+  2560x1440 has been tried.
+
 ## Still open
 
 - Two errors from the screen reader's side, each costing one frame:
@@ -2575,8 +2613,8 @@ channels' posts by group (sort_imports), to take in or skip.
 - The panel rebuilds its waypoint list once a second to refresh distances. The
   selection is restored by name, but a `Listbox` is the wrong widget for rows
   that change under the user.
-- `render()` still says "readout not found - run calibrate" when the real cause
-  is usually the HUD being off. The panel's own status line says the right
+- `render()` still says "readout not found - try Find HUD text in Settings >
+  Other" when the real cause is usually the HUD being off. The panel's own status line says the right
   thing; this one does not.
 - Naming a Lagrange point as `HUR-L1` needs each body's centre in system
   coordinates. ANALYSE now measures it (see "Body analysis"), so this only
