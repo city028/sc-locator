@@ -1462,6 +1462,22 @@ def popup_image(w, h, ph, title, closer=True):
     return img
 
 
+def owned_by(win, owner):
+    """Make Windows keep `win` above `owner`, as it does a dialog over its
+    window. Tk's transient does not do it for a frameless window: a click
+    on the main window put it over its pop-up, which still held every click,
+    so the program looked frozen (2026-11-22)."""
+    if os.name != "nt":
+        return
+    u = ctypes.windll.user32
+    u.SetWindowLongPtrW.restype = ctypes.c_void_p
+    u.SetWindowLongPtrW.argtypes = [ctypes.c_void_p, ctypes.c_int,
+                                    ctypes.c_void_p]
+    win.update_idletasks()          # its Windows window exists from here
+    u.SetWindowLongPtrW(int(win.wm_frame(), 16), -8,     # GWLP_HWNDPARENT
+                        int(owner.wm_frame(), 16))
+
+
 def popup(parent, title):
     """A pop-up window drawn as the menus' boxes are: no Windows frame, round
     corners, `title` in the pill at the top. Dragged by that pill; its x
@@ -1474,6 +1490,7 @@ def popup(parent, title):
     win.overrideredirect(True)
     win.attributes("-transparentcolor", POPUP_KEY)
     win.transient(parent.winfo_toplevel())
+    owned_by(win, parent.winfo_toplevel())
     ph = ui_font().metrics("linespace") + px(12)
     inset = px(7)           # keeps the contents clear of the round corners
     back = tk.Label(win, bd=0, bg=POPUP_KEY)
