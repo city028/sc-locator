@@ -2761,6 +2761,47 @@ move or zoom as sections open and close: easier on the eyes.
 - With every pill open, a short window cuts off the bottom ones; no
   scrolling.
 
+## One look everywhere (2026-11-22, v1.6.0 / v1.6.1)
+
+Style A, picked from mock-ups: light-blue pill buttons, rounded fields and
+drop-downs, round ticks, thin scroll bars, pill tabs; boxes with a filled
+title pill and a rounded outline; pop-ups and right-click menus as such
+boxes too. v1.6.1 is feature complete: further work only on bugs or
+requests.
+
+- **ttk image elements**, not per-widget code: `pill_theme` draws the
+  pictures with PIL and gives every ttk class a layout built on them, so
+  any control made later gets the look. Elements cannot be redefined, so a
+  change of Windows scale makes new ones under new names (`A<n>.button`).
+  An image element's border is also its inner padding unless `padding=`
+  is given; without it a 30 px pill made a 52 px button.
+- ttk buttons are at least 11 letters wide unless `width=0`: that, not the
+  padding, pushed DELETE off the star map menu.
+- **BG is the window's colour key: see-through and click-through.** Anything
+  clickable needs a filled inside (`PILL_FILL`); the Settings tabs drawn
+  with a see-through inside took clicks only on their outline and letters.
+- **Boxes** (`RoundFrame`, a LabelFrame): the picture is a label placed over
+  the whole frame (`bordermode="outside"`, else it misses the title row)
+  and lowered. The title's own room (`labelwidget`) covers part of the
+  picture, so it shows its own crop of it.
+- **Pop-ups** (`popup`): frameless (`overrideredirect`), corners in
+  `POPUP_KEY` made see-through, dragged by the title, x / CANCEL / Escape.
+  Tk's `transient` does not keep a frameless window over its owner: a click
+  on the main window covered a modal pop-up and the program looked frozen
+  (v1.6.0). `owned_by` sets the Windows owner (`GWLP_HWNDPARENT`) instead;
+  fixed in v1.6.1.
+- **Right-click menus** (`PopMenu`): a canvas in a frameless window, titled
+  with what was clicked; takes tk.Menu's `add_command` / `add_separator` /
+  `delete` / `tk_popup`, so the code filling menus is unchanged. Closes on
+  a pick, Escape or focus leaving it. SURVEY's choices are pills in the
+  Survey box instead (`choice_groups`).
+- The star map's Waypoints list shows names only, cut with "..."
+  (`fit_text`); its width (`POI_LIST_PX`) sets the whole menu's, and long
+  readout lines wrap at it. The Maps list is as tall as its lines, at most
+  what the column has room for (`fit_list`).
+- Left as they were: the drop-down boxes' lists (Tk's own, recoloured), and
+  ticks still pass clicks between letters (their label background is BG).
+
 ## Still open
 
 - Two errors from the screen reader's side, each costing one frame:

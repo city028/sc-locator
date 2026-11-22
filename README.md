@@ -375,9 +375,14 @@ quits the program.
   the side panels (Star map and Height map menus, the Maps tab's list and
   options), leaving only the open tab's map or list (the star map stays
   exactly as it is: its menu lies over it); a click on the plain
-  lines brings them back. Kept for the next start. The tabs are on the
-  same row, to its right: Star map, Height map, Maps, Waypoints, Reports,
-  Surveys, Settings.
+  lines brings them back. Kept for the next start. Hidden while Settings is
+  open, it goes back to the tab you opened Settings from. The tabs are on
+  the same row, to its right: Star map, Height map, Maps, Waypoints,
+  Reports, Surveys, Settings.
+- **Pop-ups** (Edit..., questions, names to type) are boxes with their
+  title on top: drag one by its title; its **x**, **CANCEL** or **Esc**
+  closes it. **Right-click menus** are such boxes too, titled with what you
+  clicked; a pick, **Esc** or a click elsewhere closes them.
 - **Full screen**, the round button with the outward arrows at the top
   right: no title bar or borders, on the screen the window is on. Leave it
   with the same button (its arrows then point inward), **Esc** or **F11**.
@@ -395,7 +400,8 @@ quits the program.
   pill at the top left, over the map; click it to open it into a box under
   its title, and again to fold it. The map never moves or zooms as they
   open and close: a box may cover its left side, so drag the map aside if
-  you need that part.
+  you need that part. **SURVEY** opens its choices as buttons inside the
+  Survey box; pick one, or click **SURVEY** again to put them away.
 - **Star map**: pick Stanton, Pyro or Nyx. The star is at the centre; planets
   are placed where ANALYSE measured them, deep-space waypoints where they were
   saved. Moons and places in space close to a body are left to that body's
@@ -412,10 +418,11 @@ quits the program.
   height above it. A drag turns the globe less the closer you are zoomed in
   (how much less: Settings > Star map). Bodies with waypoints that have not
   been analysed yet are listed on the left and open the same way.
-- **POIs** (left of the map): every POI of the system picked, under **Deep
-  space** or the body the map shows it on, whichever view is open. Type in
-  **Search** to narrow it to names holding that text (any case). Click one to
-  select it; right-click it for its menu.
+- **Waypoints** (in the left menu): the waypoints of the system you are in
+  (every system while it is not known), under the body they belong to or
+  **deep-space**, whichever view is open. Names only; a long one ends in
+  "...". Type in **Search** to narrow it to names holding that text (any
+  case). Click one to select it; right-click it for its menu.
 - **Around a planet**: the opened planet also shows its analysed moons and the
   places in space near it (stations, bases), in their true direction, with the
   real distance in the label. Distances beyond the globe are pulled in so
