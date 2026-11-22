@@ -23,7 +23,8 @@ import webbrowser
 from tkinter import filedialog, ttk
 
 import numpy as np
-from PIL import Image, ImageColor, ImageDraw, ImageEnhance, ImageTk
+from PIL import (Image, ImageColor, ImageDraw, ImageEnhance, ImageFont,
+                 ImageTk)
 
 import databackup
 import discordapi
@@ -175,6 +176,7 @@ def fit_to_screen(win, style):
     style.configure("Treeview", rowheight=px(ROW_PX))
     for tree, name, width in _columns:
         tree.column(name, width=px(width))
+    pill_theme(style)
 
 
 TYPE_LABELS = {"poi": "POI", "survey": "Survey"}   # see WAYPOINT_TYPES
@@ -198,6 +200,51 @@ def of_types(wps, switches):
     """The waypoints whose type is ticked."""
     return [w for w in wps
             if switches.get(w.get("type", "poi"), switches["poi"]).get()]
+
+
+def list_lines(tree, parent=""):
+    """How many lines a tree shows: each item, and what is under the open
+    ones."""
+    n = 0
+    for iid in tree.get_children(parent):
+        n += 1
+        if tree.item(iid, "open"):
+            n += list_lines(tree, iid)
+    return n
+
+
+def choice_groups(items):
+    """SURVEY's choices (scl.survey_menu_items) in groups, each under a
+    heading, for the Survey box: [(heading, [(label, key, fn)])]. The
+    patterns come first (Height map), each sub-menu is a group of its own,
+    and anything after the sub-menus is a Resume."""
+    groups, rest = [], "Height map"
+    for item in items:
+        if item[0] == "separator":
+            continue
+        if item[0] == "cascade":
+            groups.append((item[1][:1].upper() + item[1][1:],
+                           [entry[1:] for entry in item[2]]))
+            rest = "Resume"
+            continue
+        if not groups or groups[-1][0] != rest:
+            groups.append((rest, []))
+        groups[-1][1].append(item[1:])
+    return groups
+
+
+POI_LIST_PX = 330      # the star map's Waypoints list, as laid out
+MAPS_LIST_PX = 260     # the Maps tab's list of maps, as laid out
+
+
+def fit_text(text, room, measure):
+    """`text` as it fits in `room` px (`measure` gives a text's width):
+    whole if it fits, else cut and ended with "..."."""
+    if measure(text) <= room:
+        return text
+    while text and measure(text + "...") > room:
+        text = text[:-1]
+    return text.rstrip() + "..."
 
 
 def waypoint_tree(groups, system, ids, fmt):
@@ -226,15 +273,12 @@ class Section:
     def __init__(self, parent, title, expand=False, opened=True,
                  remember=None):
         self.expand, self.open, self.remember = expand, True, remember
-        self.head = tk.Label(parent, font=mono(), fg=ACCENT, bg=BG,
-                             cursor="hand2")
-        self.frame = tk.LabelFrame(parent, labelwidget=self.head, bg=BG, bd=2,
-                                   relief="groove", padx=6, pady=6)
+        self.frame = RoundFrame(parent, on_click=self.clicked, arrow=True,
+                                padx=8, pady=6)
         # Always packed: a frame whose last packed child goes keeps its size.
         tk.Frame(self.frame, height=0, bg=BG).pack()
         self.body = tk.Frame(self.frame, bg=BG)
         self.body.pack(fill="both", expand=True)
-        self.head.bind("<Button-1>", lambda e: self.clicked())
         self.title = title
         self.fold(opened)
 
@@ -250,7 +294,7 @@ class Section:
 
     def set_title(self, title):
         self.title = title.strip()
-        self.head.config(text=f" {'▼' if self.open else '▶'} {self.title} ")
+        self.frame.set_title(self.title, self.open)
 
     def fold(self, open_):
         """Open the section (True) or fold it to its title (False)."""
@@ -259,6 +303,7 @@ class Section:
             self.body.pack(fill="both", expand=True)
         else:
             self.body.pack_forget()
+        self.frame.configure(pady=6 if open_ else 0)
         if self.frame.winfo_manager():
             grow = open_ and self.expand
             self.frame.pack_configure(fill="both" if grow else "x",
@@ -739,12 +784,263 @@ def on_box(w):
     """`w` and everything in it on BOX instead of BG: in a box, BG would
     show the window's picture through it rather than the box."""
     if isinstance(w, ttk.Widget):
-        if w.winfo_class() in ("TCheckbutton", "TMenubutton"):
-            w.configure(style="Box." + w.winfo_class())
+        cls = w.winfo_class()
+        if cls == "TScrollbar":
+            w.configure(style=f"Box.{str(w.cget('orient')).title()}"
+                              ".TScrollbar")
+        elif cls in BOX_STYLED:
+            w.configure(style="Box." + cls)
     elif str(w.cget("bg")).lower() == BG.lower():
         w.configure(bg=BOX)
     for child in w.winfo_children():
         on_box(child)
+
+
+# The look picked on 2026-11-22 (style A), on every control of the window:
+# light-blue pill buttons, rounded fields, round ticks, thin scroll bars.
+PILL_FILL = "#0A1622"   # a pill button's inside: not BG, which is see-through
+FIELD, FIELD_LINE = "#0E1B28", "#2E5677"    # a field's inside and edge
+PICK = "#1F3A52"        # what is selected in a list or menu
+BOX_STYLED = ("TButton", "TCheckbutton", "TRadiobutton", "TMenubutton",
+              "TCombobox", "TEntry", "Treeview")
+_theme = {"n": 0, "images": []}
+
+
+def rounded(w, h, r, fill=None, outline=None, width=2, scale=3):
+    """A w x h RGBA box with corners of radius r, `fill` inside (see-through
+    when None) and an `outline` round it. Drawn `scale` times as big and
+    shrunk, so smooth."""
+    big = Image.new("RGBA", (w * scale, h * scale), (0, 0, 0, 0))
+    rgba = (lambda c: ImageColor.getrgb(c) + (255,) if c else None)
+    ImageDraw.Draw(big).rounded_rectangle(
+        (scale, scale, (w - 1) * scale - 1, (h - 1) * scale - 1), r * scale,
+        fill=rgba(fill), outline=rgba(outline),
+        width=width * scale if outline else 0)
+    return big.resize((w, h), Image.LANCZOS)
+
+
+def chevron(w, h, colour, up=False, scale=3):
+    """A w x h RGBA chevron, pointing down (or up), in the middle."""
+    big = Image.new("RGBA", (w * scale, h * scale), (0, 0, 0, 0))
+    cx, cy, k = w * scale / 2, h * scale / 2, h * scale * 0.09
+    dy = -k if up else k
+    ImageDraw.Draw(big).line(
+        ((cx - 2 * k, cy - dy), (cx, cy + dy), (cx + 2 * k, cy - dy)),
+        fill=ImageColor.getrgb(colour) + (255,), width=round(1.6 * scale),
+        joint="curve")
+    return big.resize((w, h), Image.LANCZOS)
+
+
+def tick_image(d, gap, on, colour, scale=3):
+    """A round tick d px across, a dot in it when `on`, with `gap` px of
+    nothing to its right (before its label)."""
+    big = Image.new("RGBA", ((d + gap) * scale, d * scale), (0, 0, 0, 0))
+    draw, c = ImageDraw.Draw(big), ImageColor.getrgb(colour) + (255,)
+    draw.ellipse((scale, scale, (d - 1) * scale, (d - 1) * scale),
+                 outline=c, width=2 * scale)
+    if on:
+        k = d * scale * 0.27
+        draw.ellipse((d * scale / 2 - k, d * scale / 2 - k,
+                      d * scale / 2 + k, d * scale / 2 + k), fill=c)
+    return big.resize(((d + gap), d), Image.LANCZOS)
+
+
+def pill_theme(style):
+    """Style A on every ttk control, sized for the font in use: called
+    again when the Windows scale changes, with new pictures (elements
+    cannot be redefined, so each call names its own)."""
+    h = ui_font().metrics("linespace") + px(10)
+    r = h // 2
+    _theme["n"] += 1
+    n, keep = _theme["n"], []
+    _theme["images"] = keep         # Tk drops what nothing holds
+
+    def element(name, default, *states, **kw):
+        def photo(img):
+            keep.append(ImageTk.PhotoImage(img))
+            return keep[-1]
+        name = f"A{n}{name}"
+        style.element_create(name, "image", photo(default),
+                             *[(s, photo(i)) for s, i in states], **kw)
+        return name
+
+    def pill(fill, line):
+        return rounded(2 * h, h, r, fill, line)
+
+    button = element(".button", pill(PILL_FILL, PILL_LINE),
+                     ("disabled", pill(PILL_FILL, FIELD_LINE)),
+                     ("pressed", pill(PILL_LINE, PILL_LINE)),
+                     ("active", pill(PILL_FILL, PILL_HOVER)),
+                     border=r, padding=(px(14), 0), sticky="nsew")
+    style.layout("TButton", [(button, {"sticky": "nswe", "children": [
+        ("Button.label", {"sticky": "nswe"})]})])
+    style.configure("TButton", foreground=PILL_TEXT, anchor="center",
+                    padding=0)
+    style.map("TButton", foreground=[("disabled", FIELD_LINE),
+                                     ("pressed", PILL_DARK),
+                                     ("active", PILL_HOVER)])
+
+    # Text fields and drop-downs: a rounded field, a chevron on the right.
+    field = element(".field", pill(FIELD, FIELD_LINE),
+                    ("focus", pill(FIELD, PILL_LINE)),
+                    border=r, padding=(px(12), 0), sticky="nsew")
+    arrow = element(".chevron", chevron(px(22), h, PILL_TEXT),
+                    sticky="")
+    style.layout("TEntry", [(field, {"sticky": "nswe", "children": [
+        ("Entry.textarea", {"sticky": "nswe"})]})])
+    style.layout("TCombobox", [(field, {"sticky": "nswe", "children": [
+        (arrow, {"side": "right", "sticky": ""}),
+        ("Combobox.textarea", {"sticky": "nswe"})]})])
+    style.layout("TMenubutton", [(field, {"sticky": "nswe", "children": [
+        (arrow, {"side": "right", "sticky": ""}),
+        ("Menubutton.label", {"sticky": "w"})]})])
+    for cls in ("TEntry", "TCombobox", "TMenubutton"):
+        style.configure(cls, foreground=FG, insertcolor=FG, padding=0,
+                        selectbackground=PICK, selectforeground=FG)
+    style.map("TCombobox", selectbackground=[("readonly", FIELD)],
+              foreground=[("disabled", FIELD_LINE)])
+
+    # Ticks: a ring, with a dot in it while on.
+    d = round(ui_font().metrics("linespace") * 0.85)
+    tick = element(".tick", tick_image(d, px(8), False, PILL_LINE),
+                   ("disabled", tick_image(d, px(8), False, FIELD_LINE)),
+                   ("selected", tick_image(d, px(8), True, PILL_LINE)),
+                   sticky="")
+    for kind in ("Checkbutton", "Radiobutton"):
+        style.layout(f"T{kind}", [(f"{kind}.padding", {
+            "sticky": "nswe", "children": [
+                (tick, {"side": "left", "sticky": ""}),
+                (f"{kind}.label", {"side": "left", "sticky": "nswe"})]})])
+        style.configure(f"T{kind}", foreground=FG)
+
+    # Scroll bars: a thin rounded thumb, no arrows, the trough unseen.
+    t = px(7)
+    for orient, size in (("Vertical", (t, 3 * t)), ("Horizontal", (3 * t, t))):
+        thumb = element(f".{orient}thumb",
+                        rounded(*size, t // 2, FIELD_LINE),
+                        ("active", rounded(*size, t // 2, PILL_LINE)),
+                        border=t // 2, sticky="nswe")
+        style.layout(f"{orient}.TScrollbar", [(
+            f"{orient}.Scrollbar.trough", {"sticky": "nswe", "children": [
+                (thumb, {"expand": "1", "sticky": "nswe"})]})])
+        for prefix, under in (("", BG), ("Box.", BOX)):
+            style.configure(f"{prefix}{orient}.TScrollbar", troughcolor=under,
+                            bordercolor=under, lightcolor=under,
+                            darkcolor=under, background=under)
+
+    # Tabs (Settings' sections): pills, filled for the open one.
+    # Filled inside, as the buttons are: a see-through BG inside lets clicks
+    # through the window to the picture behind, so only the outline and the
+    # letters took them (2026-11-22).
+    m = px(6)                       # the gap after each
+    tab = element(".tab", rounded(2 * h + m, h, r, PILL_FILL, PILL_LINE),
+                  ("selected", rounded(2 * h + m, h, r, PILL_LINE, PILL_LINE)),
+                  ("active", rounded(2 * h + m, h, r, PILL_FILL, PILL_HOVER)),
+                  border=(r, r, r + m, r), padding=(px(14), 0, px(14) + m, 0),
+                  sticky="nsew")
+    style.layout("TNotebook.Tab", [(tab, {"sticky": "nswe", "children": [
+        ("Notebook.label", {"sticky": ""})]})])
+    style.configure("TNotebook.Tab", foreground=PILL_TEXT, background=BG)
+    style.map("TNotebook.Tab", foreground=[("selected", PILL_DARK),
+                                           ("active", PILL_HOVER)],
+              background=[("selected", BG)], expand=[])
+
+    # The corners of all these show what they stand on: BG on the window's
+    # picture, BOX in the star map's menu boxes (on_box).
+    for cls in ("TButton", "TCheckbutton", "TRadiobutton", "TMenubutton",
+                "TCombobox", "TEntry"):
+        for prefix, under in (("", BG), ("Box.", BOX)):
+            style.configure(prefix + cls, background=under)
+            style.map(prefix + cls, background=[("active", under),
+                                                ("pressed", under)])
+
+
+def round_frame_image(w, h, ph, title, open_, arrow):
+    """A RoundFrame's picture, w x h: the title in a pill ph high, filled
+    and with an outline round all of it while open (or not folding); only
+    the outlined pill while folded. `arrow`: the fold arrow at the right."""
+    img = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    if open_:
+        img.alpha_composite(rounded(w, h, ph // 2, None, PILL_LINE))
+        img.alpha_composite(pill_image(w, ph, True, False))
+    else:   # filled: a see-through inside would let clicks through
+        img.alpha_composite(rounded(w, ph, ph // 2, PILL_FILL, PILL_LINE))
+    colour = PILL_DARK if open_ else PILL_TEXT
+    size = -font_px(9, _dpi[0])
+    try:
+        font = ImageFont.truetype("segoeui.ttf", size)
+    except OSError:
+        font = ImageFont.load_default(size)
+    ImageDraw.Draw(img).text((px(16), ph / 2), title, font=font,
+                             fill=colour, anchor="lm")
+    if arrow:
+        a = chevron(ph, ph, colour, up=open_)
+        img.alpha_composite(a, (w - ph - px(4), 0))
+    return img
+
+
+class RoundFrame(tk.LabelFrame):
+    """A box as the star map's menu draws one: its title in a filled pill
+    at the top, a rounded outline round what is in it. Takes a LabelFrame's
+    options (its look ones are left out). Drawn as one picture behind its
+    contents; the inside is BG, so the window's picture shows through. With
+    `on_click`, a click on the title calls it; `arrow` adds a fold arrow."""
+
+    def __init__(self, parent, text="", on_click=None, arrow=False, **kw):
+        for k in ("font", "fg", "bg", "bd", "relief", "labelwidget"):
+            kw.pop(k, None)
+        super().__init__(parent, bg=BG, bd=0, **kw)
+        self.title, self.open, self.arrow = text.strip(), True, arrow
+        self.drawn = self.photo = self.head_photo = None
+        # Holds the title's room; it shows its own piece of the picture,
+        # as it covers that piece.
+        self.head = tk.Frame(self, bg=BG, width=1, height=1)
+        self.head_pic = tk.Label(self.head, bd=0, bg=BG)
+        self.head_pic.place(x=0, y=0)
+        self.configure(labelwidget=self.head)
+        self.back = tk.Label(self, bd=0, bg=BG)
+        self.back.place(x=0, y=0, relwidth=1, relheight=1,
+                        bordermode="outside")
+        self.back.lower()
+        self.bind("<Configure>", lambda e: self.draw(), add="+")
+        self.head.bind("<Configure>", lambda e: self.draw())
+        if on_click:
+            self.head_pic.config(cursor="hand2")
+            self.head_pic.bind("<Button-1>", lambda e: on_click())
+            on_title = (lambda e: e.y < self.pill_h())  # the rest of it
+            self.back.bind("<Button-1>", lambda e: on_title(e) and on_click())
+            self.back.bind("<Motion>", lambda e: self.back.config(
+                cursor="hand2" if on_title(e) else ""))
+
+    @staticmethod
+    def pill_h():
+        return ui_font().metrics("linespace") + px(12)
+
+    def set_title(self, title, open_=True):
+        self.title, self.open = title.strip(), open_
+        self.draw()
+
+    def draw(self):
+        if not self.head.winfo_exists():    # the window is closing
+            return
+        ph = self.pill_h()
+        # As wide as the title and its arrow need, so a folded one has room.
+        hw = ui_font().measure(self.title) + px(16) + (ph if self.arrow
+                                                        else px(16))
+        if (int(self.head["height"]), int(self.head["width"])) != (ph, hw):
+            self.head.config(height=ph, width=hw)
+        w, h = self.winfo_width(), self.winfo_height()
+        x, y = self.head.winfo_x(), self.head.winfo_y()
+        key = (w, h, ph, self.title, self.open, x, y)
+        if w < ph or h < ph or key == self.drawn:
+            return
+        self.drawn = key
+        img = round_frame_image(w, h, ph, self.title, self.open, self.arrow)
+        self.photo = ImageTk.PhotoImage(img)
+        self.back.config(image=self.photo)
+        self.head_photo = ImageTk.PhotoImage(img.crop((x, y, x + hw,
+                                                       y + ph)))
+        self.head_pic.config(image=self.head_photo)
 
 
 def stack_boxes(heights, top, gap):
@@ -904,20 +1200,26 @@ def open_main(root, state, scl, set_hud):
     # draws the box whatever its width, so it is drawn in BG, see-through.
     style.configure("TNotebook", background=BG, bordercolor=BG,
                     lightcolor=BG, darkcolor=BG)
-    style.configure("TNotebook.Tab", background=PANEL, foreground=DIM,
-                    padding=(14, 4))
-    style.map("TNotebook.Tab", background=[("selected", BG)],
-              foreground=[("selected", ACCENT)])
     style.configure("Treeview", background=PANEL, foreground=FG,
-                    fieldbackground=PANEL, font=mono(), rowheight=ROW_PX)
-    style.map("Treeview", background=[("selected", "#1F3A52")])
-    style.configure("Treeview.Heading", background=BG, foreground=DIM)
-    style.configure("TButton", background=PANEL, foreground=ACCENT)
-    style.configure("TCheckbutton", background=BG, foreground=ACCENT)
+                    fieldbackground=PANEL, font=mono(), rowheight=ROW_PX,
+                    bordercolor=PANEL, lightcolor=PANEL, darkcolor=PANEL)
+    style.map("Treeview", background=[("selected", PICK)],
+              foreground=[("selected", PILL_HOVER)])
+    style.configure("Treeview.Heading", background=BG, foreground=PILL_TEXT,
+                    relief="flat", bordercolor=BG, lightcolor=BG, darkcolor=BG)
+    style.map("Treeview.Heading", background=[("active", BG)],
+              foreground=[("active", PILL_HOVER)])
     # In the star map's menu boxes (on_box).
-    style.configure("Box.TCheckbutton", background=BOX)
-    style.configure("Box.TMenubutton", background=BOX)
-    style.configure("TCombobox", foreground=BG)
+    style.configure("Box.Treeview", background=BOX, fieldbackground=BOX,
+                    bordercolor=BOX, lightcolor=BOX, darkcolor=BOX)
+    # The drop-downs' lists.
+    win.option_add("*TCombobox*Listbox.background", PANEL)
+    win.option_add("*TCombobox*Listbox.foreground", FG)
+    win.option_add("*TCombobox*Listbox.selectBackground", PICK)
+    win.option_add("*TCombobox*Listbox.selectForeground", PILL_HOVER)
+    style.configure("ComboboxPopdownFrame", background=PANEL,
+                    bordercolor=FIELD_LINE, relief="solid", borderwidth=1)
+    pill_theme(style)
     fit_to_screen(win, style)
 
     wallpaper = Wallpaper(win)
@@ -1018,7 +1320,13 @@ def open_main(root, state, scl, set_hud):
         tab_pills.append(pill)
     tab_pills[0].set(on=True)
 
+    # The tab Settings was opened from: collapse goes back to it, as
+    # Settings with no tabs to leave it by is a dead end (2026-11-22).
+    came_from = [tabs.index(star)]
+
     def tab_changed(e):
+        if nb.index("current") != tabs.index(settings):
+            came_from[0] = nb.index("current")
         for i, pill in enumerate(tab_pills):
             if pill.on != (i == nb.index("current")):
                 pill.set(on=not pill.on)
@@ -1057,6 +1365,8 @@ def open_main(root, state, scl, set_hud):
             for w, _, _ in hidden:
                 w.pack_forget()
         star.pill_menu.show(on)     # over its map: the map stays as it is
+        if not on and nb.index("current") == tabs.index(settings):
+            nb.select(came_from[0])
         menu_btn.hint = "collapse" if on else "menu"
         menu_btn.set(slash=on)
         if state.cfg["menu_collapsed"] != (not on):
@@ -1123,20 +1433,219 @@ def place_near(win, at=None):
                  f"+{max(top.winfo_rooty(), min(at[1] + 12, bottom))}")
 
 
+# The see-through colour of a pop-up's corners: used nowhere else.
+POPUP_KEY = "#010203"
+
+
+def popup_image(w, h, ph, title, closer=True):
+    """A pop-up's picture, w x h: a box with corners of radius ph / 2, its
+    title in a filled pill ph high at the top with an x at its right end
+    (`closer`); POPUP_KEY round the corners. No title (None): no pill."""
+    img = Image.new("RGBA", (w, h), ImageColor.getrgb(POPUP_KEY) + (255,))
+    img.alpha_composite(rounded(w, h, ph // 2, BG, PILL_LINE))
+    if title is None:
+        return img
+    img.alpha_composite(pill_image(w, ph, True, False))
+    draw = ImageDraw.Draw(img)
+    size = -font_px(9, _dpi[0])
+    try:
+        font = ImageFont.truetype("segoeui.ttf", size)
+    except OSError:
+        font = ImageFont.load_default(size)
+    draw.text((px(16), ph / 2), title, font=font, fill=PILL_DARK, anchor="lm")
+    if not closer:
+        return img
+    cx, cy, k = w - ph / 2 - px(4), ph / 2, ph * 0.16      # the x
+    for a, b in (((cx - k, cy - k), (cx + k, cy + k)),
+                 ((cx - k, cy + k), (cx + k, cy - k))):
+        draw.line((a, b), fill=PILL_DARK, width=max(2, px(2)))
+    return img
+
+
+def popup(parent, title):
+    """A pop-up window drawn as the menus' boxes are: no Windows frame, round
+    corners, `title` in the pill at the top. Dragged by that pill; its x
+    closes it, as the frame's X did. Starts withdrawn, so it can be placed
+    (place_near) before it is seen. Returns (window, the frame its contents
+    go in)."""
+    win = tk.Toplevel(parent, bg=POPUP_KEY)
+    win.withdraw()
+    win.title(title)
+    win.overrideredirect(True)
+    win.attributes("-transparentcolor", POPUP_KEY)
+    win.transient(parent.winfo_toplevel())
+    ph = ui_font().metrics("linespace") + px(12)
+    inset = px(7)           # keeps the contents clear of the round corners
+    back = tk.Label(win, bd=0, bg=POPUP_KEY)
+    back.place(x=0, y=0, relwidth=1, relheight=1)
+    blank = ImageTk.PhotoImage(Image.new("RGBA", (1, ph)))
+    head = tk.Label(win, bd=0, bg=POPUP_KEY, image=blank, width=1,
+                    anchor="nw", cursor="fleur")
+    head.pack(fill="x")
+    pane = tk.Frame(win, bg=BG)
+    pane.pack(fill="both", expand=True, padx=inset, pady=(px(4), inset))
+    held = {"pics": [blank], "size": None, "grab": None}
+
+    def draw(e):
+        w, h = win.winfo_width(), win.winfo_height()
+        if e.widget is not win or (w, h) == held["size"] or w < 2 * ph:
+            return
+        held["size"] = (w, h)
+        img = popup_image(w, h, ph, title)
+        held["pics"] = [ImageTk.PhotoImage(img),
+                        ImageTk.PhotoImage(img.crop((0, 0, w, ph)))]
+        back.config(image=held["pics"][0])
+        head.config(image=held["pics"][1])
+
+    def press(e):
+        if e.x >= win.winfo_width() - ph:       # the x
+            win.destroy()
+        else:
+            held["grab"] = (e.x_root - win.winfo_x(), e.y_root - win.winfo_y())
+
+    def drag(e):
+        if held["grab"]:
+            gx, gy = held["grab"]
+            win.geometry(f"+{e.x_root - gx}+{e.y_root - gy}")
+
+    def shown(e):
+        """A frameless window is not given the keyboard on its own: take
+        it, and hand it back to what the pop-up had put it on."""
+        if e.widget is win:
+            last = win.focus_lastfor()
+            win.focus_force()
+            if last is not None and last is not win:
+                last.focus_set()
+
+    win.bind("<Configure>", draw, add="+")
+    win.bind("<Map>", shown, add="+")
+    head.bind("<ButtonPress-1>", press)
+    head.bind("<B1-Motion>", drag)
+    head.bind("<ButtonRelease-1>", lambda e: held.update(grab=None))
+    return win, pane
+
+
+class PopMenu:
+    """A right-click menu in the window's style (picked 2026-11-22): a
+    pop-up box at the pointer, `title` (what was clicked) in its pill, a
+    line per choice lit under the pointer, a thin line between groups. Takes
+    the tk.Menu calls this window makes (add_command, add_separator, delete,
+    tk_popup), so what fills a menu stays as it was; its look options are
+    left out. Closes on a pick, Escape or a click anywhere else."""
+
+    def __init__(self, parent, postcommand=None, **_look):
+        self.parent, self.postcommand = parent, postcommand
+        self.items, self.title, self.win = [], None, None
+
+    def add_command(self, label, command=None, state="normal"):
+        self.items.append((label, command, state != "disabled"))
+
+    def add_separator(self):
+        self.items.append(None)
+
+    def delete(self, *_):
+        """Everything out, the title too: the next fill starts afresh."""
+        self.items, self.title = [], None
+
+    def close(self):
+        if self.win is not None and self.win.winfo_exists():
+            self.win.destroy()
+        self.win = None
+
+    def tk_popup(self, x, y):
+        if self.postcommand:
+            self.postcommand()
+        self.close()
+        f = ui_font()
+        row, gap, pad = f.metrics("linespace") + px(8), px(10), px(8)
+        ph = f.metrics("linespace") + px(12)
+        texts = [it[0] for it in self.items if it]
+        w = max([f.measure(t) for t in texts] + [0]) + 2 * px(14) + 2 * pad
+        title = None
+        if self.title:
+            w = max(w, min(f.measure(self.title) + px(40), px(320)))
+            title = fit_text(self.title, w - px(28), f.measure)
+        top = ph + px(6) if title else pad
+        h = top + sum(row if it else gap for it in self.items) + pad
+        win = self.win = tk.Toplevel(self.parent, bg=POPUP_KEY)
+        win.withdraw()
+        win.overrideredirect(True)
+        win.attributes("-transparentcolor", POPUP_KEY)
+        win.attributes("-topmost", True)
+        c = tk.Canvas(win, width=w, height=h, bg=POPUP_KEY,
+                      highlightthickness=0)
+        c.pack()
+        c.pics = [ImageTk.PhotoImage(popup_image(w, h, ph, title, False)),
+                  ImageTk.PhotoImage(rounded(w - 2 * pad, row, row // 2,
+                                             PICK))]
+        c.create_image(0, 0, image=c.pics[0], anchor="nw")
+        bar = c.create_image(pad, 0, image=c.pics[1], anchor="nw",
+                             state="hidden")
+        lines, y_at = [], top               # (top, bottom, command) per line
+        for it in self.items:
+            if it is None:
+                c.create_line(pad, y_at + gap / 2, w - pad, y_at + gap / 2,
+                              fill=FIELD_LINE)
+                y_at += gap
+                continue
+            label, command, on = it
+            t = c.create_text(pad + px(14), y_at + row / 2, text=label,
+                              font=f, fill=FG if on else FIELD_LINE,
+                              anchor="w")
+            if on:
+                lines.append((y_at, y_at + row, command, t))
+            y_at += row
+
+        def line_at(e):
+            return next((ln for ln in lines if ln[0] <= e.y < ln[1]), None)
+
+        def hover(e):
+            ln = line_at(e)
+            c.itemconfigure(bar, state="normal" if ln else "hidden")
+            for _, _, _, t in lines:
+                c.itemconfigure(t, fill=PILL_HOVER if ln and ln[3] == t
+                                else FG)
+            if ln:
+                c.coords(bar, pad, ln[0])
+                c.tag_lower(bar, ln[3])
+            c.config(cursor="hand2" if ln else "")
+
+        def click(e):
+            ln = line_at(e)
+            if ln:
+                self.close()
+                if ln[2]:
+                    ln[2]()
+
+        def lost(_e):
+            """Focus gone from it (a click elsewhere): close, once settled."""
+            def check():
+                if self.win is win and not str(win.focus_get() or "") \
+                        .startswith(str(win)):
+                    self.close()
+            win.after(50, check)
+
+        c.bind("<Motion>", hover)
+        c.bind("<Leave>", lambda e: c.itemconfigure(bar, state="hidden"))
+        c.bind("<ButtonRelease-1>", click)
+        win.bind("<Escape>", lambda e: self.close())
+        win.bind("<FocusOut>", lost)
+        place_near(win, (x - 12, y - 12))       # its corner at the pointer
+        win.deiconify()
+        win.focus_force()
+
+
 def details_window(parent, title, text, at=None):
     """Show details: `text` in a window of its own by the pointer (`at`),
     the same for a waypoint, a body or a building. CLOSE or Escape."""
-    win = tk.Toplevel(parent, bg=BG)
-    win.withdraw()                  # placed before it is seen
-    win.title(title)
-    win.transient(parent.winfo_toplevel())
+    win, pane = popup(parent, title)
     lines = text.splitlines() or [""]
-    box = text_box(win, min(30, len(lines) + 1), readonly=True)
+    box = text_box(pane, min(30, len(lines) + 1), readonly=True)
     box.config(width=max(40, min(90, max(len(ln) for ln in lines) + 2)),
                wrap="none")
     set_text(box, text)
     box.pack(fill="both", expand=True, padx=10, pady=(10, 6))
-    ttk.Button(win, text="CLOSE", command=win.destroy).pack(pady=(0, 10))
+    ttk.Button(pane, text="CLOSE", command=win.destroy).pack(pady=(0, 10))
     win.bind("<Escape>", lambda e: win.destroy())
     place_near(win, at)
     win.deiconify()
@@ -1150,18 +1659,15 @@ def ask_buttons(title, text, parent, buttons=("OK",)):
     button; closing it or Escape returns None. In place of tkinter's
     messagebox, which Windows centres on the main window and draws in its
     own light colours."""
-    win = tk.Toplevel(parent, bg=BG)
-    win.withdraw()                  # placed before it is seen
-    win.title(title)
-    win.transient(parent.winfo_toplevel())
+    win, pane = popup(parent, title)
     answer = {"got": None}
     lines = text.splitlines() or [""]
-    box = text_box(win, min(30, len(lines)), readonly=True)
+    box = text_box(pane, min(30, len(lines)), readonly=True)
     box.config(width=max(40, min(90, max(len(ln) for ln in lines) + 2)),
                wrap="word")
     set_text(box, text)
     box.pack(fill="both", expand=True, padx=10, pady=(10, 6))
-    row = tk.Frame(win, bg=BG)
+    row = tk.Frame(pane, bg=BG)
     row.pack(anchor="e", padx=10, pady=(0, 10))
 
     def choose(label):
@@ -1514,6 +2020,7 @@ class Navigator:
         w = self.scl.find_waypoint(wps, wid)
         if w is None:
             return False
+        menu.title = menu.title or w["name"]
         add = menu.add_command
         add(label="Show details", command=lambda: self.waypoint_details(wid,
                                                                         at))
@@ -1540,6 +2047,7 @@ class Navigator:
         if w is None:
             return False
         report = self.scl.waypoint_report(w, bodies, wps)
+        menu.title = menu.title or w["name"]
         add = menu.add_command
         add(label="Show on star map", command=lambda: self.to_star(wid))
         add(label="Show info", command=lambda: self.waypoint_details(wid, at))
@@ -1558,6 +2066,7 @@ class Navigator:
             mapped = (body in st.heightmap
                       or any(t["planet"] == body for t in st.traces))
             marked = any(w.get("planet") == body for w in st.waypoints)
+        menu.title = menu.title or body
         add = menu.add_command
         add(label="Show details", command=lambda: self.body_details(body, at))
         if (self.body_system(body) in starmap.SYSTEMS
@@ -1574,6 +2083,7 @@ class Navigator:
         return True
 
     def building_menu(self, menu, name, label, at):
+        menu.title = menu.title or label or name
         add = menu.add_command
         add(label="Show details", command=lambda: self.building_details(name,
                                                                         at))
@@ -1745,9 +2255,9 @@ class StarMap:
         self.cancel_btn = ttk.Button(          # packed while tracing
             row, text="CANCEL",
             command=lambda: self.run("cancel", self.scl.cancel_trace))
-        self.survey_menu = tk.Menu(self.frame, tearoff=False, font=mono(),
-                                   bg=PANEL, fg=FG,
-                                   activebackground="#1d4f3a")
+        # SURVEY's choices, in this box rather than a Windows menu
+        # (2026-11-22): open while SURVEY is on, built afresh each time.
+        self.survey_choices = tk.Frame(self.survey_sec.body, bg=BOX)
         self.survey_rows = tk.Frame(self.survey_sec.body, bg=BG)
         self.survey_lbls = [tk.Label(self.survey_rows, font=mono(9), fg=FG,
                                      bg=BG, justify="left", anchor="w")
@@ -1784,11 +2294,17 @@ class StarMap:
                  bg=BG).pack(side="left")
         self.station_btn = ttk.Menubutton(self.station_row, width=18)
         self.station_btn.pack(side="left")
-        self.station_menu = tk.Menu(self.station_btn, tearoff=False,
+        self.station_menu = PopMenu(self.station_btn, tearoff=False,
                                     font=mono(), bg=PANEL, fg=FG,
-                                    activebackground="#1d4f3a",
+                                    activebackground=PICK,
                                     postcommand=self.fill_station_menu)
-        self.station_btn["menu"] = self.station_menu
+        # Its own menu, not the Windows one a Menubutton would post.
+        self.station_btn.bind("<ButtonPress-1>", lambda e: (
+            setattr(self.station_menu, "title", "Station"),
+            self.station_menu.tk_popup(
+                e.widget.winfo_rootx(),
+                e.widget.winfo_rooty() + e.widget.winfo_height()),
+            "break")[-1])
         # After a run that wrote a result: keep it or put the old one back.
         self.review_row = tk.Frame(body, bg=BG)
         ttk.Button(self.review_row, text="KEEP",
@@ -1807,29 +2323,32 @@ class StarMap:
         box = self.wp_sec.body
         tk.Label(box, text="Search", font=mono(), fg=DIM, bg=BG).pack(anchor="w")
         self.poi_search = tk.StringVar()
-        tk.Entry(box, textvariable=self.poi_search, font=mono(), bg=PANEL,
-                 fg=FG, insertbackground=FG, relief="flat", width=10).pack(
-            anchor="w", fill="x", pady=(0, 6))
+        ttk.Entry(box, textvariable=self.poi_search, font=mono(),
+                  width=10).pack(anchor="w", fill="x", pady=(0, 6))
         self.poi_search.trace_add("write", lambda *_: self.fill_waypoints())
         buttons = tk.Frame(box, bg=BG)
         buttons.pack(side="bottom", fill="x", pady=(6, 0))
-        ttk.Button(buttons, text="SAVE", width=6, command=self.save_here).pack(
-            side="left")
-        # Wide enough for UNTARGET too, so the label can swap.
-        self.target_btn = ttk.Button(buttons, text="TARGET", width=9,
+        # Each as wide as its word (width 0: not the buttons' usual 11
+        # letters at least), so the four fit the menu (2026-11-22).
+        ttk.Button(buttons, text="SAVE", width=0,
+                   command=self.save_here).pack(side="left")
+        # At least about as wide as UNTARGET (negative: a minimum), so the
+        # label can swap without the others moving far; never cut.
+        self.target_btn = ttk.Button(buttons, text="TARGET", width=-9,
                                      command=self.target_picked)
         self.target_btn.pack(side="left", padx=(4, 0))
-        ttk.Button(buttons, text="EDIT", width=6,
+        ttk.Button(buttons, text="EDIT", width=0,
                    command=lambda: self.on_picked(self.nav.edit_waypoint)).pack(
             side="left", padx=(4, 0))
-        ttk.Button(buttons, text="DELETE", width=7,
+        ttk.Button(buttons, text="DELETE", width=0,
                    command=lambda: self.on_picked(self.nav.delete_waypoint)).pack(
             side="left", padx=(4, 0))
-        self.pois = ttk.Treeview(box, show="tree", columns=("dist",),
-                                 selectmode="browse")
-        set_column(self.pois, "#0", 250)
-        set_column(self.pois, "dist", 80, anchor="e")
-        scroll = ttk.Scrollbar(box, orient="vertical", command=self.pois.yview)
+        # Names only (2026-11-22), as wide as name and distance were: that
+        # width sets the whole menu's. A name too long ends in "...".
+        self.pois = ttk.Treeview(box, show="tree", selectmode="browse")
+        set_column(self.pois, "#0", POI_LIST_PX)
+        scroll = self.poi_scroll = ttk.Scrollbar(box, orient="vertical",
+                                                 command=self.pois.yview)
         self.pois.configure(yscrollcommand=scroll.set)
         scroll.pack(side="right", fill="y")
         self.pois.pack(side="left", fill="both", expand=True)
@@ -1844,8 +2363,9 @@ class StarMap:
                                       justify="left", anchor="w")
         self.unplaced_hint.pack(anchor="w", fill="x", pady=(0, 6))
         self.unplaced = tk.Listbox(box, font=mono(), bg=PANEL, fg=FG, width=22,
-                                   height=4, relief="flat",
-                                   selectbackground="#1F3A52")
+                                   height=4, relief="flat", bd=0,
+                                   highlightthickness=0,
+                                   selectbackground=PICK)
         self.unplaced.pack(fill="both", expand=True)
         self.unplaced.bind("<<ListboxSelect>>", self.open_unplaced)
         self.unplaced.bind("<Button-3>", self.unplaced_menu)
@@ -1854,8 +2374,8 @@ class StarMap:
         self.pill_menu.layout()
 
         # Right-click on a pin or a body: the menus every tab shares.
-        self.menu = tk.Menu(self.canvas, tearoff=False, font=mono(), bg=PANEL,
-                            fg=FG, activebackground="#1d4f3a")
+        self.menu = PopMenu(self.canvas, tearoff=False, font=mono(), bg=PANEL,
+                            fg=FG, activebackground=PICK)
         # View from an orbital marker. Over the canvas, top right; only shown
         # while a body is open, as the system view has no markers.
         self.om_bar = tk.Frame(self.canvas, bg=BG)
@@ -2005,9 +2525,10 @@ class StarMap:
 
     def fill_waypoints(self):
         """The Waypoints list, for the system you are in and the search.
-        Rebuilt only when what it lists changes, so a refresh keeps its
-        selection and scroll; otherwise only the distances are rewritten.
-        Every group is open during a search; after it, as they were left."""
+        Rebuilt only when what it lists changes (or the Windows scale, which
+        changes where names are cut), so a refresh keeps its selection and
+        scroll. Every group is open during a search; after it, as they were
+        left."""
         wps, _ = snapshot(self.state)
         text = self.poi_search.get()
         ids = {w["id"] for w in self.scl.search_waypoints(wps, text)}
@@ -2016,14 +2537,18 @@ class StarMap:
         rows = waypoint_tree(self.scl.waypoint_groups(self.state), system,
                              ids, self.scl.fmt_dist)
         seen = (bool(text.strip()), system,
-                [(g, [r[:2] for r in members]) for g, members in rows])
+                [(g, [r[:2] for r in members]) for g, members in rows],
+                _dpi[0])
         tree = self.pois
         if seen == self.poi_seen:
-            for _, members in rows:
-                for wid, _, dist in members:
-                    tree.set(f"wp:{wid}", "dist", dist)
             self.label_target_btn()
             return
+
+        def cut(name, depth):
+            """`name` cut to fit at `depth` (0 a group, 1 a waypoint): the
+            tree's indent and open arrow take the left of it."""
+            return fit_text(name, px(POI_LIST_PX) - (depth + 1) * 20 - px(8),
+                            mono().measure)
         if self.poi_seen and not self.poi_seen[0]:
             shown = set(tree.get_children())
             self.poi_closed = (self.poi_closed - shown) | {
@@ -2036,11 +2561,11 @@ class StarMap:
                 if system else "no waypoints saved yet"))
         for group, members in rows:
             iid = f"group:{group}"
-            tree.insert("", "end", iid=iid, text=f"{group} ({len(members)})",
+            tree.insert("", "end", iid=iid,
+                        text=cut(f"{group} ({len(members)})", 0),
                         open=seen[0] or iid not in self.poi_closed)
-            for wid, name, dist in members:
-                tree.insert(iid, "end", iid=f"wp:{wid}", text=name,
-                            values=(dist,))
+            for wid, name, _ in members:
+                tree.insert(iid, "end", iid=f"wp:{wid}", text=cut(name, 1))
         if picked and tree.exists(picked[0]):
             tree.selection_set(picked[0])
             tree.see(picked[0])
@@ -2104,7 +2629,20 @@ class StarMap:
         self.fill_target()
         self.fill_survey()
         self.fill_analysis()
+        self.wrap_readouts()
         self.pill_menu.layout()     # the Windows scale may have changed
+
+    def wrap_readouts(self):
+        """A readout line too long for the menu wraps at the boxes' right
+        edge rather than widening every box; short ones stay as they are.
+        The edge is the Waypoints list's, which sets the menu's width."""
+        edge = self.pois.winfo_reqwidth() + self.poi_scroll.winfo_reqwidth()
+        for lbl in (self.location, self.target_text, self.analysis_text,
+                    self.unplaced_hint, *self.survey_lbls):
+            if int(lbl["wraplength"]) != edge:
+                lbl.config(wraplength=edge)
+        if int(self.report["wraplength"]) != edge - 8:     # its padx
+            self.report.config(wraplength=edge - 8)
 
     def fill_location(self):
         """The HUD's location readout, in its colour for the fix's health."""
@@ -2137,11 +2675,41 @@ class StarMap:
         elif st.survey:
             self.run("survey", scl.stop_survey)
         else:
-            scl.fill_menu(self.survey_menu, scl.survey_menu_items(st),
-                          self.run)
-            b = self.survey_btn
-            self.survey_menu.tk_popup(b.winfo_rootx(),
-                                      b.winfo_rooty() + b.winfo_height())
+            self.show_choices(not self.survey_choices.winfo_manager())
+
+    def show_choices(self, show):
+        """SURVEY's choices under it, in this box (True), or put away. A
+        heading per group and its choices as pills, as many to a row as fit
+        the menu's width; a pick starts it and puts them away."""
+        box = self.survey_choices
+        for w in box.winfo_children():
+            w.destroy()
+        self.survey_btn.state(["pressed" if show else "!pressed"])
+        if not show:
+            box.pack_forget()
+            return
+        edge = self.pois.winfo_reqwidth() + self.poi_scroll.winfo_reqwidth()
+
+        def pick(key, fn):
+            self.show_choices(False)
+            self.run(key, fn)
+
+        for heading, choices in choice_groups(
+                self.scl.survey_menu_items(self.state)):
+            tk.Label(box, text=heading, font=mono(9), fg=DIM, bg=BOX).pack(
+                anchor="w", pady=(6, 2))
+            row, used = None, edge
+            for label, key, fn in choices:
+                # A pill's width: its text and the pills' padding (pill_theme).
+                w = ui_font().measure(label) + 2 * px(14) + px(6)
+                if used + w > edge:             # a new row
+                    row, used = tk.Frame(box, bg=BOX), 0
+                    row.pack(anchor="w", pady=(0, px(4)))
+                ttk.Button(row, text=label, style="Box.TButton", width=0,
+                           command=lambda k=key, f=fn: pick(k, f)).pack(
+                    side="left", padx=(0, px(6)))
+                used += w
+        box.pack(fill="x", pady=(4, 0), after=self.survey_btn.master)
 
     def fill_survey(self):
         """The Survey section: END and CANCEL while one runs, the HUD's
@@ -2165,6 +2733,8 @@ class StarMap:
                 self.survey_rows.pack_forget()
         if busy and not self.surveying:
             self.survey_sec.fold(True)
+            if self.survey_choices.winfo_manager():   # started elsewhere
+                self.show_choices(False)
         self.surveying = busy
         if busy:
             *texts, colour = scl.survey_parts(st)
@@ -3071,8 +3641,8 @@ class HeightMapTab:
         # Right-click on a waypoint, a building or the ground: the menus
         # every tab shares.
         self.canvas.bind("<Button-3>", self.context_menu)
-        self.menu = tk.Menu(self.canvas, tearoff=False, font=mono(), bg=PANEL,
-                            fg=FG, activebackground="#1d4f3a")
+        self.menu = PopMenu(self.canvas, tearoff=False, font=mono(), bg=PANEL,
+                            fg=FG, activebackground=PICK)
 
     def place_star_back(self):
         """Back to star map: there only while the body open is on one."""
@@ -4109,9 +4679,8 @@ class WaypointEditor:
         tk.Label(bar, text="Search", font=mono(), fg=DIM, bg=BG).pack(
             side="left", padx=(18, 6))
         self.search_var = tk.StringVar()
-        tk.Entry(bar, textvariable=self.search_var, font=mono(), bg=PANEL,
-                 fg=FG, insertbackground=FG, relief="flat", width=24).pack(
-            side="left")
+        ttk.Entry(bar, textvariable=self.search_var, font=mono(),
+                  width=24).pack(side="left")
         self.search_var.trace_add("write", lambda *_: self.refresh())
 
         self.tree = ttk.Treeview(self.frame, show="headings",
@@ -4122,8 +4691,8 @@ class WaypointEditor:
             set_column(self.tree, name, width, stretch=name == "note")
         sortable(self.tree, scl.sort_key)
         # Rebuilt on each right-click: the waypoint menu, then Copy/Export.
-        self.menu = tk.Menu(self.tree, tearoff=False, font=mono(), bg=PANEL,
-                            fg=FG, activebackground="#1d4f3a")
+        self.menu = PopMenu(self.tree, tearoff=False, font=mono(), bg=PANEL,
+                            fg=FG, activebackground=PICK)
         scroll = ttk.Scrollbar(self.frame, orient="vertical",
                                command=self.tree.yview)
         self.tree.configure(yscrollcommand=scroll.set)
@@ -4154,6 +4723,8 @@ class WaypointEditor:
             self.tree.selection_set(row)
         self.tree.update_idletasks()
         self.menu.delete(0, "end")
+        if len(self.tree.selection()) > 1:     # the menu's title
+            self.menu.title = f"{len(self.tree.selection())} waypoints"
         wid = self.selected()           # one waypoint: its menu first
         if wid is not None and self.nav.waypoint_menu(
                 self.menu, wid, "list", (event.x_root, event.y_root)):
@@ -4448,7 +5019,7 @@ class SurveysTab:
         self.tree.configure(yscrollcommand=scroll.set)
         # The notes of the one survey picked, under the list: what it is
         # like there (cover, ground, ...), kept as they are typed.
-        box = tk.LabelFrame(self.frame, text=" Notes ", font=mono(),
+        box = RoundFrame(self.frame, text=" Notes ", font=mono(),
                             fg=ACCENT, bg=BG, bd=2, relief="groove",
                             padx=10, pady=6)
         box.pack(side="bottom", fill="x", pady=(6, 0))
@@ -4469,8 +5040,8 @@ class SurveysTab:
         self.tree.pack(fill="both", expand=True)
         self.tree.bind("<Button-3>", self.popup)
         self.tree.bind("<<TreeviewSelect>>", lambda e: self.on_select())
-        self.menu = tk.Menu(self.tree, tearoff=False, font=mono(), bg=PANEL,
-                            fg=FG, activebackground="#1d4f3a")
+        self.menu = PopMenu(self.tree, tearoff=False, font=mono(), bg=PANEL,
+                            fg=FG, activebackground=PICK)
 
     NOTES_SAVE_MS = 1500    # notes are saved this long after typing stops
 
@@ -4574,6 +5145,8 @@ class SurveysTab:
         self.menu.delete(0, "end")
         sel = self.tree.selection()
         at = (event.x_root, event.y_root)
+        self.menu.title = (sel[0].partition(":")[2] if len(sel) == 1
+                           else f"{len(sel)} surveys")
         if len(sel) == 1:               # one: its own menu first
             kind, _, key = sel[0].partition(":")
             if kind == "map":
@@ -4874,15 +5447,15 @@ class MapsTab:
         left = tk.Frame(self.frame, bg=BG)
         left.pack(side="left", fill="y", padx=(0, 8))
         self.panels = [left]            # hidden by menu / collapse
-        sec = kept_section(state, scl, left, "Maps", key="Maps: Maps",
-                           expand=True)
+        # As tall as its list needs (fit_list), not the whole column.
+        sec = kept_section(state, scl, left, "Maps", key="Maps: Maps")
         sec.pack()
+        self.left = left
         tk.Label(sec.body, text="Search", font=mono(), fg=DIM,
                  bg=BG).pack(anchor="w")
         self.search = tk.StringVar()
-        tk.Entry(sec.body, textvariable=self.search, font=mono(), bg=PANEL,
-                 fg=FG, insertbackground=FG, relief="flat",
-                 width=24).pack(anchor="w", fill="x", pady=(0, 6))
+        ttk.Entry(sec.body, textvariable=self.search, font=mono(),
+                  width=24).pack(anchor="w", fill="x", pady=(0, 6))
         self.search.trace_add("write", lambda *a: self.fill())
         tk.Label(sec.body, text="Body", font=mono(), fg=DIM,
                  bg=BG).pack(anchor="w")
@@ -4895,7 +5468,7 @@ class MapsTab:
         box = tk.Frame(sec.body, bg=BG)
         box.pack(fill="both", expand=True)
         self.tree = ttk.Treeview(box, show="tree", selectmode="browse")
-        set_column(self.tree, "#0", 260)
+        set_column(self.tree, "#0", MAPS_LIST_PX)
         scroll = ttk.Scrollbar(box, orient="vertical",
                                command=self.tree.yview)
         self.tree.configure(yscrollcommand=scroll.set)
@@ -4908,6 +5481,11 @@ class MapsTab:
         # The picked map's sections, under the list.
         self.options = tk.Frame(left, bg=BG)
         self.options.pack(fill="x")
+        self.fit_job = None
+        for w, ev in ((self.tree, "<<TreeviewOpen>>"),
+                      (self.tree, "<<TreeviewClose>>"),
+                      (left, "<Configure>"), (self.options, "<Configure>")):
+            w.bind(ev, lambda e: self.fit_soon(), add="+")
 
         # The map picked: a page of it as it prints, as big as fits.
         middle = tk.Frame(self.frame, bg=BG)
@@ -4917,8 +5495,7 @@ class MapsTab:
         self.pages_row.pack(anchor="w")
         self.page = tk.IntVar(value=1)
         self.page_count = None
-        self.sheet = tk.Label(middle, bg=BG, fg=DIM, font=mono(),
-                              text="Pick a map in the list.")
+        self.sheet = tk.Label(middle, bg=BG, fg=DIM, font=mono())
         self.sheet.pack(fill="both", expand=True, pady=(4, 0))
         self.sheet.bind("<Configure>", lambda e: self.render_soon())
         self.show_options(None)
@@ -4975,7 +5552,7 @@ class MapsTab:
                 data = self.gathered(m)
         if m is None:
             self.picture = None
-            self.sheet.config(image="", text="Pick a map in the list.")
+            self.sheet.config(image="", text="")
             return
         data["system"] = self.nav.body_system(m["body"])
         w, h = self.sheet.winfo_width(), self.sheet.winfo_height()
@@ -5025,8 +5602,8 @@ class MapsTab:
         elsewhere (framed on the height map) or what it shows did."""
         with self.state.lock:
             seen = tuple((m["id"], m["name"], m["body"], m.get("notes", ""))
-                         for m in self.state.maps)
-        if seen != self.seen:
+                         for m in self.state.maps) + (_dpi[0],)
+        if seen != self.seen:      # the Windows scale moves where names are cut
             self.fill()
         m = self.current()
         if m is not None and m.get("updated") != self.shown:
@@ -5042,23 +5619,52 @@ class MapsTab:
         with self.state.lock:
             ms = [dict(m) for m in self.state.maps]
         self.seen = tuple((m["id"], m["name"], m["body"], m.get("notes", ""))
-                          for m in ms)
+                          for m in ms) + (_dpi[0],)
         bodies = sorted({m["body"] for m in ms})
         self.body_pick.config(values=[self.ALL] + bodies)
         if self.body_var.get() not in bodies:
             self.body_var.set(self.ALL)
         body = None if self.body_var.get() == self.ALL else self.body_var.get()
         self.tree.delete(*self.tree.get_children())
+
+        def cut(name, depth):
+            """`name` ended in "..." if too long for the list at `depth` (0
+            a body, 1 a map), as in the star map's Waypoints list."""
+            return fit_text(name, px(MAPS_LIST_PX) - (depth + 1) * 20 - px(8),
+                            mono().measure)
+
         for b, group in maps.listed(ms, body, self.search.get()):
             self.tree.insert("", "end", iid=f"body:{b}", open=True,
-                             text=f"{b} ({len(group)})")
+                             text=cut(f"{b} ({len(group)})", 0))
             for m in group:
                 self.tree.insert(f"body:{b}", "end", iid=f"map:{m['id']}",
-                                 text=m["name"])
+                                 text=cut(m["name"], 1))
         iid = f"map:{self.mid}"
         if self.mid and self.tree.exists(iid):
             self.tree.selection_set(iid)
             self.tree.see(iid)
+        self.fit_soon()
+
+    def fit_soon(self):
+        """fit_list once things settle: a fold or a resize comes as several
+        events."""
+        if self.fit_job is None:
+            self.fit_job = self.frame.after_idle(self.fit_list)
+
+    def fit_list(self):
+        """The list as tall as its lines shown (open groups and their maps),
+        at most what the left column has room for beside everything else in
+        it (the other sections, open or folded); three lines at least."""
+        self.fit_job = None
+        tree, left = self.tree, self.left
+        shown = list_lines(tree)
+        if left.winfo_height() > 1:       # laid out: the room is known
+            other = left.winfo_reqheight() - tree.winfo_reqheight()
+            room = (left.winfo_height() - other) // px(ROW_PX)
+            shown = min(shown, room)
+        rows = max(3, shown)
+        if int(tree["height"]) != rows:
+            tree.configure(height=rows)
 
     def select(self, mid):
         """Pick map `mid`, the search and filter cleared if they hide it."""
@@ -5090,14 +5696,11 @@ class MapsTab:
     # --- the options ----------------------------------------------------
 
     def show_options(self, m):
-        """What can be set for map `m`, or a word on picking one (None)."""
+        """What can be set for map `m`; nothing with none picked (None)."""
         self.notes = self.info = None
         for child in self.options.winfo_children():
             child.destroy()
         if m is None:
-            tk.Label(self.options, font=mono(), fg=DIM, bg=BG,
-                     justify="left", text="Pick a map in the list."
-                     ).pack(anchor="w", padx=4, pady=4)
             return
         box = self.box(" Map ")
         row = tk.Frame(box, bg=BG)
@@ -5105,8 +5708,7 @@ class MapsTab:
         tk.Label(row, text="Name:", font=mono(), fg=FG, bg=BG).pack(
             side="left", padx=(0, 6))
         self.name_var = tk.StringVar(value=m["name"])
-        name = tk.Entry(row, textvariable=self.name_var, font=mono(),
-                        bg=PANEL, fg=FG, insertbackground=FG, relief="flat")
+        name = ttk.Entry(row, textvariable=self.name_var, font=mono())
         name.pack(side="left", fill="x", expand=True)
         name.bind("<Return>", lambda e: self.rename())
         name.bind("<FocusOut>", lambda e: self.rename())
@@ -5222,10 +5824,14 @@ class MapsTab:
                                                        pady=(2, 0))
 
         box = self.box(" Notes ")
+        # Both wrap in the menu's width (the list of maps sets it) rather
+        # than widening it: a Text is 80 letters wide unless told.
         tk.Label(box, font=mono(9), fg=DIM, bg=BG, justify="left",
+                 wraplength=px(MAPS_LIST_PX),
                  text="What the map is for, printed with it. Kept as you "
                       "type.").pack(anchor="w")
         self.notes = text_box(box, 10)
+        self.notes.config(width=1)
         self.notes.insert("1.0", m.get("notes", ""))
         self.notes.edit_modified(False)
         self.notes.pack(fill="x", pady=(4, 0))
@@ -5460,7 +6066,7 @@ class SettingsTab:
         # Each kind of survey in a box, two to a row: what it does and
         # records, and what can be set for it (in use from its next start).
         for k, (title, text, settings) in enumerate(survey_kinds(scl)):
-            box = tk.LabelFrame(survey_page, text=f" {title} ",
+            box = RoundFrame(survey_page, text=f" {title} ",
                                 font=mono(), fg=ACCENT, bg=BG, bd=2,
                                 relief="groove", padx=10, pady=4)
             box.grid(row=k // 2 + 1, column=k % 2, sticky="nsew", padx=4,
@@ -5483,7 +6089,7 @@ class SettingsTab:
         for col in (0, 1):
             survey_page.columnconfigure(col, weight=1, uniform="kind")
 
-        box = tk.LabelFrame(page["Star map"], text=" Turning ", font=mono(),
+        box = RoundFrame(page["Star map"], text=" Turning ", font=mono(),
                             fg=ACCENT, bg=BG, bd=2, relief="groove",
                             padx=10, pady=8)
         box.pack(anchor="nw", fill="x", padx=4, pady=4)
@@ -5506,7 +6112,7 @@ class SettingsTab:
                       "it; above 1 slower still."
                  ).pack(anchor="w", pady=(6, 0))
 
-        box = tk.LabelFrame(page["Star map"], text=" Rings ", font=mono(),
+        box = RoundFrame(page["Star map"], text=" Rings ", font=mono(),
                             fg=ACCENT, bg=BG, bd=2, relief="groove",
                             padx=10, pady=8)
         box.pack(anchor="nw", fill="x", padx=4, pady=4)
@@ -5527,7 +6133,7 @@ class SettingsTab:
 
         # Switches, layers and restoring maps: taller than some windows.
         height_page = scrolled(page["Height map"])
-        box = tk.LabelFrame(height_page, text=" Switches ", font=mono(),
+        box = RoundFrame(height_page, text=" Switches ", font=mono(),
                             fg=ACCENT, bg=BG, bd=2, relief="groove",
                             padx=10, pady=8)
         box.pack(anchor="nw", fill="x", padx=4, pady=4)
@@ -5548,7 +6154,7 @@ class SettingsTab:
         ttk.Button(box, text="Reset to shipped",
                    command=self.reset_starts).pack(anchor="w", pady=(6, 0))
 
-        box = tk.LabelFrame(height_page, text=" Layers ", font=mono(),
+        box = RoundFrame(height_page, text=" Layers ", font=mono(),
                             fg=ACCENT, bg=BG, bd=2, relief="groove",
                             padx=10, pady=8)
         box.pack(anchor="nw", fill="x", padx=4, pady=4)
@@ -5566,7 +6172,7 @@ class SettingsTab:
         self.restore_box(height_page, "maps", "maps.json",
                          lambda: nav.maps.restore(self.frame))
 
-        box = tk.LabelFrame(page["Waypoints"], text=" Names ", font=mono(),
+        box = RoundFrame(page["Waypoints"], text=" Names ", font=mono(),
                             fg=ACCENT, bg=BG, bd=2, relief="groove",
                             padx=10, pady=8)
         box.pack(anchor="nw", fill="x", padx=4, pady=4)
@@ -5595,7 +6201,7 @@ class SettingsTab:
                       lambda e, k=key, v=var, s=sample, t=tab:
                       self.save_label_colour(k, v.get(), s, t))
 
-        box = tk.LabelFrame(page["Waypoints"], text=" Import ", font=mono(),
+        box = RoundFrame(page["Waypoints"], text=" Import ", font=mono(),
                             fg=ACCENT, bg=BG, bd=2, relief="groove",
                             padx=10, pady=8)
         box.pack(anchor="nw", fill="x", padx=4, pady=4)
@@ -5610,7 +6216,7 @@ class SettingsTab:
         self.restore_box(page["Waypoints"], "waypoints", "waypoints.json",
                          lambda: editor.restore(self.frame))
 
-        box = tk.LabelFrame(page["Reports"], text=" Import ", font=mono(),
+        box = RoundFrame(page["Reports"], text=" Import ", font=mono(),
                             fg=ACCENT, bg=BG, bd=2, relief="groove",
                             padx=10, pady=8)
         box.pack(anchor="nw", fill="x", padx=4, pady=4)
@@ -5627,7 +6233,7 @@ class SettingsTab:
         self.restore_box(page["Reports"], "reports", "bodies.json",
                          lambda: nav.reports.restore(self.frame))
 
-        box = tk.LabelFrame(page["Waypoints"], text=" SUB categories ",
+        box = RoundFrame(page["Waypoints"], text=" SUB categories ",
                             font=mono(),
                             fg=ACCENT, bg=BG, bd=2, relief="groove",
                             padx=10, pady=8)
@@ -5672,7 +6278,7 @@ class SettingsTab:
                  "Deletes all your data, including the automatic backups, "
                  "and restarts SC Locator as new. Backups you saved "
                  "elsewhere are not touched.")):
-            box = tk.LabelFrame(page, text=title, font=mono(), fg=ACCENT,
+            box = RoundFrame(page, text=title, font=mono(), fg=ACCENT,
                                 bg=BG, bd=2, relief="groove", padx=10, pady=8)
             box.pack(anchor="nw", fill="x", padx=4, pady=4)
             ttk.Button(box, text=label, width=24, command=command).pack(
@@ -5704,7 +6310,7 @@ class SettingsTab:
         cfg = self.discord
 
         def section(title, text):
-            box = tk.LabelFrame(page, text=f" {title} ", font=mono(),
+            box = RoundFrame(page, text=f" {title} ", font=mono(),
                                 fg=ACCENT, bg=BG, bd=2, relief="groove",
                                 padx=10, pady=8)
             box.pack(anchor="nw", fill="x", padx=4, pady=4)
@@ -5715,9 +6321,8 @@ class SettingsTab:
 
         def entry(parent, var, **kw):
             var.trace_add("write", lambda *_: self.save_discord_soon())
-            return tk.Entry(parent, textvariable=var, font=mono(), bg=PANEL,
-                            fg=FG, insertbackground=FG, relief="flat",
-                            width=90, **kw)
+            return ttk.Entry(parent, textvariable=var, font=mono(), width=90,
+                             **kw)
 
         box = section("Channels", "A webhook for each share channel: in "
                       "Discord, the channel's settings > Integrations > "
@@ -5769,10 +6374,9 @@ class SettingsTab:
         ttk.Button(row, text="Link account", width=16,
                    command=self.link_account).pack(side="left")
         self.link_var = tk.StringVar()
-        tk.Entry(row, textvariable=self.link_var, font=mono(), bg=PANEL,
-                 fg=FG, readonlybackground=PANEL, relief="flat",
-                 state="readonly", width=60).pack(side="left", fill="x",
-                                                  expand=True, padx=(12, 0))
+        ttk.Entry(row, textvariable=self.link_var, font=mono(),
+                  state="readonly", width=60).pack(side="left", fill="x",
+                                                   expand=True, padx=(12, 0))
         if cfg["key"]:
             try:
                 self.link_var.set(discordshare.link_code(cfg["key"]))
@@ -5887,11 +6491,8 @@ class SettingsTab:
 
         # While it runs: a small window by the pointer saying how far it
         # has got; then the result in its place.
-        win = tk.Toplevel(parent, bg=BG)
-        win.withdraw()                  # placed before it is seen
-        win.title("Remove from Discord")
-        win.transient(parent.winfo_toplevel())
-        busy = tk.Label(win, font=mono(), fg=ACCENT, bg=BG, padx=20,
+        win, pane = popup(parent, "Remove from Discord")
+        busy = tk.Label(pane, font=mono(), fg=ACCENT, bg=BG, padx=20,
                         pady=14, text="Removing from Discord...")
         busy.pack()
         place_near(win)
@@ -6216,7 +6817,7 @@ class SettingsTab:
     def switch_box(self, page, set_hud, follow):
         """The HUD overlay and follow me: kept, in use at once."""
         scl, state = self.scl, self.state
-        box = tk.LabelFrame(page, text=" HUD and maps ", font=mono(),
+        box = RoundFrame(page, text=" HUD and maps ", font=mono(),
                             fg=ACCENT, bg=BG, bd=2, relief="groove", padx=10,
                             pady=8)
         box.pack(anchor="nw", fill="x", padx=4, pady=4)
@@ -6247,7 +6848,7 @@ class SettingsTab:
     def reader_boxes(self, page):
         """Finding the HUD text on screen, and the diagnostic log."""
         scl = self.scl
-        box = tk.LabelFrame(page, text=" Find HUD text ", font=mono(),
+        box = RoundFrame(page, text=" Find HUD text ", font=mono(),
                             fg=ACCENT, bg=BG, bd=2, relief="groove", padx=10,
                             pady=8)
         box.pack(anchor="nw", fill="x", padx=4, pady=4)
@@ -6269,7 +6870,7 @@ class SettingsTab:
         self.find_status.pack(anchor="w", pady=(4, 0))
         self.show_reading_area()
 
-        box = tk.LabelFrame(page, text=" Diagnostic log ", font=mono(),
+        box = RoundFrame(page, text=" Diagnostic log ", font=mono(),
                             fg=ACCENT, bg=BG, bd=2, relief="groove", padx=10,
                             pady=8)
         box.pack(anchor="nw", fill="x", padx=4, pady=4)
@@ -6347,7 +6948,7 @@ class SettingsTab:
     def background_box(self, page):
         """The picture behind the main window: kept, in use at once."""
         scl, state = self.scl, self.state
-        box = tk.LabelFrame(page, text=" Background ", font=mono(), fg=ACCENT,
+        box = RoundFrame(page, text=" Background ", font=mono(), fg=ACCENT,
                             bg=BG, bd=2, relief="groove", padx=10, pady=8)
         box.pack(anchor="nw", fill="x", padx=4, pady=4)
         row = tk.Frame(box, bg=BG)
@@ -6381,7 +6982,7 @@ class SettingsTab:
     def version_box(self, page):
         """Which version this is, any newer one, and the way to it."""
         updates = self.nav.updates
-        box = tk.LabelFrame(page, text=" Version ", font=mono(), fg=ACCENT,
+        box = RoundFrame(page, text=" Version ", font=mono(), fg=ACCENT,
                             bg=BG, bd=2, relief="groove", padx=10, pady=8)
         box.pack(anchor="nw", fill="both", expand=True, padx=4, pady=4)
         self.version_text = tk.Label(box, font=mono(), fg=FG, bg=BG,
@@ -6429,7 +7030,7 @@ class SettingsTab:
         """The Restore box for deleted `what` kept in backups of `file`:
         packed in `page`, or gridded there with `grid` given. `command`
         runs on click (the tabs it calls on exist only by then)."""
-        box = tk.LabelFrame(page, text=" Restore ", font=mono(), fg=ACCENT,
+        box = RoundFrame(page, text=" Restore ", font=mono(), fg=ACCENT,
                             bg=BG, bd=2, relief="groove", padx=10, pady=8)
         if grid:
             box.grid(sticky="ew", padx=4, pady=4, **grid)
@@ -6568,25 +7169,21 @@ class SettingsTab:
 def ask_sub(parent, title, name, icon, icons, no_icon):
     """A SUB's name and icon: a box to type the name in, the icons to pick
     from (`icons`, or `no_icon` for the plain pin) with a preview. Returns
-    (name, icon) or None if cancelled (closing it, X or Escape)."""
-    win = tk.Toplevel(parent, bg=BG)
-    win.withdraw()
-    win.title(title)
-    win.transient(parent.winfo_toplevel())
+    (name, icon) or None if cancelled (its x, CANCEL or Escape)."""
+    win, pane = popup(parent, title)
     answer = {}
-    tk.Label(win, text="Name", font=mono(), fg=DIM, bg=BG).grid(
+    tk.Label(pane, text="Name", font=mono(), fg=DIM, bg=BG).grid(
         row=0, column=0, sticky="w", padx=(10, 6), pady=(10, 3))
     name_var = tk.StringVar(value=name)
-    entry = tk.Entry(win, textvariable=name_var, font=mono(), bg=PANEL, fg=FG,
-                     insertbackground=FG, relief="flat", width=36)
+    entry = ttk.Entry(pane, textvariable=name_var, font=mono(), width=36)
     entry.grid(row=0, column=1, sticky="we", padx=(0, 10), pady=(10, 3))
-    tk.Label(win, text="Icon", font=mono(), fg=DIM, bg=BG).grid(
+    tk.Label(pane, text="Icon", font=mono(), fg=DIM, bg=BG).grid(
         row=1, column=0, sticky="w", padx=(10, 6), pady=3)
     icon_var = tk.StringVar(value=icon or no_icon)
-    pick = ttk.Combobox(win, textvariable=icon_var, state="readonly",
+    pick = ttk.Combobox(pane, textvariable=icon_var, state="readonly",
                         values=[no_icon] + list(icons), width=34)
     pick.grid(row=1, column=1, sticky="we", padx=(0, 10), pady=3)
-    preview = tk.Canvas(win, width=56, height=56, bg=PANEL,
+    preview = tk.Canvas(pane, width=56, height=56, bg=PANEL,
                         highlightthickness=0)
     preview.grid(row=2, column=1, sticky="w", pady=3)
 
@@ -6602,7 +7199,7 @@ def ask_sub(parent, title, name, icon, icons, no_icon):
 
     pick.bind("<<ComboboxSelected>>", show)
     show()
-    row = tk.Frame(win, bg=BG)
+    row = tk.Frame(pane, bg=BG)
     row.grid(row=3, column=0, columnspan=2, sticky="e", padx=10, pady=10)
 
     def ok(_e=None):
@@ -6610,7 +7207,7 @@ def ask_sub(parent, title, name, icon, icons, no_icon):
         win.destroy()
 
     ttk.Button(row, text="OK", command=ok).pack(side="left")
-    ttk.Button(row, text="X", width=3, command=win.destroy).pack(
+    ttk.Button(row, text="CANCEL", command=win.destroy).pack(
         side="left", padx=(6, 0))
     entry.bind("<Return>", ok)
     win.bind("<Escape>", lambda e: win.destroy())
@@ -6627,20 +7224,17 @@ def ask_conflict(parent, text, can_keep=True):
     """Yes, No or Replace for one clashing import, as ("yes" | "no" |
     "replace", apply_to_all). Closing the window is No. Without `can_keep`
     there is no Yes: both cannot be kept."""
-    win = tk.Toplevel(parent, bg=BG)
-    win.withdraw()                  # placed before it is seen
-    win.title("Import")
-    win.transient(parent.winfo_toplevel())
+    win, pane = popup(parent, "Import")
     answer = {"action": "no"}
     to_all = tk.BooleanVar(value=False)
-    body = text_box(win, min(30, text.count("\n") + 2))
+    body = text_box(pane, min(30, text.count("\n") + 2))
     body.config(width=80, wrap="none")
     set_text(body, text)
     body.config(state="disabled")
     body.pack(fill="both", expand=True, padx=10, pady=(10, 6))
-    ttk.Checkbutton(win, text="apply to all remaining conflicts",
+    ttk.Checkbutton(pane, text="apply to all remaining conflicts",
                     variable=to_all).pack(anchor="w", padx=10)
-    row = tk.Frame(win, bg=BG)
+    row = tk.Frame(pane, bg=BG)
     row.pack(anchor="e", padx=10, pady=10)
 
     def choose(action):
@@ -6681,14 +7275,12 @@ class DiscordImport:
         self.cfg, self.lock = tab.discord, tab.discord_lock
         self.rows, self.groups = {}, {}
         self.messages, self.files, self.problems = [], {}, []
-        win = self.win = tk.Toplevel(tab.frame, bg=BG)
-        win.withdraw()                  # placed before it is seen
-        win.title("Import from Discord")
-        win.transient(tab.frame.winfo_toplevel())
-        self.status = tk.Label(win, font=mono(9), fg=DIM, bg=BG, anchor="w",
+        win, pane = popup(tab.frame, "Import from Discord")
+        self.win = win
+        self.status = tk.Label(pane, font=mono(9), fg=DIM, bg=BG, anchor="w",
                                text="Reading the channels...")
         self.status.pack(anchor="w", fill="x", padx=10, pady=(10, 4))
-        frame = tk.Frame(win, bg=BG)
+        frame = tk.Frame(pane, bg=BG)
         frame.pack(fill="both", expand=True, padx=10)
         cols = (("kind", "KIND", 110), ("from", "FROM", 140),
                 ("when", "POSTED", 140), ("detail", "", 380))
@@ -6704,7 +7296,7 @@ class DiscordImport:
         tree.pack(side="left", fill="both", expand=True)
         bar.pack(side="right", fill="y")
         tree.bind("<Double-1>", lambda e: self.details())
-        row = tk.Frame(win, bg=BG)
+        row = tk.Frame(pane, bg=BG)
         # Packed ahead of the list, so a short window shrinks the list,
         # not the buttons off the bottom.
         row.pack(side="bottom", anchor="e", padx=10, pady=10, before=frame)
@@ -6939,18 +7531,15 @@ def ask_restore(parent, what, file, columns, rows):
     """Restore deleted `what` (reports, waypoints, surveys) found in the
     backups of `file`: `rows` as (key, *values for `columns`) in a list to
     pick from, by the pointer. Returns the keys picked, or None if
-    cancelled (X, closing it or Escape)."""
-    win = tk.Toplevel(parent, bg=BG)
-    win.withdraw()                  # placed before it is seen
-    win.title(f"Restore deleted {what}")
-    win.transient(parent.winfo_toplevel())
+    cancelled (its x, CANCEL or Escape)."""
+    win, pane = popup(parent, f"Restore deleted {what}")
     answer = {}
-    tk.Label(win, font=mono(9), fg=DIM, bg=BG, justify="left",
+    tk.Label(pane, font=mono(9), fg=DIM, bg=BG, justify="left",
              text=f"{what.capitalize()} found in the backups of {file} that "
                   "are gone now.\nPick one or more (Ctrl-click, "
                   "Shift-click) and RESTORE: each comes back as it was."
              ).pack(anchor="w", padx=10, pady=(10, 6))
-    tree = ttk.Treeview(win, show="headings", selectmode="extended",
+    tree = ttk.Treeview(pane, show="headings", selectmode="extended",
                         columns=[n for n, _ in columns],
                         height=min(15, max(3, len(rows))))
     for name, width in columns:
@@ -6959,7 +7548,7 @@ def ask_restore(parent, what, file, columns, rows):
     for key, *values in rows:
         tree.insert("", "end", iid=key, values=values)
     tree.pack(fill="both", expand=True, padx=10)
-    buttons = tk.Frame(win, bg=BG)
+    buttons = tk.Frame(pane, bg=BG)
     buttons.pack(anchor="e", padx=10, pady=10)
 
     def ok(_e=None):
@@ -6968,7 +7557,7 @@ def ask_restore(parent, what, file, columns, rows):
             win.destroy()
 
     ttk.Button(buttons, text="RESTORE", command=ok).pack(side="left")
-    ttk.Button(buttons, text="X", width=3, command=win.destroy).pack(
+    ttk.Button(buttons, text="CANCEL", command=win.destroy).pack(
         side="left", padx=(6, 0))
     tree.bind("<Double-1>", ok)
     win.bind("<Return>", ok)
@@ -7036,40 +7625,37 @@ def ask_waypoint(parent, w, names, around, no_sub, at=None):
     QT, private, share to Discord, note and, if `around` is a list (deep space only), the body
     it is shown around, in a window by the screen point `at`. `no_sub` is the
     SUB list's "not said" (scl.NO_SUB). Returns the fields
-    as scl.update_waypoint takes them, or None if cancelled (closing it, X
+    as scl.update_waypoint takes them, or None if cancelled (its x, CANCEL
     or Escape)."""
-    win = tk.Toplevel(parent, bg=BG)
-    win.withdraw()                  # placed before it is seen
-    win.title("Edit waypoint")
-    win.transient(parent.winfo_toplevel())
+    win, pane = popup(parent, "Edit waypoint")
     answer = {}
-    tk.Label(win, text=f"{w['name']} ({w['planet']})", font=mono(), fg=DIM,
+    tk.Label(pane, text=f"{w['name']} ({w['planet']})", font=mono(), fg=DIM,
              bg=BG).grid(row=0, column=0, columnspan=2, sticky="w",
                          padx=10, pady=(10, 6))
-    style = ttk.Style(win)
+    style = ttk.Style(pane)
     # Typed into, on the dark field: light text, as in ask_name.
     style.configure("Name.TCombobox", foreground=FG, insertcolor=FG)
 
     def label(row, text):
-        tk.Label(win, text=text, font=mono(), fg=DIM, bg=BG).grid(
+        tk.Label(pane, text=text, font=mono(), fg=DIM, bg=BG).grid(
             row=row, column=0, sticky="nw", padx=(10, 6), pady=3)
 
     label(1, "Name")
     name = tk.StringVar(value=w["name"])
-    box = ttk.Combobox(win, textvariable=name, values=names, width=32,
+    box = ttk.Combobox(pane, textvariable=name, values=names, width=32,
                        style="Name.TCombobox")
     box.grid(row=1, column=1, sticky="we", padx=(0, 10), pady=3)
     label(2, "SUB")
     sub = tk.StringVar(value=w.get("sub") or no_sub)
-    ttk.Combobox(win, textvariable=sub, state="readonly", width=32,
+    ttk.Combobox(pane, textvariable=sub, state="readonly", width=32,
                  values=[no_sub] + subtypes.names()).grid(
         row=2, column=1, sticky="we", padx=(0, 10), pady=3)
     qt = tk.BooleanVar(value=bool(w.get("qt")))
-    ttk.Checkbutton(win, text="QT - can be jumped to", variable=qt).grid(
+    ttk.Checkbutton(pane, text="QT - can be jumped to", variable=qt).grid(
         row=3, column=1, sticky="w", pady=3)
     private = tk.BooleanVar(value=bool(w.get("private")))
     share = tk.BooleanVar(value=bool(w.get("share")))
-    share_box = ttk.Checkbutton(win, text="Share to Discord", variable=share)
+    share_box = ttk.Checkbutton(pane, text="Share to Discord", variable=share)
 
     def private_ticked():
         """A private waypoint cannot be shared, nor one from someone
@@ -7079,7 +7665,7 @@ def ask_waypoint(parent, w, names, around, no_sub, at=None):
         share_box.state(["disabled" if private.get()
                          or w.get(discordshare.FROM) else "!disabled"])
 
-    ttk.Checkbutton(win, text="Private - never exported or shared",
+    ttk.Checkbutton(pane, text="Private - never exported or shared",
                     variable=private, command=private_ticked).grid(
         row=4, column=1, sticky="w", pady=3)
     share_box.grid(row=5, column=1, sticky="w", pady=3)
@@ -7089,16 +7675,16 @@ def ask_waypoint(parent, w, names, around, no_sub, at=None):
     if around is not None:
         label(row, "Shown around")
         parent_var = tk.StringVar(value=w.get("parent", AROUND_AUTO))
-        ttk.Combobox(win, textvariable=parent_var, state="readonly", width=32,
+        ttk.Combobox(pane, textvariable=parent_var, state="readonly", width=32,
                      values=[AROUND_AUTO, "none"] + list(around)).grid(
             row=row, column=1, sticky="we", padx=(0, 10), pady=3)
         row += 1
     label(row, "Note")
-    note = text_box(win, 4)
+    note = text_box(pane, 4)
     note.config(width=34)
     set_text(note, w.get("note", ""))
     note.grid(row=row, column=1, sticky="we", padx=(0, 10), pady=3)
-    buttons = tk.Frame(win, bg=BG)
+    buttons = tk.Frame(pane, bg=BG)
     buttons.grid(row=row + 1, column=0, columnspan=2, sticky="e", padx=10,
                  pady=10)
 
@@ -7112,7 +7698,7 @@ def ask_waypoint(parent, w, names, around, no_sub, at=None):
         win.destroy()
 
     ttk.Button(buttons, text="OK", command=ok).pack(side="left")
-    ttk.Button(buttons, text="X", width=3, command=win.destroy).pack(
+    ttk.Button(buttons, text="CANCEL", command=win.destroy).pack(
         side="left", padx=(6, 0))
     box.bind("<Return>", ok)
     win.bind("<Escape>", lambda e: win.destroy())
@@ -7131,22 +7717,19 @@ def ask_name(parent, title, heading, current, given, at=None,
     picked from the names `given` before, under `heading` (what is being
     named), opened by the screen point `at` (the click) if given. Returns
     the name, "" to clear it (CLEAR, only if `can_clear`), or None if
-    cancelled (closing the window, X or Escape)."""
-    win = tk.Toplevel(parent, bg=BG)
-    win.withdraw()                  # placed before it is seen
-    win.title(title)
-    win.transient(parent.winfo_toplevel())
+    cancelled (its x, CANCEL or Escape)."""
+    win, pane = popup(parent, title)
     answer = {"name": None}
-    tk.Label(win, text=heading, font=mono(), fg=DIM, bg=BG).pack(
+    tk.Label(pane, text=heading, font=mono(), fg=DIM, bg=BG).pack(
         anchor="w", padx=10, pady=(10, 4))
     var = tk.StringVar(value=current)
     # Typed into, on the dark field: light text. TCombobox's dark text is
     # for the read-only boxes elsewhere.
-    ttk.Style(win).configure("Name.TCombobox", foreground=FG, insertcolor=FG)
-    box = ttk.Combobox(win, textvariable=var, values=given, width=28,
+    ttk.Style(pane).configure("Name.TCombobox", foreground=FG, insertcolor=FG)
+    box = ttk.Combobox(pane, textvariable=var, values=given, width=28,
                        style="Name.TCombobox")
     box.pack(fill="x", padx=10)
-    row = tk.Frame(win, bg=BG)
+    row = tk.Frame(pane, bg=BG)
     row.pack(anchor="e", padx=10, pady=10)
 
     def choose(value):
@@ -7158,7 +7741,7 @@ def ask_name(parent, title, heading, current, given, at=None,
     if can_clear:
         ttk.Button(row, text="CLEAR", command=lambda: choose("")).pack(
             side="left", padx=(6, 0))
-    ttk.Button(row, text="X", width=3, command=win.destroy).pack(
+    ttk.Button(row, text="CANCEL", command=win.destroy).pack(
         side="left", padx=(6, 0))
     box.bind("<Return>", lambda e: choose(var.get().strip()))
     win.bind("<Escape>", lambda e: win.destroy())
@@ -7220,8 +7803,8 @@ class ReportViewer:
         self.tree.bind("<<TreeviewSelect>>", lambda e: self.show_selected())
         self.tree.bind("<Button-3>", self.popup)
         # Rebuilt on each right-click: the body menu, then Copy/Export.
-        self.menu = tk.Menu(self.tree, tearoff=False, font=mono(), bg=PANEL,
-                            fg=FG, activebackground="#1d4f3a")
+        self.menu = PopMenu(self.tree, tearoff=False, font=mono(), bg=PANEL,
+                            fg=FG, activebackground=PICK)
 
         right = tk.Frame(self.frame, bg=BG)
         right.pack(side="left", fill="both", expand=True, padx=(8, 0))
@@ -7262,6 +7845,8 @@ class ReportViewer:
         if row not in self.tree.selection():
             self.tree.selection_set(row)
         self.menu.delete(0, "end")
+        if len(self.tree.selection()) > 1:     # the menu's title
+            self.menu.title = f"{len(self.tree.selection())} reports"
         key = self.selected()           # one body: its menu first
         _, bodies = snapshot(self.state)
         if (key is not None and (bodies.get(key) or {}).get("scope") != "space"
